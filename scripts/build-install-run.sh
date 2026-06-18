@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="API Manager"
+APP_NAME="CC Uni Gate"
 APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
 INSTALL_PATH="/Applications/$APP_NAME.app"
 EXECUTABLE_NAME="ApiManagerApp"
+OLD_INSTALL_PATH="/Applications/API Manager.app"
 
 cd "$ROOT_DIR"
 
@@ -32,7 +33,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>API Manager</string>
+  <string>CC Uni Gate</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -51,8 +52,10 @@ PLIST
 
 pkill -f ApiManagerApp 2>/dev/null || true
 osascript -e 'tell application "API Manager" to quit' 2>/dev/null || true
+osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
 
 rm -rf "$INSTALL_PATH"
+rm -rf "$OLD_INSTALL_PATH"
 cp -R "$APP_BUNDLE" "$INSTALL_PATH"
 
 open "$INSTALL_PATH"

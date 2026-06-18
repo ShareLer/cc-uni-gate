@@ -1,4 +1,4 @@
-# API Manager
+# CC Uni Gate
 
 Local model-level provider manager for Codex and Claude-style API clients.
 
@@ -17,7 +17,7 @@ swift run ApiManagerApp
 It creates an `API` item in the macOS status bar. The menu is organized as:
 
 ```text
-API Manager
+CC Uni Gate
   Codex
     gpt-5.5
       dasu-gpt-plus-0.077 · openai_responses

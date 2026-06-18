@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "API"
-        statusItem.button?.toolTip = "API Manager"
+        statusItem.button?.toolTip = "CC Uni Gate"
         reloadCatalog()
         startProxyServer()
     }
@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
-        let titleItem = NSMenuItem(title: "API Manager", action: nil, keyEquivalent: "")
+        let titleItem = NSMenuItem(title: "CC Uni Gate", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
 
@@ -234,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showError(_ error: Error) {
         let alert = NSAlert()
-        alert.messageText = "API Manager"
+        alert.messageText = "CC Uni Gate"
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
         alert.runModal()
@@ -439,7 +439,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             backing: .buffered,
             defer: false
         )
-        window.title = "API Manager"
+        window.title = "CC Uni Gate"
         window.minSize = NSSize(width: 700, height: 500)
         window.center()
         super.init(window: window)
@@ -950,13 +950,13 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func selectAllModels() {
-        selectedRouteKeys = Set(routeKeys)
+        selectedRouteKeys.formUnion(filteredRouteKeys)
         modelTableView.reloadData()
         updateCount()
     }
 
     @objc private func selectNoModels() {
-        selectedRouteKeys = []
+        selectedRouteKeys.subtract(filteredRouteKeys)
         modelTableView.reloadData()
         updateCount()
     }
