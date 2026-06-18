@@ -19,7 +19,7 @@ final class LocalProxyServer: @unchecked Sendable {
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
     private let runtime: any LocalProxyRuntime
-    private let queue = DispatchQueue(label: "api-manager.local-proxy")
+    private let queue = DispatchQueue(label: "unigate.local-proxy")
     private var listener: NWListener?
 
     init(host: String = "127.0.0.1", port: UInt16 = 17888, runtime: any LocalProxyRuntime) {
@@ -35,7 +35,7 @@ final class LocalProxyServer: @unchecked Sendable {
         }
         listener.stateUpdateHandler = { state in
             if case let .failed(error) = state {
-                fputs("API Manager proxy failed: \(error)\n", stderr)
+                fputs("UniGate proxy failed: \(error)\n", stderr)
             }
         }
         listener.start(queue: queue)

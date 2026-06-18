@@ -3,7 +3,7 @@ import Foundation
 
 final class FileLogger: @unchecked Sendable {
     let fileURL: URL
-    private let queue = DispatchQueue(label: "api-manager.file-logger")
+    private let queue = DispatchQueue(label: "unigate.file-logger")
     private let formatter = ISO8601DateFormatter()
 
     init(fileURL: URL = AppPaths.logFileURL()) {
@@ -28,7 +28,7 @@ final class FileLogger: @unchecked Sendable {
                 }
                 try handle.close()
             } catch {
-                fputs("API Manager log write failed: \(error.localizedDescription)\n", stderr)
+                fputs("UniGate log write failed: \(error.localizedDescription)\n", stderr)
             }
         }
     }

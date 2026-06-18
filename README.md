@@ -43,7 +43,7 @@ http://127.0.0.1:17888/openai
 The selected provider is written to:
 
 ```text
-~/Library/Application Support/API Manager/routes.json
+~/Library/Application Support/UniGate/routes.json
 ```
 
 Routes are keyed by app and model, for example:
@@ -57,13 +57,13 @@ claude-desktop:claude-sonnet-4-6
 The status bar model visibility preference is written to:
 
 ```text
-~/Library/Application Support/API Manager/preferences.json
+~/Library/Application Support/UniGate/preferences.json
 ```
 
 Proxy logs are written to:
 
 ```text
-~/Library/Application Support/API Manager/logs/api-manager.log
+~/Library/Application Support/UniGate/logs/unigate.log
 ```
 
 Inspect the real cc-switch DB from Swift without printing secrets:
@@ -119,7 +119,9 @@ Swift native app:
 - Settings filters Models and Providers by app type so Codex, Claude Code, and
   Claude Desktop configuration is not presented as one flat list.
 - Keeps model-level route state in
-  `~/Library/Application Support/API Manager/routes.json`.
+  `~/Library/Application Support/UniGate/routes.json`.
+- Migrates legacy app data from `~/Library/Application Support/API Manager`
+  into `~/Library/Application Support/UniGate` on startup.
 - Never writes to `cc-switch.db`.
 - Does not print provider secrets in inspect output or manager catalog output.
 
