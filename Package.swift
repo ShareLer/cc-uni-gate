@@ -3,36 +3,36 @@
 import PackageDescription
 
 let package = Package(
-    name: "ApiManager",
+    name: "UniGate",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .library(name: "ApiManagerCore", targets: ["ApiManagerCore"]),
-        .executable(name: "ApiManagerApp", targets: ["ApiManagerApp"]),
-        .executable(name: "ApiManagerInspect", targets: ["ApiManagerInspect"])
+        .library(name: "UniGateCore", targets: ["UniGateCore"]),
+        .executable(name: "UniGateApp", targets: ["UniGateApp"]),
+        .executable(name: "UniGateInspect", targets: ["UniGateInspect"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.6.0")
     ],
     targets: [
         .target(
-            name: "ApiManagerCore",
+            name: "UniGateCore",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
         .executableTarget(
-            name: "ApiManagerApp",
-            dependencies: ["ApiManagerCore"]
+            name: "UniGateApp",
+            dependencies: ["UniGateCore"]
         ),
         .executableTarget(
-            name: "ApiManagerInspect",
-            dependencies: ["ApiManagerCore"]
+            name: "UniGateInspect",
+            dependencies: ["UniGateCore"]
         ),
         .testTarget(
-            name: "ApiManagerCoreTests",
-            dependencies: ["ApiManagerCore"]
+            name: "UniGateCoreTests",
+            dependencies: ["UniGateCore"]
         )
     ]
 )

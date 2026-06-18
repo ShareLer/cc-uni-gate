@@ -11,7 +11,7 @@ a behavior reference.
 Run the Swift menu bar app:
 
 ```bash
-swift run ApiManagerApp
+swift run UniGateApp
 ```
 
 It creates an `API` item in the macOS status bar. The menu is organized as:
@@ -69,7 +69,7 @@ Proxy logs are written to:
 Inspect the real cc-switch DB from Swift without printing secrets:
 
 ```bash
-swift run ApiManagerInspect
+swift run UniGateInspect
 ```
 
 Run Swift tests:

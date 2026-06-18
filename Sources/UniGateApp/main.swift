@@ -1,4 +1,4 @@
-import ApiManagerCore
+import UniGateCore
 import AppKit
 import Foundation
 

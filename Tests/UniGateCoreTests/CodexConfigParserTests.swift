@@ -1,4 +1,4 @@
-@testable import ApiManagerCore
+@testable import UniGateCore
 import Testing
 
 struct CodexConfigParserTests {

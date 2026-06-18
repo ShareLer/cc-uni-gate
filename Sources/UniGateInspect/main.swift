@@ -1,4 +1,4 @@
-import ApiManagerCore
+import UniGateCore
 import Foundation
 
 let home = FileManager.default.homeDirectoryForCurrentUser.path

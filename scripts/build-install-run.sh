@@ -5,12 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="CC Uni Gate"
 APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
 INSTALL_PATH="/Applications/$APP_NAME.app"
-EXECUTABLE_NAME="ApiManagerApp"
+EXECUTABLE_NAME="UniGateApp"
 OLD_INSTALL_PATH="/Applications/API Manager.app"
 
 cd "$ROOT_DIR"
 
-swift build -c release --product ApiManagerApp
+swift build -c release --product UniGateApp
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
@@ -27,7 +27,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>ApiManagerApp</string>
+  <string>UniGateApp</string>
   <key>CFBundleIdentifier</key>
   <string>local.unigate</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -50,6 +50,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+pkill -f UniGateApp 2>/dev/null || true
 pkill -f ApiManagerApp 2>/dev/null || true
 osascript -e 'tell application "API Manager" to quit' 2>/dev/null || true
 osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
