@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(summaryItem)
 
         let proxyItem = NSMenuItem(
-            title: proxyStatus.title(baseURL: managerBaseURL()),
+            title: proxyStatus.title(port: currentProxyPort()),
             action: nil,
             keyEquivalent: ""
         )
@@ -127,9 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(appMenuItem(title: "Copy OpenAI Base URL", action: #selector(copyOpenAIBaseURL), keyEquivalent: ""))
-        menu.addItem(appMenuItem(title: "Open Logs Folder", action: #selector(openLogsFolder), keyEquivalent: ""))
-        menu.addItem(appMenuItem(title: "Open Config Folder", action: #selector(openConfigFolder), keyEquivalent: ""))
+        menu.addItem(appMenuItem(title: "Open App Folder", action: #selector(openAppFolder), keyEquivalent: ""))
         menu.addItem(appMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(appMenuItem(title: "Reload cc-switch DB", action: #selector(reloadAction), keyEquivalent: "r"))
         menu.addItem(appMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
@@ -146,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(detailItem)
         menu.addItem(.separator())
         menu.addItem(appMenuItem(title: "Retry", action: #selector(reloadAction), keyEquivalent: "r"))
-        menu.addItem(appMenuItem(title: "Open Config Folder", action: #selector(openConfigFolder), keyEquivalent: ""))
+        menu.addItem(appMenuItem(title: "Open App Folder", action: #selector(openAppFolder), keyEquivalent: ""))
         menu.addItem(appMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
@@ -222,22 +220,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func copyOpenAIBaseURL() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("\(managerBaseURL())/openai", forType: .string)
-    }
-
-    @objc private func openLogsFolder() {
+    @objc private func openAppFolder() {
         try? FileManager.default.createDirectory(
             at: AppPaths.logsDirectory(),
-            withIntermediateDirectories: true
-        )
-        NSWorkspace.shared.open(AppPaths.logsDirectory())
-    }
-
-    @objc private func openConfigFolder() {
-        try? FileManager.default.createDirectory(
-            at: AppPaths.applicationSupportDirectory(),
             withIntermediateDirectories: true
         )
         NSWorkspace.shared.open(AppPaths.applicationSupportDirectory())
@@ -342,12 +327,12 @@ enum ProxyStatus {
     case running
     case failed(String)
 
-    func title(baseURL: String) -> String {
+    func title(port: UInt16) -> String {
         switch self {
         case .starting:
-            return "Proxy: starting · \(baseURL)"
+            return "Proxy: starting · :\(port)"
         case .running:
-            return "Proxy: running · \(baseURL)"
+            return "Proxy: running · :\(port)"
         case let .failed(message):
             return "Proxy: failed · \(message)"
         }
@@ -410,14 +395,20 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private let modelTableView = NSTableView()
     private let providerTableView = NSTableView()
     private let searchField = NSSearchField()
+    private let modelAppFilter = NSSegmentedControl()
+    private let providerAppFilter = NSSegmentedControl()
     private let countLabel = NSTextField(labelWithString: "")
     private let providerCountLabel = NSTextField(labelWithString: "")
     private let portField = NSTextField()
     private let baseURLLabel = NSTextField(labelWithString: "")
+    private let copyBaseURLButton = NSButton(title: "Copy", target: nil, action: nil)
     private var providers: [ImportedProvider]
+    private var filteredProviders: [ImportedProvider]
     private var routeKeys: [ModelRouteKey]
     private var filteredRouteKeys: [ModelRouteKey]
     private var selectedRouteKeys: Set<ModelRouteKey>
+    private var selectedModelAppType: String?
+    private var selectedProviderAppType: String?
     private var protocolOverrides: [String: ApiFormat]
     private var selectedSection: SettingsSection = .general
     private var preferences: AppPreferences
@@ -430,6 +421,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         onSave: @escaping (AppPreferences) -> Void
     ) {
         self.providers = providers
+        self.filteredProviders = providers
         self.routeKeys = routeKeys
         self.filteredRouteKeys = routeKeys
         self.preferences = preferences
@@ -438,6 +430,8 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             : Set(preferences.visibleRouteKeyList(allRouteKeys: routeKeys))
         self.protocolOverrides = preferences.protocolOverrides
         self.onSave = onSave
+        self.selectedModelAppType = routeKeys.first?.appType
+        self.selectedProviderAppType = providers.first?.appType
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
@@ -451,6 +445,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         super.init(window: window)
         buildContent()
         applyFilter()
+        applyProviderFilter()
         updateProviderCount()
     }
 
@@ -460,6 +455,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     func update(providers: [ImportedProvider], routeKeys: [ModelRouteKey], preferences: AppPreferences) {
         self.providers = providers
+        self.filteredProviders = providers
         self.routeKeys = routeKeys
         self.filteredRouteKeys = routeKeys
         self.preferences = preferences
@@ -467,10 +463,16 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             ? Set(routeKeys)
             : Set(preferences.visibleRouteKeyList(allRouteKeys: routeKeys))
         self.protocolOverrides = preferences.protocolOverrides
+        if selectedModelAppType == nil || !routeKeys.contains(where: { $0.appType == selectedModelAppType }) {
+            selectedModelAppType = routeKeys.first?.appType
+        }
+        if selectedProviderAppType == nil || !providers.contains(where: { $0.appType == selectedProviderAppType }) {
+            selectedProviderAppType = providers.first?.appType
+        }
         updatePortField()
         searchField.stringValue = ""
         applyFilter()
-        providerTableView.reloadData()
+        applyProviderFilter()
         updateProviderCount()
         renderSelectedSection()
     }
@@ -588,10 +590,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     private func generalView() -> NSView {
         let root = pageStack(title: "General", subtitle: "Proxy")
-        let form = NSGridView()
-        form.translatesAutoresizingMaskIntoConstraints = false
-        form.rowSpacing = 12
-        form.columnSpacing = 14
+        let group = settingsGroup()
 
         portField.alignment = .right
         portField.placeholderString = "17888"
@@ -602,20 +601,95 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         updateBaseURLLabel()
         baseURLLabel.textColor = .secondaryLabelColor
         baseURLLabel.lineBreakMode = .byTruncatingMiddle
+        copyBaseURLButton.target = self
+        copyBaseURLButton.action = #selector(copyOpenAIBaseURL)
+        copyBaseURLButton.bezelStyle = .rounded
 
-        form.addRow(with: [fieldLabel("Port"), portField])
-        form.addRow(with: [fieldLabel("OpenAI base URL"), baseURLLabel])
-        root.addArrangedSubview(form)
+        group.addArrangedSubview(settingRow(
+            title: "Local proxy port",
+            detail: "The manager listens on this port after you save.",
+            control: portField
+        ))
+        group.addArrangedSubview(separator())
+
+        let baseURLControls = NSStackView()
+        baseURLControls.orientation = .horizontal
+        baseURLControls.alignment = .centerY
+        baseURLControls.spacing = 8
+        baseURLControls.addArrangedSubview(baseURLLabel)
+        baseURLControls.addArrangedSubview(copyBaseURLButton)
+        group.addArrangedSubview(settingRow(
+            title: "OpenAI base URL",
+            detail: "Use this value in Codex or OpenAI-compatible clients.",
+            control: baseURLControls
+        ))
+        root.addArrangedSubview(group)
 
         NSLayoutConstraint.activate([
-            portField.widthAnchor.constraint(equalToConstant: 96)
+            group.widthAnchor.constraint(equalTo: root.widthAnchor),
+            portField.widthAnchor.constraint(equalToConstant: 96),
+            baseURLLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 220)
         ])
         return root
+    }
+
+    private func settingsGroup() -> NSStackView {
+        let group = NSStackView()
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 0
+        group.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        group.wantsLayer = true
+        group.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        group.layer?.cornerRadius = 10
+        group.translatesAutoresizingMaskIntoConstraints = false
+        return group
+    }
+
+    private func settingRow(title: String, detail: String, control: NSView) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 16
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let labels = NSStackView()
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let detailLabel = NSTextField(labelWithString: detail)
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byWordWrapping
+        detailLabel.maximumNumberOfLines = 2
+        labels.addArrangedSubview(titleLabel)
+        labels.addArrangedSubview(detailLabel)
+
+        let spacer = NSView()
+        row.addArrangedSubview(labels)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(control)
+        NSLayoutConstraint.activate([
+            row.widthAnchor.constraint(greaterThanOrEqualToConstant: 420),
+            labels.widthAnchor.constraint(greaterThanOrEqualToConstant: 180)
+        ])
+        return row
+    }
+
+    private func separator() -> NSView {
+        let view = NSBox()
+        view.boxType = .separator
+        return view
     }
 
     private func modelsView() -> NSView {
         let root = pageStack(title: "Models", subtitle: "Status bar menu")
         root.addArrangedSubview(countLabel)
+        configureAppFilter(modelAppFilter, selectedAppType: selectedModelAppType, action: #selector(modelAppFilterChanged(_:)))
+        root.addArrangedSubview(modelAppFilter)
 
         let controls = NSStackView()
         controls.orientation = .horizontal
@@ -646,6 +720,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         scrollView.documentView = modelTableView
         root.addArrangedSubview(scrollView)
         NSLayoutConstraint.activate([
+            modelAppFilter.widthAnchor.constraint(equalTo: root.widthAnchor),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor),
             searchField.widthAnchor.constraint(equalToConstant: 220),
             scrollView.widthAnchor.constraint(equalTo: root.widthAnchor),
@@ -657,6 +732,8 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private func providersView() -> NSView {
         let root = pageStack(title: "Providers", subtitle: "Protocol overrides")
         root.addArrangedSubview(providerCountLabel)
+        configureAppFilter(providerAppFilter, selectedAppType: selectedProviderAppType, action: #selector(providerAppFilterChanged(_:)))
+        root.addArrangedSubview(providerAppFilter)
         let providerScrollView = roundedScrollView()
         configureTable(providerTableView, rowHeight: 36)
         let providerColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("provider"))
@@ -667,10 +744,41 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         providerScrollView.documentView = providerTableView
         root.addArrangedSubview(providerScrollView)
         NSLayoutConstraint.activate([
+            providerAppFilter.widthAnchor.constraint(equalTo: root.widthAnchor),
             providerScrollView.widthAnchor.constraint(equalTo: root.widthAnchor),
             providerScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 390)
         ])
         return root
+    }
+
+    private func configureAppFilter(
+        _ control: NSSegmentedControl,
+        selectedAppType: String?,
+        action: Selector
+    ) {
+        let appTypes = sortedAppTypes()
+        control.segmentCount = appTypes.count
+        control.target = self
+        control.action = action
+        control.segmentStyle = .rounded
+        control.trackingMode = .selectOne
+        let segmentWidth = max(96, min(150, 460 / max(appTypes.count, 1)))
+        for (index, appType) in appTypes.enumerated() {
+            control.setLabel(ProviderDisplay.appTypeLabel(appType), forSegment: index)
+            control.setWidth(CGFloat(segmentWidth), forSegment: index)
+            if appType == selectedAppType {
+                control.selectedSegment = index
+            }
+        }
+        if control.selectedSegment < 0, !appTypes.isEmpty {
+            control.selectedSegment = 0
+        }
+    }
+
+    private func sortedAppTypes() -> [String] {
+        Array(Set(routeKeys.map(\.appType) + providers.map(\.appType))).sorted {
+            ProviderDisplay.appTypeLabel($0).localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
+        }
     }
 
     private func pageStack(title: String, subtitle: String) -> NSStackView {
@@ -745,24 +853,34 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     private func applyFilter() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if query.isEmpty {
-            filteredRouteKeys = routeKeys
-        } else {
-            filteredRouteKeys = routeKeys.filter {
-                $0.logicalModel.localizedCaseInsensitiveContains(query)
-                    || ProviderDisplay.appTypeLabel($0.appType).localizedCaseInsensitiveContains(query)
-            }
+        filteredRouteKeys = routeKeys.filter { key in
+            let appMatches = selectedModelAppType == nil || key.appType == selectedModelAppType
+            let queryMatches = query.isEmpty || key.logicalModel.localizedCaseInsensitiveContains(query)
+            return appMatches && queryMatches
         }
         modelTableView.reloadData()
         updateCount()
     }
 
+    private func applyProviderFilter() {
+        filteredProviders = providers.filter { provider in
+            selectedProviderAppType == nil || provider.appType == selectedProviderAppType
+        }
+        providerTableView.reloadData()
+        updateProviderCount()
+    }
+
     private func updateCount() {
-        let selectedText = "\(selectedRouteKeys.count) of \(routeKeys.count) visible"
-        if filteredRouteKeys.count == routeKeys.count {
-            countLabel.stringValue = selectedText
+        let appKeys = routeKeys.filter {
+            selectedModelAppType == nil || $0.appType == selectedModelAppType
+        }
+        let visibleInApp = appKeys.filter { selectedRouteKeys.contains($0) }.count
+        let appLabel = selectedModelAppType.map(ProviderDisplay.appTypeLabel) ?? "All apps"
+        let selectedText = "\(appLabel) · \(visibleInApp) of \(appKeys.count) visible"
+        if filteredRouteKeys.count == appKeys.count {
+            countLabel.stringValue = "\(selectedText) · \(selectedRouteKeys.count) total"
         } else {
-            countLabel.stringValue = "\(selectedText) · \(filteredRouteKeys.count) matching"
+            countLabel.stringValue = "\(selectedText) · \(filteredRouteKeys.count) matching · \(selectedRouteKeys.count) total"
         }
     }
 
@@ -771,7 +889,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             return SettingsSection.allCases.count
         }
         if tableView == providerTableView {
-            return providers.count
+            return filteredProviders.count
         }
         return filteredRouteKeys.count
     }
@@ -793,13 +911,13 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         }
 
         if tableView == providerTableView {
-            guard row < providers.count else {
+            guard row < filteredProviders.count else {
                 return nil
             }
             let identifier = NSUserInterfaceItemIdentifier("ProviderProtocolCell")
             let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? ProviderProtocolCell
                 ?? ProviderProtocolCell(identifier: identifier, target: self, action: #selector(protocolChanged(_:)))
-            let provider = providers[row]
+            let provider = filteredProviders[row]
             cell.configure(
                 provider: provider,
                 override: protocolOverrides[provider.ref.description],
@@ -847,6 +965,24 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         applyFilter()
     }
 
+    @objc private func modelAppFilterChanged(_ sender: NSSegmentedControl) {
+        let appTypes = sortedAppTypes()
+        guard sender.selectedSegment >= 0, sender.selectedSegment < appTypes.count else {
+            return
+        }
+        selectedModelAppType = appTypes[sender.selectedSegment]
+        applyFilter()
+    }
+
+    @objc private func providerAppFilterChanged(_ sender: NSSegmentedControl) {
+        let appTypes = sortedAppTypes()
+        guard sender.selectedSegment >= 0, sender.selectedSegment < appTypes.count else {
+            return
+        }
+        selectedProviderAppType = appTypes[sender.selectedSegment]
+        applyProviderFilter()
+    }
+
     @objc private func toggleModel(_ sender: NSButton) {
         guard sender.tag >= 0, sender.tag < filteredRouteKeys.count else {
             return
@@ -861,10 +997,10 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func protocolChanged(_ sender: NSPopUpButton) {
-        guard sender.tag >= 0, sender.tag < providers.count else {
+        guard sender.tag >= 0, sender.tag < filteredProviders.count else {
             return
         }
-        let provider = providers[sender.tag]
+        let provider = filteredProviders[sender.tag]
         guard let selected = sender.selectedItem?.representedObject as? String else {
             return
         }
@@ -880,8 +1016,15 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         updateBaseURLLabel()
     }
 
+    @objc private func copyOpenAIBaseURL() {
+        updateBaseURLLabel()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(baseURLLabel.stringValue, forType: .string)
+    }
+
     private func updateProviderCount() {
-        providerCountLabel.stringValue = "\(protocolOverrides.count) overrides"
+        let appLabel = selectedProviderAppType.map(ProviderDisplay.appTypeLabel) ?? "All apps"
+        providerCountLabel.stringValue = "\(appLabel) · \(filteredProviders.count) providers · \(protocolOverrides.count) overrides"
     }
 
     @objc private func cancel() {

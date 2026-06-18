@@ -33,7 +33,7 @@ the menu, set the local proxy port, and override provider protocol detection.
 With no preferences file, all models are shown. Saving an empty selection hides
 all model entries.
 
-Use `Copy OpenAI Base URL` from the status bar menu when configuring Codex or
+Use the `Copy` button in `Settings... -> General` when configuring Codex or
 another OpenAI-compatible client:
 
 ```text
@@ -112,11 +112,12 @@ Swift native app:
 - Exposes local manager and proxy endpoints at `http://127.0.0.1:17888`.
 - Forwards protocol-preserving upstream responses, including SSE/chunked
   streaming responses.
-- Provides status bar shortcuts to copy the OpenAI base URL and open the local
-  config or logs folder.
+- Provides a status bar shortcut to open the local app folder.
 - Shows proxy status and writes proxy diagnostics to a local log file.
 - Supports per-provider protocol overrides in Settings without writing to
   `cc-switch.db`.
+- Settings filters Models and Providers by app type so Codex, Claude Code, and
+  Claude Desktop configuration is not presented as one flat list.
 - Keeps model-level route state in
   `~/Library/Application Support/API Manager/routes.json`.
 - Never writes to `cc-switch.db`.
