@@ -43,6 +43,7 @@ public enum ProxyResolver {
         catalog: ProviderCatalog,
         routes: RouteState,
         protocolKind: ClientProtocolKind,
+        appType: String? = nil,
         path: String,
         body: Data
     ) throws -> ResolvedRoute {
@@ -51,7 +52,7 @@ public enum ProxyResolver {
             throw ProxyResolverError.missingModel
         }
         let routeKey = ModelRouteKey(
-            appType: defaultAppType(for: protocolKind),
+            appType: appType ?? defaultAppType(for: protocolKind),
             logicalModel: requestedModel
         )
 
@@ -148,13 +149,23 @@ public enum ProxyResolver {
         let path = inboundPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? inboundPath
 
         if provider.appType == "codex" {
-            return stripManagerPrefix(path, prefix: "/openai")
+            return stripManagerPrefixes(path, prefixes: ["/openai", "/codex"])
         }
 
         if provider.appType == "claude" || provider.appType == "claude-desktop" {
-            return stripManagerPrefix(path, prefix: "/anthropic")
+            return stripManagerPrefixes(path, prefixes: ["/anthropic", "/claude", "/claude-desktop"])
         }
 
+        return path
+    }
+
+    private static func stripManagerPrefixes(_ path: String, prefixes: [String]) -> String {
+        for prefix in prefixes {
+            let stripped = stripManagerPrefix(path, prefix: prefix)
+            if stripped != path {
+                return stripped
+            }
+        }
         return path
     }
 

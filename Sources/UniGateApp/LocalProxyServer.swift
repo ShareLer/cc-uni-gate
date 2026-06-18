@@ -101,7 +101,7 @@ final class LocalProxyServer: @unchecked Sendable {
     }
 
     private func handle(_ request: HTTPRequest, on connection: NWConnection) async {
-        if request.method == "POST", isProxyPath(request.path) {
+        if request.method == "POST", proxyRoute(for: request.path) != nil {
             await proxy(request, on: connection)
             return
         }
@@ -135,6 +135,11 @@ final class LocalProxyServer: @unchecked Sendable {
                 return catalogResponse(snapshot)
             }
 
+            if request.method == "GET", ProxyRequestPath(request.path) == .models {
+                let snapshot = await MainActor.run { runtime.proxySnapshot() }
+                return modelsResponse(snapshot)
+            }
+
             if request.method == "POST", request.path == "/__manager/routes" {
                 let body = try jsonObject(request.body)
                 guard
@@ -163,10 +168,15 @@ final class LocalProxyServer: @unchecked Sendable {
     private func proxy(_ request: HTTPRequest, on connection: NWConnection) async {
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
+            guard let route = proxyRoute(for: request.path) else {
+                send(.json(status: 404, body: ["error": "Not found"]), on: connection)
+                return
+            }
             let resolved = try ProxyResolver.resolveRoute(
                 catalog: snapshot.catalog,
                 routes: snapshot.routes,
-                protocolKind: protocolFromPath(request.path),
+                protocolKind: route.protocolKind,
+                appType: route.appType,
                 path: request.path,
                 body: request.body
             )
@@ -291,6 +301,19 @@ final class LocalProxyServer: @unchecked Sendable {
         ])
     }
 
+    private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot) -> HTTPResponse {
+        let modelIDs = Array(Set(snapshot.catalog.routeKeys
+            .filter { $0.appType == "codex" }
+            .map(\.logicalModel)))
+            .sorted()
+        let data = modelIDs.map { ["id": $0, "object": "model"] }
+        return .json(status: 200, body: [
+            "object": "list",
+            "data": data,
+            "models": modelIDs
+        ])
+    }
+
     private func routeDictionary(_ routes: RouteState) -> [String: Any] {
         let formatter = ISO8601DateFormatter()
         var result: [String: Any] = [:]
@@ -311,23 +334,11 @@ final class LocalProxyServer: @unchecked Sendable {
         return value as? [String: Any] ?? [:]
     }
 
-    private func isProxyPath(_ path: String) -> Bool {
-        path.hasPrefix("/openai/v1/")
-            || path == "/openai/v1/responses"
-            || path == "/openai/v1/chat/completions"
-            || path.hasPrefix("/anthropic/v1/")
-            || path == "/anthropic/v1/messages"
-            || path == "/anthropic/v1/messages/count_tokens"
-    }
-
-    private func protocolFromPath(_ path: String) -> ClientProtocolKind {
-        if path.contains("/chat/completions") {
-            return .openaiChat
+    private func proxyRoute(for path: String) -> (protocolKind: ClientProtocolKind, appType: String)? {
+        guard case let .proxy(protocolKind, appType) = ProxyRequestPath(path) else {
+            return nil
         }
-        if path.hasPrefix("/anthropic/") {
-            return .anthropicMessages
-        }
-        return .codexResponses
+        return (protocolKind, appType)
     }
 
     private func copyAllowedHeaders(_ headers: [String: String]) -> [String: String] {

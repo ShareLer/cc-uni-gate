@@ -15,6 +15,62 @@ public enum ClientProtocolKind: String, Codable, Sendable {
     case geminiNative = "gemini_native"
 }
 
+public enum ProxyRequestPath: Equatable, Sendable {
+    case proxy(protocolKind: ClientProtocolKind, appType: String)
+    case models
+    case unsupported
+
+    public init(_ rawPath: String) {
+        let path = rawPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? rawPath
+
+        if Self.modelPaths.contains(path) {
+            self = .models
+        } else if Self.claudePaths.contains(path) {
+            self = .proxy(protocolKind: .anthropicMessages, appType: "claude")
+        } else if Self.claudeDesktopPaths.contains(path) {
+            self = .proxy(protocolKind: .anthropicMessages, appType: "claude-desktop")
+        } else if Self.codexResponsesPaths.contains(path) {
+            self = .proxy(protocolKind: .codexResponses, appType: "codex")
+        } else if Self.openAIChatPaths.contains(path) {
+            self = .proxy(protocolKind: .openaiChat, appType: "codex")
+        } else {
+            self = .unsupported
+        }
+    }
+
+    private static let modelPaths: Set<String> = [
+        "/models", "/v1/models", "/v1/v1/models",
+        "/openai/models", "/openai/v1/models",
+        "/codex/models", "/codex/v1/models"
+    ]
+
+    private static let claudePaths: Set<String> = [
+        "/v1/messages", "/v1/messages/count_tokens",
+        "/anthropic/v1/messages", "/anthropic/v1/messages/count_tokens",
+        "/claude/v1/messages", "/claude/v1/messages/count_tokens"
+    ]
+
+    private static let claudeDesktopPaths: Set<String> = [
+        "/claude-desktop/v1/messages",
+        "/claude-desktop/v1/messages/count_tokens"
+    ]
+
+    private static let codexResponsesPaths: Set<String> = [
+        "/responses", "/responses/compact",
+        "/v1/responses", "/v1/responses/compact",
+        "/v1/v1/responses", "/v1/v1/responses/compact",
+        "/openai/v1/responses", "/openai/v1/responses/compact",
+        "/codex/v1/responses", "/codex/v1/responses/compact"
+    ]
+
+    private static let openAIChatPaths: Set<String> = [
+        "/chat/completions", "/v1/chat/completions",
+        "/v1/v1/chat/completions",
+        "/openai/v1/chat/completions",
+        "/codex/v1/chat/completions"
+    ]
+}
+
 public struct ModelRouteKey: Hashable, Codable, Sendable, CustomStringConvertible {
     public let appType: String
     public let logicalModel: String
