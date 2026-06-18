@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_NAME="API Manager"
+APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
+INSTALL_PATH="/Applications/$APP_NAME.app"
+EXECUTABLE_NAME="ApiManagerApp"
+
+cd "$ROOT_DIR"
+
+swift build -c release --product ApiManagerApp
+
+rm -rf "$APP_BUNDLE"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+
+cp ".build/release/$EXECUTABLE_NAME" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
+chmod +x "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
+
+cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>ApiManagerApp</string>
+  <key>CFBundleIdentifier</key>
+  <string>local.api-manager</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>API Manager</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
+pkill -f ApiManagerApp 2>/dev/null || true
+osascript -e 'tell application "API Manager" to quit' 2>/dev/null || true
+
+rm -rf "$INSTALL_PATH"
+cp -R "$APP_BUNDLE" "$INSTALL_PATH"
+
+open "$INSTALL_PATH"
+
+echo "Installed and launched $INSTALL_PATH"

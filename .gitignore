@@ -1,0 +1,25 @@
+.DS_Store
+
+# Swift build artifacts
+.build/
+.swiftpm/
+DerivedData/
+
+# Local app bundles and packaged artifacts
+*.app/
+*.dSYM/
+
+# Archived Node/Web prototype and generated frontend files
+prototype/node-web/
+node_modules/
+dist/
+
+# Local planning/session notes
+findings.md
+progress.md
+task_plan.md
+
+# Logs and temp files
+*.log
+tmp/
+temp/

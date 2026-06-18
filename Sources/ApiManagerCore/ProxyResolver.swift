@@ -1,0 +1,224 @@
+import Foundation
+
+public struct ResolvedRoute: Sendable {
+    public let candidate: ModelCandidate
+    public let providerName: String
+    public let outboundModel: String
+    public let upstreamURL: URL
+    public let headers: [String: String]
+    public let body: Data
+}
+
+public enum ProxyResolverError: Error, LocalizedError, Equatable {
+    case invalidJSONBody
+    case missingModel
+    case noRoute(routeKey: String)
+    case missingProvider(ref: String)
+    case transformRequired(model: String, provider: String, apiFormat: ApiFormat)
+    case missingBaseURL(provider: String)
+    case invalidUpstreamURL(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidJSONBody:
+            return "Request body must be a JSON object"
+        case .missingModel:
+            return "Request body must include a string model"
+        case let .noRoute(routeKey):
+            return "No route configured for \(routeKey)"
+        case let .missingProvider(ref):
+            return "Provider \(ref) is missing from catalog"
+        case let .transformRequired(model, provider, apiFormat):
+            return "Route \(model) -> \(provider) requires protocol transform (\(apiFormat.rawValue))"
+        case let .missingBaseURL(provider):
+            return "Provider \(provider) has no base URL"
+        case let .invalidUpstreamURL(value):
+            return "Invalid upstream URL: \(value)"
+        }
+    }
+}
+
+public enum ProxyResolver {
+    public static func resolveRoute(
+        catalog: ProviderCatalog,
+        routes: RouteState,
+        protocolKind: ClientProtocolKind,
+        path: String,
+        body: Data
+    ) throws -> ResolvedRoute {
+        let json = try parseJSONBody(body)
+        guard let requestedModel = stringField(json["model"]) else {
+            throw ProxyResolverError.missingModel
+        }
+        let routeKey = ModelRouteKey(
+            appType: defaultAppType(for: protocolKind),
+            logicalModel: requestedModel
+        )
+
+        guard
+            let route = routes.routes[routeKey.description],
+            let candidate = catalog.candidates.first(where: {
+                $0.appType == routeKey.appType
+                    && $0.logicalModel == requestedModel
+                    && $0.providerRef == route.providerRef
+            })
+        else {
+            throw ProxyResolverError.noRoute(routeKey: routeKey.description)
+        }
+
+        guard let provider = catalog.providers.first(where: { $0.ref == candidate.providerRef }) else {
+            throw ProxyResolverError.missingProvider(ref: candidate.providerRef.description)
+        }
+
+        if candidate.requiresTransform {
+            throw ProxyResolverError.transformRequired(
+                model: requestedModel,
+                provider: provider.name,
+                apiFormat: candidate.apiFormat
+            )
+        }
+
+        var outboundBody = json
+        outboundBody["model"] = candidate.upstreamModel
+        let outboundData = try JSONSerialization.data(withJSONObject: outboundBody, options: [])
+        let upstreamURL = try buildUpstreamURL(provider: provider, inboundPath: path)
+
+        return ResolvedRoute(
+            candidate: candidate,
+            providerName: provider.name,
+            outboundModel: candidate.upstreamModel,
+            upstreamURL: upstreamURL,
+            headers: buildAuthHeaders(provider),
+            body: outboundData
+        )
+    }
+
+    private static func parseJSONBody(_ body: Data) throws -> [String: Any] {
+        guard !body.isEmpty else {
+            throw ProxyResolverError.invalidJSONBody
+        }
+        let value = try JSONSerialization.jsonObject(with: body)
+        guard let object = value as? [String: Any] else {
+            throw ProxyResolverError.invalidJSONBody
+        }
+        return object
+    }
+
+    private static func defaultAppType(for protocolKind: ClientProtocolKind) -> String {
+        switch protocolKind {
+        case .codexResponses, .openaiChat:
+            return "codex"
+        case .anthropicMessages:
+            return "claude"
+        case .geminiNative:
+            return "gemini"
+        }
+    }
+
+    private static func stringField(_ value: Any?) -> String? {
+        guard let text = value as? String else {
+            return nil
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func buildUpstreamURL(provider: ImportedProvider, inboundPath: String) throws -> URL {
+        guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !baseURL.isEmpty else {
+            throw ProxyResolverError.missingBaseURL(provider: provider.name)
+        }
+
+        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpoint = normalizeEndpoint(provider: provider, inboundPath: inboundPath)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let raw: String
+        if provider.appType == "codex", isOriginOnlyURL(baseURL) {
+            raw = "\(base)/v1/\(endpoint)"
+        } else {
+            raw = "\(base)/\(endpoint)"
+        }
+        let normalized = raw.replacingOccurrences(of: "/v1/v1/", with: "/v1/")
+        guard let url = URL(string: normalized) else {
+            throw ProxyResolverError.invalidUpstreamURL(normalized)
+        }
+        return url
+    }
+
+    private static func normalizeEndpoint(provider: ImportedProvider, inboundPath: String) -> String {
+        let path = inboundPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? inboundPath
+
+        if provider.appType == "codex" {
+            return stripManagerPrefix(path, prefix: "/openai")
+        }
+
+        if provider.appType == "claude" || provider.appType == "claude-desktop" {
+            return stripManagerPrefix(path, prefix: "/anthropic")
+        }
+
+        return path
+    }
+
+    private static func stripManagerPrefix(_ path: String, prefix: String) -> String {
+        if path == prefix {
+            return "/"
+        }
+        if path.hasPrefix("\(prefix)/") {
+            return String(path.dropFirst(prefix.count))
+        }
+        return path
+    }
+
+    private static func buildAuthHeaders(_ provider: ImportedProvider) -> [String: String] {
+        guard let secret = secret(for: provider) else {
+            return [:]
+        }
+
+        if provider.appType == "codex" {
+            return ["authorization": "Bearer \(secret.value)"]
+        }
+
+        if secret.field.hasSuffix("ANTHROPIC_API_KEY") {
+            return ["x-api-key": secret.value]
+        }
+
+        if provider.appType == "claude" || provider.appType == "claude-desktop" {
+            return ["authorization": "Bearer \(secret.value)"]
+        }
+
+        return ["authorization": "Bearer \(secret.value)"]
+    }
+
+    private static func secret(for provider: ImportedProvider) -> (field: String, value: String)? {
+        let paths: [[String]]
+        switch provider.appType {
+        case "codex":
+            paths = [["auth", "OPENAI_API_KEY"], ["env", "OPENAI_API_KEY"]]
+        case "claude", "claude-desktop":
+            paths = [
+                ["env", "ANTHROPIC_AUTH_TOKEN"],
+                ["env", "ANTHROPIC_API_KEY"],
+                ["env", "OPENAI_API_KEY"],
+                ["apiKey"],
+                ["api_key"]
+            ]
+        case "gemini":
+            paths = [["env", "GEMINI_API_KEY"], ["env", "GOOGLE_API_KEY"]]
+        default:
+            paths = [["api_key"]]
+        }
+
+        for path in paths {
+            if let value = JSONValueParser.string(provider.settings, path) {
+                return (path.joined(separator: "."), value)
+            }
+        }
+        return nil
+    }
+
+    private static func isOriginOnlyURL(_ value: String) -> Bool {
+        guard let url = URL(string: value), url.scheme != nil, url.host != nil else {
+            return false
+        }
+        return url.path.isEmpty || url.path == "/"
+    }
+}
