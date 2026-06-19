@@ -110,38 +110,48 @@ public struct CcSwitchImporter: Sendable {
         _ provider: ImportedProvider,
         protocolKind: ClientProtocolKind
     ) -> [ModelCandidate] {
-        let fields = [
-            "ANTHROPIC_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_FABLE_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+        let fields: [(model: String, name: String?)] = [
+            ("ANTHROPIC_MODEL", nil),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME")
         ]
         var seen = Set<String>()
-        var models: [String] = []
+        var models: [(logical: String, upstream: String, label: String?)] = []
         for field in fields {
             guard
-                let model = JSONValueParser.string(provider.settings, ["env", field]),
-                !seen.contains(model)
+                let upstreamModel = JSONValueParser.string(provider.settings, ["env", field.model])
             else {
                 continue
             }
-            seen.insert(model)
-            models.append(model)
+            let logicalModel = stripOneMSuffix(upstreamModel)
+            let label = field.name.flatMap { JSONValueParser.string(provider.settings, ["env", $0]) }
+            let dedupeKey = logicalModel.lowercased()
+            guard !seen.contains(dedupeKey) else {
+                if hasLongContextSuffix(upstreamModel),
+                   let index = models.firstIndex(where: { $0.logical.caseInsensitiveCompare(logicalModel) == .orderedSame }),
+                   !hasLongContextSuffix(models[index].upstream) {
+                    models[index] = (logicalModel, upstreamModel, label)
+                }
+                continue
+            }
+            seen.insert(dedupeKey)
+            models.append((logicalModel, upstreamModel, label))
         }
         return models.map { model in
             ModelCandidate(
-                logicalModel: model,
+                logicalModel: model.logical,
                 providerRef: provider.ref,
                 providerName: provider.name,
                 appType: provider.appType,
                 clientProtocol: protocolKind,
                 apiFormat: provider.apiFormat,
-                upstreamModel: model,
+                upstreamModel: model.upstream,
                 baseURL: provider.baseURL,
                 requiresTransform: provider.apiFormat != .anthropic,
-                label: provider.name,
-                supportsLongContext: hasLongContextSuffix(model)
+                label: model.label ?? provider.name,
+                supportsLongContext: hasLongContextSuffix(model.upstream)
             )
         }
     }
@@ -309,6 +319,14 @@ public struct CcSwitchImporter: Sendable {
 
     private func hasLongContextSuffix(_ model: String) -> Bool {
         model.range(of: #"\[\s*1m\s*\]"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func stripOneMSuffix(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
+            return trimmed
+        }
+        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func isUniGateProvider(_ provider: ImportedProvider) -> Bool {

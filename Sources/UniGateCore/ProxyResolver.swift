@@ -170,11 +170,19 @@ public enum ProxyResolver {
         guard appType == "claude" || appType == "claude-desktop" else {
             return exactKey
         }
+
+        let keys = catalog.routeKeys(for: appType)
+        if let match = keys.first(where: {
+            routes.routes[$0.description] != nil
+                && stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
+        }) {
+            return match
+        }
+
         guard let role = claudeRoleKeyword(normalizedRequest) else {
             return exactKey
         }
 
-        let keys = catalog.routeKeys(for: appType)
         if let match = keys.first(where: { claudeRoleKeyword($0.logicalModel) == role && routes.routes[$0.description] != nil }) {
             return match
         }

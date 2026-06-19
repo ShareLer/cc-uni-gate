@@ -388,6 +388,116 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesClaudeRequestToCanonicalOneMRouteAlias() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "claude",
+            name: "Claude Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://anthropic.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("claude-token")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "deepseek-v4-pro",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "deepseek-v4-pro[1M]",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: true
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let plain = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude",
+            path: "/claude-code/v1/messages",
+            body: Data(#"{"model":"deepseek-v4-pro","messages":[]}"#.utf8)
+        )
+        let marked = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude",
+            path: "/claude-code/v1/messages",
+            body: Data(#"{"model":"deepseek-v4-pro[1M]","messages":[]}"#.utf8)
+        )
+
+        #expect(plain.outboundModel == "deepseek-v4-pro")
+        #expect(marked.outboundModel == "deepseek-v4-pro")
+    }
+
+    @Test
+    func resolvesCustomModelAliasToSelectedTargetUpstreamModel() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "real-gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let imported = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        let custom = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                targets: [
+                    CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+                ]
+            )
+        ])
+        let catalog = ProviderCatalog(
+            providers: imported.providers,
+            candidates: imported.candidates + custom.expandedCandidates(from: imported)
+        )
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: Data(#"{"model":"customer_model","input":"hello"}"#.utf8)
+        )
+
+        #expect(resolved.outboundModel == "real-gpt-5.5")
+        let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
+        #expect(outbound?["model"] as? String == "real-gpt-5.5")
+    }
+
+    @Test
     func fallsBackFableRoleToOpusRouteWhenFableRouteIsAbsent() throws {
         let provider = ImportedProvider(
             id: "p1",

@@ -91,4 +91,56 @@ struct RouteStoreTests {
         #expect(state.routes["codex:gpt-5.5"]?.providerRef == ProviderRef(appType: "codex", id: "p1"))
         #expect(state.routes["claude:gpt-5.5"]?.providerRef == ProviderRef(appType: "claude", id: "p2"))
     }
+
+    @Test
+    func migratesClaudeOneMRouteKeyToCanonicalModel() throws {
+        let providerRef = ProviderRef(appType: "claude", id: "p2")
+        let candidates = [
+            ModelCandidate(
+                logicalModel: "deepseek-v4-pro",
+                providerRef: ProviderRef(appType: "claude", id: "p1"),
+                providerName: "Provider 1",
+                appType: "claude",
+                clientProtocol: .anthropicMessages,
+                apiFormat: .anthropic,
+                upstreamModel: "deepseek-v4-pro[1M]",
+                baseURL: "https://p1.example.com",
+                requiresTransform: false,
+                label: nil,
+                supportsLongContext: true
+            ),
+            ModelCandidate(
+                logicalModel: "deepseek-v4-pro",
+                providerRef: providerRef,
+                providerName: "Provider 2",
+                appType: "claude",
+                clientProtocol: .anthropicMessages,
+                apiFormat: .anthropic,
+                upstreamModel: "deepseek-v4-pro[1M]",
+                baseURL: "https://p2.example.com",
+                requiresTransform: false,
+                label: nil,
+                supportsLongContext: true
+            )
+        ]
+        let state = RouteState(routes: [
+            "claude:deepseek-v4-pro[1M]": ActiveRoute(
+                appType: "claude",
+                logicalModel: "deepseek-v4-pro[1M]",
+                providerRef: providerRef,
+                updatedAt: Date(timeIntervalSince1970: 10)
+            )
+        ])
+        let catalog = ProviderCatalog(providers: [], candidates: candidates)
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(state)
+
+        let loaded = try store.load(catalog: catalog)
+
+        #expect(loaded.routes["claude:deepseek-v4-pro"]?.providerRef == providerRef)
+        #expect(loaded.routes["claude:deepseek-v4-pro[1M]"] == nil)
+    }
 }

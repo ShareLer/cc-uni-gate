@@ -116,6 +116,16 @@ public final class RouteStore: @unchecked Sendable {
                 continue
             }
 
+            if let match = normalizedClaudeMatch(routeKey: routeKey, route: route, catalog: catalog) {
+                merged.routes[match.routeKey.description] = ActiveRoute(
+                    appType: match.appType,
+                    logicalModel: match.logicalModel,
+                    providerRef: route.providerRef,
+                    updatedAt: route.updatedAt
+                )
+                continue
+            }
+
             let legacyMatches = catalog.candidates.filter {
                 $0.logicalModel == rawKey && $0.providerRef == route.providerRef
             }
@@ -129,6 +139,30 @@ public final class RouteStore: @unchecked Sendable {
             }
         }
         return merged
+    }
+
+    private func normalizedClaudeMatch(
+        routeKey: ModelRouteKey,
+        route: ActiveRoute,
+        catalog: ProviderCatalog
+    ) -> ModelCandidate? {
+        guard routeKey.appType == "claude" || routeKey.appType == "claude-desktop" else {
+            return nil
+        }
+        let normalizedModel = stripOneMSuffix(routeKey.logicalModel)
+        return catalog.candidates.first {
+            $0.appType == routeKey.appType
+                && $0.providerRef == route.providerRef
+                && stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedModel) == .orderedSame
+        }
+    }
+
+    private func stripOneMSuffix(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
+            return trimmed
+        }
+        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

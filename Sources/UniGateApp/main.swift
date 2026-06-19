@@ -9,8 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var catalog: ProviderCatalog = ProviderCatalog(providers: [], candidates: [])
     private var routes = RouteState()
     private var preferences = AppPreferences()
+    private var customModels = CustomModelState()
     private lazy var routeStore = RouteStore(fileURL: defaultRouteStoreURL())
     private lazy var preferencesStore = PreferencesStore(fileURL: defaultPreferencesStoreURL())
+    private lazy var customModelStore = CustomModelStore()
     private var settingsWindowController: SettingsWindowController?
     private var proxyServer: LocalProxyServer?
     private lazy var importer = CcSwitchImporter(dbPath: defaultCcSwitchDBPath())
@@ -43,7 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func reloadCatalog() {
         do {
             preferences = try preferencesStore.load()
-            catalog = try importer.loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+            customModels = try customModelStore.load()
+            catalog = try loadExpandedCatalog()
             routes = try routeStore.load(catalog: catalog)
             rebuildMenu()
         } catch {
@@ -215,15 +218,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 providers: catalog.providers,
                 candidates: catalog.candidates,
                 routeKeys: catalog.routeKeys,
+                customModels: customModels,
                 proxyStatus: proxyStatus,
                 preferences: preferences,
-                onSave: { [weak self] preferences in
+                onSave: { [weak self] preferences, customModels in
                     guard let self else {
                         return
                     }
                     do {
                         self.preferences = preferences
+                        self.customModels = customModels
                         try self.preferencesStore.save(preferences)
+                        try self.customModelStore.save(customModels)
                         self.reloadCatalog()
                         self.startProxyServer()
                     } catch {
@@ -236,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 providers: catalog.providers,
                 candidates: catalog.candidates,
                 routeKeys: catalog.routeKeys,
+                customModels: customModels,
                 proxyStatus: proxyStatus,
                 preferences: preferences
             )
@@ -285,6 +292,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return URL(fileURLWithPath: path)
         }
         return PreferencesStore.defaultFileURL()
+    }
+
+    private func loadExpandedCatalog() throws -> ProviderCatalog {
+        let imported = try importer.loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+        let customCandidates = customModels.expandedCandidates(from: imported)
+        return ProviderCatalog(
+            providers: imported.providers,
+            candidates: imported.candidates + customCandidates
+        )
     }
 
     private func defaultProxyPort() -> UInt16 {
@@ -400,7 +416,8 @@ extension AppDelegate: LocalProxyRuntime {
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
         preferences = try preferencesStore.load()
-        catalog = try importer.loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+        customModels = try customModelStore.load()
+        catalog = try loadExpandedCatalog()
         routes = try routeStore.load(catalog: catalog)
         recordEvent(.info, "已重新加载 cc-switch DB")
         rebuildMenu()
@@ -423,6 +440,28 @@ extension AppDelegate: LocalProxyRuntime {
     func recordProxyEvent(level: ProxyEvent.Level, message: String) {
         recordEvent(level, message)
         rebuildMenu()
+    }
+
+    func proxyProviderDidSucceed() {
+        guard proxyStatus.isProviderIssue else {
+            return
+        }
+        updateProxyStatus(
+            .running,
+            eventLevel: .info,
+            eventMessage: "供应商请求恢复"
+        )
+    }
+
+    func proxyProviderDidFail(_ message: String) {
+        guard proxyStatus.canShowProviderIssue else {
+            return
+        }
+        updateProxyStatus(
+            .providerIssue(message),
+            eventLevel: .error,
+            eventMessage: "供应商请求异常：\(message)"
+        )
     }
 
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID) {
@@ -464,13 +503,33 @@ extension AppDelegate: LocalProxyRuntime {
 enum ProxyStatus: Equatable {
     case starting
     case running
+    case providerIssue(String)
     case failed(String)
 
     var isRunning: Bool {
         if case .running = self {
             return true
         }
+        if case .providerIssue = self {
+            return true
+        }
         return false
+    }
+
+    var isProviderIssue: Bool {
+        if case .providerIssue = self {
+            return true
+        }
+        return false
+    }
+
+    var canShowProviderIssue: Bool {
+        switch self {
+        case .running, .providerIssue:
+            return true
+        case .starting, .failed:
+            return false
+        }
     }
 
     func title(port: UInt16) -> String {
@@ -479,6 +538,8 @@ enum ProxyStatus: Equatable {
             return "代理端口: \(port) | 启动中"
         case .running:
             return "代理端口: \(port) | 运行中"
+        case let .providerIssue(message):
+            return "代理端口: \(port) | 供应商异常：\(message)"
         case let .failed(message):
             return "代理端口: \(port) | 失败：\(message)"
         }
@@ -490,6 +551,8 @@ enum ProxyStatus: Equatable {
             return "启动中"
         case .running:
             return "运行中"
+        case .providerIssue:
+            return "供应商异常"
         case .failed:
             return "失败"
         }
@@ -501,6 +564,8 @@ enum ProxyStatus: Equatable {
             return .systemRed
         case .running:
             return .systemGreen
+        case .providerIssue:
+            return .systemYellow
         case .failed:
             return .systemRed
         }
@@ -596,6 +661,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private let sidebarTableView = NSTableView()
     private let contentView = NSView()
     private let modelTableView = NSTableView()
+    private let customModelTableView = NSTableView()
     private let providerTableView = NSTableView()
     private let searchField = NSSearchField()
     private let providerSearchField = NSSearchField()
@@ -613,28 +679,33 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private var candidates: [ModelCandidate]
     private var routeKeys: [ModelRouteKey]
     private var filteredRouteKeys: [ModelRouteKey]
+    private var filteredCustomModels: [CustomModelDefinition]
     private var selectedRouteKeys: Set<ModelRouteKey>
     private var selectedModelAppType: String?
     private var selectedProviderAppType: String?
     private var protocolOverrides: [String: ApiFormat]
+    private var customModels: CustomModelState
     private var selectedSection: SettingsSection = .general
     private var preferences: AppPreferences
     private var proxyStatus: ProxyStatus
-    private let onSave: (AppPreferences) -> Void
+    private let onSave: (AppPreferences, CustomModelState) -> Void
 
     init(
         providers: [ImportedProvider],
         candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
+        customModels: CustomModelState,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences,
-        onSave: @escaping (AppPreferences) -> Void
+        onSave: @escaping (AppPreferences, CustomModelState) -> Void
     ) {
         self.providers = providers
         self.filteredProviders = providers
         self.candidates = candidates
         self.routeKeys = routeKeys
         self.filteredRouteKeys = routeKeys
+        self.customModels = customModels
+        self.filteredCustomModels = customModels.models
         self.preferences = preferences
         self.selectedRouteKeys = preferences.visibleModels == nil
             ? Set(routeKeys)
@@ -669,6 +740,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         providers: [ImportedProvider],
         candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
+        customModels: CustomModelState,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences
     ) {
@@ -677,6 +749,8 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         self.candidates = candidates
         self.routeKeys = routeKeys
         self.filteredRouteKeys = routeKeys
+        self.customModels = customModels
+        self.filteredCustomModels = customModels.models
         self.preferences = preferences
         self.selectedRouteKeys = preferences.visibleModels == nil
             ? Set(routeKeys)
@@ -1037,6 +1111,8 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     private func modelsView() -> NSView {
         let root = pageStack(title: "模型", subtitle: "菜单栏显示控制")
+        root.addArrangedSubview(customModelsView())
+
         let countBar = appCountBar(totalTitle: "\(routeKeys.count) 个模型", counts: routeKeyCountsByApp(), unit: "个")
         root.addArrangedSubview(countBar)
         root.addArrangedSubview(countLabel)
@@ -1080,6 +1156,50 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 330)
         ])
         return root
+    }
+
+    private func customModelsView() -> NSView {
+        let group = settingsGroup()
+
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 8
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let labels = NSStackView()
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+
+        let titleLabel = NSTextField(labelWithString: "自定义模型")
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        let detailLabel = NSTextField(labelWithString: "创建一个客户端可请求的模型名，并选择现有模型作为转发目标。")
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        labels.addArrangedSubview(titleLabel)
+        labels.addArrangedSubview(detailLabel)
+
+        header.addArrangedSubview(labels)
+        header.addArrangedSubview(NSView())
+        header.addArrangedSubview(button(title: "新增", action: #selector(addCustomModel)))
+        header.addArrangedSubview(button(title: "编辑", action: #selector(editCustomModel)))
+        header.addArrangedSubview(button(title: "删除", action: #selector(deleteCustomModel)))
+        group.addArrangedSubview(header)
+
+        let scrollView = roundedScrollView()
+        configureTable(customModelTableView, rowHeight: 46)
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("customModel"))
+        column.minWidth = 260
+        if customModelTableView.tableColumns.isEmpty {
+            customModelTableView.addTableColumn(column)
+        }
+        scrollView.documentView = customModelTableView
+        group.addArrangedSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.heightAnchor.constraint(equalToConstant: customModels.models.isEmpty ? 58 : 116)
+        ])
+        return group
     }
 
     private func providersView() -> NSView {
@@ -1336,11 +1456,20 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         if tableView == providerTableView {
             return filteredProviders.count
         }
+        if tableView == customModelTableView {
+            return max(filteredCustomModels.count, 1)
+        }
         return filteredRouteKeys.count
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
-        tableView == sidebarTableView
+        if tableView == sidebarTableView {
+            return true
+        }
+        if tableView == customModelTableView {
+            return !filteredCustomModels.isEmpty && row < filteredCustomModels.count
+        }
+        return false
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1368,6 +1497,19 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
                 override: protocolOverrides[provider.ref.description],
                 tag: row
             )
+            return cell
+        }
+
+        if tableView == customModelTableView {
+            let identifier = NSUserInterfaceItemIdentifier("CustomModelCell")
+            let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? CustomModelCell
+                ?? CustomModelCell(identifier: identifier)
+            if filteredCustomModels.isEmpty {
+                cell.configureEmpty()
+            } else {
+                let model = filteredCustomModels[row]
+                cell.configure(model: model, detail: customModelDetail(model))
+            }
             return cell
         }
 
@@ -1410,6 +1552,38 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         applyFilter()
     }
 
+    @objc private func addCustomModel() {
+        presentCustomModelEditor(nil)
+    }
+
+    @objc private func editCustomModel() {
+        guard
+            !filteredCustomModels.isEmpty,
+            customModelTableView.selectedRow >= 0,
+            customModelTableView.selectedRow < filteredCustomModels.count
+        else {
+            NSSound.beep()
+            return
+        }
+        presentCustomModelEditor(filteredCustomModels[customModelTableView.selectedRow])
+    }
+
+    @objc private func deleteCustomModel() {
+        guard
+            !filteredCustomModels.isEmpty,
+            customModelTableView.selectedRow >= 0,
+            customModelTableView.selectedRow < filteredCustomModels.count
+        else {
+            NSSound.beep()
+            return
+        }
+        let model = filteredCustomModels[customModelTableView.selectedRow]
+        customModels.models.removeAll { $0.id == model.id }
+        filteredCustomModels = customModels.models
+        selectedRouteKeys.remove(ModelRouteKey(appType: model.appType, logicalModel: model.name))
+        renderSelectedSection()
+    }
+
     @objc private func modelAppFilterChanged(_ sender: NSSegmentedControl) {
         let appTypes = appFilterValues()
         guard sender.selectedSegment >= 0, sender.selectedSegment < appTypes.count else {
@@ -1443,6 +1617,56 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     @objc private func providerSearchChanged(_ sender: NSSearchField) {
         applyProviderFilter()
+    }
+
+    private func presentCustomModelEditor(_ existing: CustomModelDefinition?) {
+        let editor = CustomModelEditorController(
+            model: existing,
+            candidates: baseModelCandidates()
+        )
+        guard
+            let window = window,
+            let edited = editor.runModal(parent: window)
+        else {
+            return
+        }
+
+        if let existing {
+            if let index = customModels.models.firstIndex(where: { $0.id == existing.id }) {
+                customModels.models[index] = edited
+            }
+            selectedRouteKeys.remove(ModelRouteKey(appType: existing.appType, logicalModel: existing.name))
+        } else {
+            customModels.models.append(edited)
+        }
+
+        let routeKey = ModelRouteKey(appType: edited.appType, logicalModel: edited.name)
+        selectedRouteKeys.insert(routeKey)
+        filteredCustomModels = customModels.models
+        renderSelectedSection()
+    }
+
+    private func baseModelCandidates() -> [ModelCandidate] {
+        candidates.filter { candidate in
+            !customModels.models.contains {
+                $0.appType == candidate.appType && $0.name == candidate.logicalModel
+            }
+        }
+    }
+
+    private func customModelDetail(_ model: CustomModelDefinition) -> String {
+        let targetCount = model.targets.count
+        let selected = model.selectedTarget.flatMap { target in
+            candidates.first {
+                $0.appType == target.routeKey.appType
+                    && $0.logicalModel == target.routeKey.logicalModel
+                    && $0.providerRef == target.providerRef
+            }
+        }
+        let selectedText = selected.map {
+            "\($0.logicalModel) → \($0.providerName)"
+        } ?? "未选择有效目标"
+        return "\(ProviderDisplay.appTypeLabel(model.appType)) · \(targetCount) 个目标 · 当前：\(selectedText)"
     }
 
     @objc private func protocolChanged(_ sender: NSPopUpButton) {
@@ -1557,7 +1781,10 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func save() {
-        let visibleModels = selectedRouteKeys.count == routeKeys.count
+        let saveRouteKeys = Set(routeKeys).union(customModels.models.map {
+            ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
+        })
+        let visibleModels = selectedRouteKeys == saveRouteKeys
             ? nil
             : Set(selectedRouteKeys.map(\.description))
         guard let port = UInt16(portField.stringValue), port > 0 else {
@@ -1571,7 +1798,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             visibleModels: visibleModels,
             protocolOverrides: protocolOverrides,
             port: port
-        ))
+        ), customModels)
         close()
     }
 
@@ -1753,6 +1980,52 @@ private final class ModelToggleCell: NSTableCellView {
     }
 }
 
+private final class CustomModelCell: NSTableCellView {
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    init(identifier: NSUserInterfaceItemIdentifier) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+
+        nameLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(nameLabel)
+        addSubview(detailLabel)
+        NSLayoutConstraint.activate([
+            nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            nameLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            detailLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func configure(model: CustomModelDefinition, detail: String) {
+        nameLabel.stringValue = model.name
+        detailLabel.stringValue = detail
+        toolTip = detail
+    }
+
+    func configureEmpty() {
+        nameLabel.stringValue = "暂无自定义模型"
+        detailLabel.stringValue = "点击新增创建一个客户端可请求的模型名。"
+        toolTip = nil
+    }
+}
+
 private final class ProviderProtocolCell: NSTableCellView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let formatLabel = NSTextField(labelWithString: "")
@@ -1879,6 +2152,288 @@ private final class ProviderProtocolCell: NSTableCellView {
             return
         }
         popup.selectItem(at: 0)
+    }
+}
+
+@MainActor
+private final class CustomModelEditorController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    private let panel = NSPanel(
+        contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+    )
+    private let nameField = NSTextField()
+    private let appPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let targetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let targetTableView = NSTableView()
+    private let candidates: [ModelCandidate]
+    private var filteredCandidates: [ModelCandidate] = []
+    private var selectedTargetIDs = Set<String>()
+    private var result: CustomModelDefinition?
+    private let editingID: UUID?
+    private let existingTargetsByKey: [String: CustomModelTarget]
+
+    init(model: CustomModelDefinition?, candidates: [ModelCandidate]) {
+        self.candidates = candidates.sorted {
+            [$0.appType, $0.logicalModel, $0.providerName].joined(separator: "\u{0}")
+                .localizedStandardCompare([$1.appType, $1.logicalModel, $1.providerName].joined(separator: "\u{0}")) == .orderedAscending
+        }
+        self.editingID = model?.id
+        self.existingTargetsByKey = Dictionary(
+            uniqueKeysWithValues: (model?.targets ?? []).map { ("\($0.routeKey.description)|\($0.providerRef.description)", $0) }
+        )
+        super.init()
+        buildContent(model: model)
+    }
+
+    func runModal(parent: NSWindow) -> CustomModelDefinition? {
+        panel.center()
+        parent.beginSheet(panel) { _ in }
+        NSApp.runModal(for: panel)
+        parent.endSheet(panel)
+        return result
+    }
+
+    private func buildContent(model: CustomModelDefinition?) {
+        panel.title = model == nil ? "新增自定义模型" : "编辑自定义模型"
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .width
+        root.spacing = 12
+        root.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        nameField.placeholderString = "例如 customer_model"
+        nameField.stringValue = model?.name ?? ""
+        root.addArrangedSubview(formRow(title: "模型名", control: nameField))
+
+        let appTypes = Array(Set(candidates.map(\.appType))).sorted {
+            ProviderDisplay.appTypeLabel($0).localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
+        }
+        appPopup.removeAllItems()
+        for appType in appTypes {
+            appPopup.addItem(withTitle: ProviderDisplay.appTypeLabel(appType))
+            appPopup.lastItem?.representedObject = appType
+        }
+        if let appType = model?.appType,
+           let index = appPopup.itemArray.firstIndex(where: { $0.representedObject as? String == appType }) {
+            appPopup.selectItem(at: index)
+        }
+        appPopup.target = self
+        appPopup.action = #selector(appChanged)
+        root.addArrangedSubview(formRow(title: "应用", control: appPopup))
+
+        targetPopup.removeAllItems()
+        root.addArrangedSubview(formRow(title: "当前目标", control: targetPopup))
+
+        configureTargetTable()
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .bezelBorder
+        scrollView.documentView = targetTableView
+        root.addArrangedSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.heightAnchor.constraint(equalToConstant: 260)
+        ])
+
+        let footer = NSStackView()
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 8
+        footer.addArrangedSubview(NSView())
+        let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
+        let saveButton = NSButton(title: "保存", target: self, action: #selector(save))
+        saveButton.keyEquivalent = "\r"
+        footer.addArrangedSubview(cancelButton)
+        footer.addArrangedSubview(saveButton)
+        root.addArrangedSubview(footer)
+
+        panel.contentView = root
+
+        selectedTargetIDs = Set(model?.targets.map(targetID) ?? [])
+        updateFilteredCandidates()
+        if let selectedTarget = model?.selectedTarget {
+            selectTargetPopupItem(id: targetID(selectedTarget))
+        }
+    }
+
+    private func configureTargetTable() {
+        targetTableView.headerView = nil
+        targetTableView.delegate = self
+        targetTableView.dataSource = self
+        targetTableView.rowHeight = 36
+        targetTableView.intercellSpacing = NSSize(width: 0, height: 2)
+        targetTableView.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("target")))
+    }
+
+    private func formRow(title: String, control: NSView) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(control)
+        return row
+    }
+
+    private func currentAppType() -> String? {
+        appPopup.selectedItem?.representedObject as? String
+    }
+
+    @objc private func appChanged() {
+        selectedTargetIDs.removeAll()
+        updateFilteredCandidates()
+    }
+
+    private func updateFilteredCandidates() {
+        let appType = currentAppType()
+        filteredCandidates = candidates.filter { candidate in
+            appType == nil || candidate.appType == appType
+        }
+        targetTableView.reloadData()
+        rebuildTargetPopup()
+    }
+
+    private func rebuildTargetPopup() {
+        let previous = targetPopup.selectedItem?.representedObject as? String
+        targetPopup.removeAllItems()
+        for candidate in filteredCandidates where selectedTargetIDs.contains(targetID(candidate)) {
+            targetPopup.addItem(withTitle: targetTitle(candidate))
+            targetPopup.lastItem?.representedObject = targetID(candidate)
+        }
+        if let previous {
+            selectTargetPopupItem(id: previous)
+        }
+    }
+
+    private func selectTargetPopupItem(id: String) {
+        if let index = targetPopup.itemArray.firstIndex(where: { $0.representedObject as? String == id }) {
+            targetPopup.selectItem(at: index)
+        }
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        filteredCandidates.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row < filteredCandidates.count else {
+            return nil
+        }
+        let identifier = NSUserInterfaceItemIdentifier("CustomModelTargetCell")
+        let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? CustomModelTargetCell
+            ?? CustomModelTargetCell(identifier: identifier, target: self, action: #selector(toggleTarget(_:)))
+        let candidate = filteredCandidates[row]
+        cell.configure(
+            title: targetTitle(candidate),
+            detail: "\(ProviderDisplay.appTypeLabel(candidate.appType)) · \(candidate.upstreamModel)",
+            isSelected: selectedTargetIDs.contains(targetID(candidate)),
+            tag: row
+        )
+        return cell
+    }
+
+    @objc private func toggleTarget(_ sender: NSButton) {
+        guard sender.tag >= 0, sender.tag < filteredCandidates.count else {
+            return
+        }
+        let id = targetID(filteredCandidates[sender.tag])
+        if sender.state == .on {
+            selectedTargetIDs.insert(id)
+        } else {
+            selectedTargetIDs.remove(id)
+        }
+        rebuildTargetPopup()
+    }
+
+    @objc private func cancel() {
+        result = nil
+        NSApp.stopModal()
+        panel.close()
+    }
+
+    @objc private func save() {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let appType = currentAppType(), !selectedTargetIDs.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        let selectedCandidates = filteredCandidates.filter { selectedTargetIDs.contains(targetID($0)) }
+        let targets = selectedCandidates.map {
+            existingTargetsByKey[targetID($0)] ?? CustomModelTarget(routeKey: $0.routeKey, providerRef: $0.providerRef)
+        }
+        let selectedPopupID = targetPopup.selectedItem?.representedObject as? String
+        let selectedTargetID = zip(selectedCandidates, targets).first {
+            targetID($0.0) == selectedPopupID
+        }?.1.id ?? targets.first?.id
+        result = CustomModelDefinition(
+            id: editingID ?? UUID(),
+            appType: appType,
+            name: name,
+            targets: targets,
+            selectedTargetID: selectedTargetID
+        )
+        NSApp.stopModal()
+        panel.close()
+    }
+
+    private func targetID(_ target: CustomModelTarget) -> String {
+        "\(target.routeKey.description)|\(target.providerRef.description)"
+    }
+
+    private func targetID(_ candidate: ModelCandidate) -> String {
+        "\(candidate.routeKey.description)|\(candidate.providerRef.description)"
+    }
+
+    private func targetTitle(_ candidate: ModelCandidate) -> String {
+        "\(candidate.logicalModel) · \(candidate.providerName)"
+    }
+}
+
+private final class CustomModelTargetCell: NSTableCellView {
+    private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let detailLabel = NSTextField(labelWithString: "")
+
+    init(identifier: NSUserInterfaceItemIdentifier, target: AnyObject, action: Selector) {
+        super.init(frame: .zero)
+        self.identifier = identifier
+        checkbox.target = target
+        checkbox.action = action
+        checkbox.font = .systemFont(ofSize: 12)
+        checkbox.lineBreakMode = .byTruncatingMiddle
+        checkbox.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = .systemFont(ofSize: 10)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(checkbox)
+        addSubview(detailLabel)
+        NSLayoutConstraint.activate([
+            checkbox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            checkbox.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            checkbox.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            detailLabel.leadingAnchor.constraint(equalTo: checkbox.leadingAnchor, constant: 20),
+            detailLabel.trailingAnchor.constraint(equalTo: checkbox.trailingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: checkbox.bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func configure(title: String, detail: String, isSelected: Bool, tag: Int) {
+        checkbox.title = title
+        checkbox.state = isSelected ? .on : .off
+        checkbox.tag = tag
+        detailLabel.stringValue = detail
+        toolTip = "\(title)\n\(detail)"
     }
 }
 

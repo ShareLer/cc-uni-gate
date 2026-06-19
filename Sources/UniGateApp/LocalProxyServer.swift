@@ -8,6 +8,8 @@ protocol LocalProxyRuntime: AnyObject {
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
     func recordProxyEvent(level: ProxyEvent.Level, message: String)
+    func proxyProviderDidSucceed()
+    func proxyProviderDidFail(_ message: String)
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID)
 }
 
@@ -232,6 +234,13 @@ final class LocalProxyServer: @unchecked Sendable {
             let status = http?.statusCode ?? 502
             let headers = forwardResponseHeaders(http)
             await MainActor.run {
+                if Self.isProviderFailureStatus(status) {
+                    runtime.proxyProviderDidFail("\(resolved.providerName) 返回 HTTP \(status)")
+                } else if status >= 200 && status < 400 {
+                    runtime.proxyProviderDidSucceed()
+                }
+            }
+            await MainActor.run {
                 runtime.recordProxyEvent(
                     level: .info,
                     message: "\(request.path) -> \(resolved.providerName) · \(ProviderDisplay.appTypeLabel(resolved.candidate.appType)) \(status)"
@@ -272,10 +281,15 @@ final class LocalProxyServer: @unchecked Sendable {
             send(.json(status: 400, body: ["error": error.localizedDescription]), on: connection)
         } catch {
             await MainActor.run {
+                runtime.proxyProviderDidFail(error.localizedDescription)
                 runtime.recordProxyEvent(level: .error, message: "\(request.path) upstream error: \(error.localizedDescription)")
             }
             send(.json(status: 502, body: ["error": error.localizedDescription]), on: connection)
         }
+    }
+
+    private static func isProviderFailureStatus(_ status: Int) -> Bool {
+        status == 408 || status == 409 || status == 425 || status == 429 || status >= 500
     }
 
     private func sendTransformedResponse(

@@ -136,6 +136,137 @@ struct CcSwitchImporterTests {
         ])
     }
 
+    @Test
+    func importsClaudeRoleModelAsLogicalModelAndModelNameAsLabel() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "claude",
+                appType: "claude",
+                name: "Claude Provider",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1M]",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "DeepSeek V4 Pro"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let candidate = try #require(catalog.candidates.first)
+
+        #expect(catalog.routeKeys.map(\.description) == ["claude:deepseek-v4-pro"])
+        #expect(candidate.logicalModel == "deepseek-v4-pro")
+        #expect(candidate.upstreamModel == "deepseek-v4-pro[1M]")
+        #expect(candidate.label == "DeepSeek V4 Pro")
+        #expect(candidate.supportsLongContext)
+    }
+
+    @Test
+    func prefersOneMRoleModelWhenClaudeDefaultModelHasSameLogicalName() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "claude",
+                appType: "claude",
+                name: "Claude Provider",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_MODEL": "Deepseek-v4-flash",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "Deepseek-v4-flash[1M]",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Deepseek-v4-flash"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let candidate = try #require(catalog.candidates.first)
+
+        #expect(catalog.routeKeys.map(\.description) == ["claude:Deepseek-v4-flash"])
+        #expect(candidate.upstreamModel == "Deepseek-v4-flash[1M]")
+        #expect(candidate.supportsLongContext)
+    }
+
+    @Test
+    func deduplicatesClaudeLogicalModelsCaseInsensitively() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "claude",
+                appType: "claude",
+                name: "Claude Provider",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1M]",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "deepseek-v4-pro",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "Deepseek-v4-pro",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Deepseek-v4-pro"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let candidate = try #require(catalog.candidates.first)
+
+        #expect(catalog.routeKeys.map(\.description) == ["claude:deepseek-v4-pro"])
+        #expect(candidate.upstreamModel == "deepseek-v4-pro[1M]")
+        #expect(candidate.supportsLongContext)
+    }
+
+    @Test
+    func upgradesCaseVariantClaudeModelToLaterOneMRole() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "claude",
+                appType: "claude",
+                name: "Claude Provider",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_MODEL": "Deepseek-v4-flash",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "Deepseek-v4-pro",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Deepseek-v4-pro",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1M]",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "deepseek-v4-pro"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+
+        #expect(catalog.routeKeys.map(\.description) == [
+            "claude:Deepseek-v4-flash",
+            "claude:deepseek-v4-pro"
+        ])
+        let candidate = try #require(catalog.candidates.first(where: { $0.logicalModel == "deepseek-v4-pro" }))
+        #expect(candidate.upstreamModel == "deepseek-v4-pro[1M]")
+        #expect(candidate.supportsLongContext)
+    }
+
     private func makeProviderDB() throws -> URL {
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
