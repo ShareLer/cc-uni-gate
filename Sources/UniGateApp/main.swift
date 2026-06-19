@@ -433,6 +433,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private let codexBaseURLLabel = NSTextField(labelWithString: "")
     private let claudeCodeBaseURLLabel = NSTextField(labelWithString: "")
     private let claudeDesktopBaseURLLabel = NSTextField(labelWithString: "")
+    private var copySuccessPopover: NSPopover?
     private var providers: [ImportedProvider]
     private var filteredProviders: [ImportedProvider]
     private var routeKeys: [ModelRouteKey]
@@ -668,12 +669,14 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             path: "/claude-desktop"
         ))
         root.addArrangedSubview(endpointGroup)
+        root.addArrangedSubview(NSView())
 
         NSLayoutConstraint.activate([
             overview.widthAnchor.constraint(equalTo: root.widthAnchor),
             proxyGroup.widthAnchor.constraint(equalTo: root.widthAnchor),
             endpointGroup.widthAnchor.constraint(equalTo: root.widthAnchor),
-            portField.widthAnchor.constraint(equalToConstant: 96)
+            portField.widthAnchor.constraint(equalToConstant: 104),
+            portField.heightAnchor.constraint(equalToConstant: 24)
         ])
         return root
     }
@@ -681,7 +684,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private func settingsGroup() -> NSStackView {
         let group = NSStackView()
         group.orientation = .vertical
-        group.alignment = .leading
+        group.alignment = .width
         group.spacing = 0
         group.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         group.wantsLayer = true
@@ -690,6 +693,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         group.layer?.borderWidth = 1
         group.layer?.borderColor = NSColor.separatorColor.cgColor
         group.translatesAutoresizingMaskIntoConstraints = false
+        group.setContentHuggingPriority(.required, for: .vertical)
         return group
     }
 
@@ -733,6 +737,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.distribution = .fillEqually
+        stack.setContentHuggingPriority(.required, for: .vertical)
 
         let visibleModels = selectedRouteKeys.count
         stack.addArrangedSubview(statCard(
@@ -848,8 +853,8 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         controls.addArrangedSubview(searchField)
         let controlSpacer = NSView()
         controls.addArrangedSubview(controlSpacer)
-        controls.addArrangedSubview(button(title: "显示当前列表", action: #selector(selectAllModels)))
-        controls.addArrangedSubview(button(title: "隐藏当前列表", action: #selector(selectNoModels)))
+        controls.addArrangedSubview(button(title: "全选当前列表", action: #selector(selectAllModels)))
+        controls.addArrangedSubview(button(title: "取消当前列表", action: #selector(selectNoModels)))
         root.addArrangedSubview(controls)
 
         let scrollView = roundedScrollView()
@@ -971,29 +976,37 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         bar.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.7).cgColor
         bar.translatesAutoresizingMaskIntoConstraints = false
 
-        bar.addArrangedSubview(badgeLabel(totalTitle, color: .labelColor))
+        bar.addArrangedSubview(pillLabel(totalTitle, color: .labelColor))
         bar.addArrangedSubview(NSView())
         for appType in sortedAppTypes() {
             let title = "\(ProviderDisplay.appTypeLabel(appType)): \(counts[appType] ?? 0) \(unit)"
-            bar.addArrangedSubview(badgeLabel(title, color: appAccentColor(appType)))
+            bar.addArrangedSubview(pillLabel(title, color: appAccentColor(appType)))
         }
         return bar
     }
 
-    private func badgeLabel(_ title: String, color: NSColor) -> NSTextField {
+    private func pillLabel(_ title: String, color: NSColor) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 6
+        container.layer?.backgroundColor = color.withAlphaComponent(0.10).cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 11, weight: .medium)
         label.textColor = color
         label.alignment = .center
-        label.wantsLayer = true
-        label.layer?.cornerRadius = 6
-        label.layer?.backgroundColor = color.withAlphaComponent(0.10).cgColor
         label.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(label)
         NSLayoutConstraint.activate([
-            label.heightAnchor.constraint(equalToConstant: 24),
-            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 72)
+            container.heightAnchor.constraint(equalToConstant: 24),
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
-        return label
+        return container
     }
 
     private func appAccentColor(_ appType: String) -> NSColor {
@@ -1014,7 +1027,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private func pageStack(title: String, subtitle: String) -> NSStackView {
         let root = NSStackView()
         root.orientation = .vertical
-        root.alignment = .leading
+        root.alignment = .width
         root.spacing = 14
         root.translatesAutoresizingMaskIntoConstraints = false
 
@@ -1262,6 +1275,47 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         let path = sender.identifier?.rawValue ?? "/codex"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(baseURL(path: path), forType: .string)
+        showCopySuccess(from: sender)
+    }
+
+    private func showCopySuccess(from sender: NSButton) {
+        copySuccessPopover?.close()
+
+        let label = NSTextField(labelWithString: "已复制")
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.alignment = .center
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentView = NSView()
+        contentView.wantsLayer = true
+        contentView.layer?.cornerRadius = 8
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(label)
+        NSLayoutConstraint.activate([
+            contentView.widthAnchor.constraint(equalToConstant: 88),
+            contentView.heightAnchor.constraint(equalToConstant: 36),
+            label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            label.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
+        ])
+
+        let controller = NSViewController()
+        controller.view = contentView
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 88, height: 36)
+        popover.contentViewController = controller
+        copySuccessPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self, weak popover] in
+            popover?.close()
+            if self?.copySuccessPopover === popover {
+                self?.copySuccessPopover = nil
+            }
+        }
     }
 
     private func updateProviderCount() {
@@ -1392,7 +1446,8 @@ private final class ModelToggleCell: NSTableCellView {
 private final class ProviderProtocolCell: NSTableCellView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let formatLabel = NSTextField(labelWithString: "")
-    private let badgeLabel = NSTextField(labelWithString: "")
+    private let badgeView = NSView()
+    private let badgeTextLabel = NSTextField(labelWithString: "")
     private let urlLabel = NSTextField(labelWithString: "")
     private let popup = NSPopUpButton(frame: .zero, pullsDown: false)
 
@@ -1416,17 +1471,20 @@ private final class ProviderProtocolCell: NSTableCellView {
         metaRow.spacing = 6
         metaRow.translatesAutoresizingMaskIntoConstraints = false
 
-        badgeLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        badgeLabel.alignment = .center
-        badgeLabel.wantsLayer = true
-        badgeLabel.layer?.cornerRadius = 5
-        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeView.wantsLayer = true
+        badgeView.layer?.cornerRadius = 5
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
+
+        badgeTextLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        badgeTextLabel.alignment = .center
+        badgeTextLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeView.addSubview(badgeTextLabel)
 
         formatLabel.font = .systemFont(ofSize: 11)
         formatLabel.textColor = .secondaryLabelColor
         formatLabel.lineBreakMode = .byTruncatingTail
 
-        metaRow.addArrangedSubview(badgeLabel)
+        metaRow.addArrangedSubview(badgeView)
         metaRow.addArrangedSubview(formatLabel)
         labels.addArrangedSubview(metaRow)
 
@@ -1449,8 +1507,11 @@ private final class ProviderProtocolCell: NSTableCellView {
             popup.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             popup.centerYAnchor.constraint(equalTo: centerYAnchor),
             popup.widthAnchor.constraint(equalToConstant: 170),
-            badgeLabel.heightAnchor.constraint(equalToConstant: 18),
-            badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 74)
+            badgeView.heightAnchor.constraint(equalToConstant: 18),
+            badgeView.widthAnchor.constraint(greaterThanOrEqualToConstant: 74),
+            badgeTextLabel.leadingAnchor.constraint(equalTo: badgeView.leadingAnchor, constant: 6),
+            badgeTextLabel.trailingAnchor.constraint(equalTo: badgeView.trailingAnchor, constant: -6),
+            badgeTextLabel.centerYAnchor.constraint(equalTo: badgeView.centerYAnchor)
         ])
     }
 
@@ -1460,9 +1521,9 @@ private final class ProviderProtocolCell: NSTableCellView {
 
     func configure(provider: ImportedProvider, override: ApiFormat?, tag: Int) {
         nameLabel.stringValue = provider.name
-        badgeLabel.stringValue = ProviderDisplay.appTypeLabel(provider.appType)
-        badgeLabel.textColor = appAccentColor(provider.appType)
-        badgeLabel.layer?.backgroundColor = appAccentColor(provider.appType).withAlphaComponent(0.10).cgColor
+        badgeTextLabel.stringValue = ProviderDisplay.appTypeLabel(provider.appType)
+        badgeTextLabel.textColor = appAccentColor(provider.appType)
+        badgeView.layer?.backgroundColor = appAccentColor(provider.appType).withAlphaComponent(0.10).cgColor
         formatLabel.stringValue = override == nil
             ? "检测到：\(provider.apiFormat.rawValue)"
             : "已覆盖 · 检测到 \(provider.apiFormat.rawValue)"
