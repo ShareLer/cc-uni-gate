@@ -2,10 +2,6 @@
 
 Local model-level provider manager for Codex and Claude-style API clients.
 
-The final client direction is a native macOS menu bar app written in Swift.
-The TypeScript/Node implementation is archived under `prototype/node-web/` as
-a behavior reference.
-
 ## Native macOS App
 
 Run the Swift menu bar app:
@@ -89,7 +85,7 @@ Build, install, and launch the local macOS app:
 For Codex/OpenAI-compatible clients, set the base URL to:
 
 ```text
-http://127.0.0.1:17888/openai
+http://127.0.0.1:17888/codex
 ```
 
 Keep the model name as the logical model configured in cc-switch, for example:
@@ -124,32 +120,6 @@ Swift native app:
   into `~/Library/Application Support/UniGate` on startup.
 - Never writes to `cc-switch.db`.
 - Does not print provider secrets in inspect output or manager catalog output.
-
-Node prototype:
-
-- Reads provider definitions from `/Users/didi/.cc-switch/cc-switch.db` in
-  read-only mode.
-- Keeps its own model-level route state at `~/.api-manager/routes.json`.
-- Exposes manager APIs at `http://127.0.0.1:17888`.
-- Provides a Vite UI at `http://127.0.0.1:5173`.
-- Never writes to `cc-switch.db`.
-- Does not print provider secrets in catalog APIs or UI.
-
-## Node Prototype Commands
-
-The Node/Web prototype is archived in `prototype/node-web/`.
-
-```bash
-cd prototype/node-web
-pnpm install
-pnpm proxy
-pnpm dev
-pnpm test
-pnpm typecheck
-pnpm build
-```
-
-Run `pnpm proxy` and `pnpm dev` in separate terminals during development.
 
 ## Manager Endpoints
 

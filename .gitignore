@@ -9,8 +9,7 @@ DerivedData/
 *.app/
 *.dSYM/
 
-# Archived Node/Web prototype and generated frontend files
-prototype/node-web/
+# Generated frontend files
 node_modules/
 dist/
 
