@@ -15,6 +15,11 @@ public enum ClientProtocolKind: String, Codable, Sendable {
     case geminiNative = "gemini_native"
 }
 
+public enum ProxyResponseTransform: String, Codable, Sendable {
+    case none
+    case openAIChatToCodexResponse = "openai_chat_to_codex_response"
+}
+
 public enum ProxyRequestPath: Equatable, Sendable {
     case proxy(protocolKind: ClientProtocolKind, appType: String)
     case models(appType: String?)
@@ -291,7 +296,7 @@ public struct ModelCandidate: Identifiable, Sendable {
 
     private func requiresTransform(for appType: String, apiFormat: ApiFormat) -> Bool {
         if appType == "codex" {
-            return apiFormat == .openaiChat
+            return apiFormat != .openaiResponses && apiFormat != .openaiChat
         }
         if appType == "claude" || appType == "claude-desktop" {
             return apiFormat != .anthropic

@@ -7,6 +7,7 @@ public struct ResolvedRoute: Sendable {
     public let upstreamURL: URL
     public let headers: [String: String]
     public let body: Data
+    public let responseTransform: ProxyResponseTransform
 }
 
 public enum ProxyResolverError: Error, LocalizedError, Equatable {
@@ -15,6 +16,7 @@ public enum ProxyResolverError: Error, LocalizedError, Equatable {
     case noRoute(routeKey: String)
     case missingProvider(ref: String)
     case transformRequired(model: String, provider: String, apiFormat: ApiFormat)
+    case streamingTransformUnsupported(model: String, provider: String, apiFormat: ApiFormat)
     case missingBaseURL(provider: String)
     case invalidUpstreamURL(String)
 
@@ -30,6 +32,8 @@ public enum ProxyResolverError: Error, LocalizedError, Equatable {
             return "Provider \(ref) is missing from catalog"
         case let .transformRequired(model, provider, apiFormat):
             return "Route \(model) -> \(provider) requires protocol transform (\(apiFormat.rawValue))"
+        case let .streamingTransformUnsupported(model, provider, apiFormat):
+            return "Route \(model) -> \(provider) does not support streaming protocol transform yet (\(apiFormat.rawValue))"
         case let .missingBaseURL(provider):
             return "Provider \(provider) has no base URL"
         case let .invalidUpstreamURL(value):
@@ -74,7 +78,14 @@ public enum ProxyResolver {
             throw ProxyResolverError.missingProvider(ref: candidate.providerRef.description)
         }
 
-        if candidate.requiresTransform {
+        let responseTransform = try responseTransform(
+            protocolKind: protocolKind,
+            candidate: candidate,
+            requestedModel: requestedModel,
+            provider: provider,
+            body: json
+        )
+        if responseTransform == .none && unsupportedProtocolPair(protocolKind: protocolKind, apiFormat: candidate.apiFormat) {
             throw ProxyResolverError.transformRequired(
                 model: requestedModel,
                 provider: provider.name,
@@ -84,8 +95,16 @@ public enum ProxyResolver {
 
         var outboundBody = json
         outboundBody["model"] = stripOneMSuffix(candidate.upstreamModel)
+        if responseTransform == .openAIChatToCodexResponse {
+            outboundBody = try CodexChatBridge.chatRequest(from: outboundBody)
+        }
         let outboundData = try JSONSerialization.data(withJSONObject: outboundBody, options: [])
-        let upstreamURL = try buildUpstreamURL(provider: provider, inboundPath: path)
+        let upstreamURL = try buildUpstreamURL(
+            provider: provider,
+            inboundPath: path,
+            protocolKind: protocolKind,
+            apiFormat: candidate.apiFormat
+        )
 
         return ResolvedRoute(
             candidate: candidate,
@@ -93,8 +112,42 @@ public enum ProxyResolver {
             outboundModel: stripOneMSuffix(candidate.upstreamModel),
             upstreamURL: upstreamURL,
             headers: buildAuthHeaders(provider),
-            body: outboundData
+            body: outboundData,
+            responseTransform: responseTransform
         )
+    }
+
+    private static func responseTransform(
+        protocolKind: ClientProtocolKind,
+        candidate: ModelCandidate,
+        requestedModel: String,
+        provider: ImportedProvider,
+        body: [String: Any]
+    ) throws -> ProxyResponseTransform {
+        guard protocolKind == .codexResponses, candidate.apiFormat == .openaiChat else {
+            return .none
+        }
+        if (body["stream"] as? Bool) == true {
+            throw ProxyResolverError.streamingTransformUnsupported(
+                model: requestedModel,
+                provider: provider.name,
+                apiFormat: candidate.apiFormat
+            )
+        }
+        return .openAIChatToCodexResponse
+    }
+
+    private static func unsupportedProtocolPair(protocolKind: ClientProtocolKind, apiFormat: ApiFormat) -> Bool {
+        switch protocolKind {
+        case .codexResponses:
+            return apiFormat != .openaiResponses && apiFormat != .openaiChat
+        case .openaiChat:
+            return apiFormat != .openaiChat
+        case .anthropicMessages:
+            return apiFormat != .anthropic
+        case .geminiNative:
+            return apiFormat != .geminiNative
+        }
     }
 
     private static func resolveRouteKey(
@@ -187,16 +240,30 @@ public enum ProxyResolver {
         return nil
     }
 
-    private static func buildUpstreamURL(provider: ImportedProvider, inboundPath: String) throws -> URL {
+    private static func buildUpstreamURL(
+        provider: ImportedProvider,
+        inboundPath: String,
+        protocolKind: ClientProtocolKind,
+        apiFormat: ApiFormat
+    ) throws -> URL {
         guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !baseURL.isEmpty else {
             throw ProxyResolverError.missingBaseURL(provider: provider.name)
         }
 
         let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let endpoint = normalizeEndpoint(provider: provider, inboundPath: inboundPath)
+        let endpoint = normalizeEndpoint(
+            provider: provider,
+            inboundPath: inboundPath,
+            protocolKind: protocolKind,
+            apiFormat: apiFormat
+        )
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let raw: String
-        if provider.appType == "codex", isOriginOnlyURL(baseURL) {
+        if provider.appType == "codex",
+           apiFormat == .openaiChat,
+           base.lowercased().hasSuffix("/chat/completions") {
+            raw = base
+        } else if provider.appType == "codex", isOriginOnlyURL(baseURL) {
             raw = "\(base)/v1/\(endpoint)"
         } else {
             raw = "\(base)/\(endpoint)"
@@ -208,10 +275,18 @@ public enum ProxyResolver {
         return url
     }
 
-    private static func normalizeEndpoint(provider: ImportedProvider, inboundPath: String) -> String {
+    private static func normalizeEndpoint(
+        provider: ImportedProvider,
+        inboundPath: String,
+        protocolKind: ClientProtocolKind,
+        apiFormat: ApiFormat
+    ) -> String {
         let path = inboundPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? inboundPath
 
         if provider.appType == "codex" {
+            if protocolKind == .codexResponses, apiFormat == .openaiChat {
+                return "/v1/chat/completions"
+            }
             return stripManagerPrefixes(path, prefixes: ["/openai", "/codex"])
         }
 

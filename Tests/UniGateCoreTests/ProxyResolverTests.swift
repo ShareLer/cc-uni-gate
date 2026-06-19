@@ -101,7 +101,7 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func failsClosedWhenTransformIsRequired() throws {
+    func bridgesCodexResponsesRequestToOpenAIChatUpstream() throws {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -115,23 +115,56 @@ struct ProxyResolverTests {
             settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
             meta: [:]
         )
-        let candidate = candidate(provider: provider, requiresTransform: true)
+        let candidate = candidate(provider: provider, requiresTransform: false)
         let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
         let routes = RouteStore.defaultState(candidates: catalog.candidates)
 
-        #expect(throws: ProxyResolverError.transformRequired(
-            model: "gpt-5.5",
-            provider: "Provider 1",
-            apiFormat: .openaiChat
-        )) {
-            try ProxyResolver.resolveRoute(
-                catalog: catalog,
-                routes: routes,
-                protocolKind: .codexResponses,
-                path: "/openai/v1/responses",
-                body: Data(#"{"model":"gpt-5.5"}"#.utf8)
-            )
-        }
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            path: "/openai/v1/responses",
+            body: Data(#"{"model":"gpt-5.5","input":"hello","max_output_tokens":8}"#.utf8)
+        )
+
+        #expect(resolved.upstreamURL.absoluteString == "https://api.example.com/v1/chat/completions")
+        #expect(resolved.responseTransform == .openAIChatToCodexResponse)
+        let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
+        #expect(outbound?["model"] as? String == "gpt-5.5")
+        #expect(outbound?["max_tokens"] as? Int == 8)
+        let messages = try #require(outbound?["messages"] as? [[String: Any]])
+        #expect(messages.first?["role"] as? String == "user")
+        #expect(messages.first?["content"] as? String == "hello")
+    }
+
+    @Test
+    func convertsOpenAIChatResponseToCodexResponsesShape() throws {
+        let response = try CodexChatBridge.responsesBody(
+            from: [
+                "id": "chatcmpl-1",
+                "created": 1_781_845_352,
+                "model": "deepseek-v4-flash",
+                "choices": [[
+                    "message": ["role": "assistant", "content": "OK"],
+                    "finish_reason": "stop"
+                ]],
+                "usage": [
+                    "prompt_tokens": 7,
+                    "completion_tokens": 1,
+                    "total_tokens": 8
+                ]
+            ],
+            fallbackModel: "deepseek-v4-flash"
+        )
+
+        #expect(response["id"] as? String == "chatcmpl-1")
+        #expect(response["object"] as? String == "response")
+        #expect(response["output_text"] as? String == "OK")
+        let output = try #require(response["output"] as? [[String: Any]])
+        #expect(output.first?["role"] as? String == "assistant")
+        let usage = try #require(response["usage"] as? [String: Any])
+        #expect(usage["input_tokens"] as? Int == 7)
+        #expect(usage["output_tokens"] as? Int == 1)
     }
 
     @Test

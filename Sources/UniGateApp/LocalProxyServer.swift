@@ -195,16 +195,28 @@ final class LocalProxyServer: @unchecked Sendable {
 
             let (bytes, response) = try await URLSession.shared.bytes(for: upstreamRequest)
             let http = response as? HTTPURLResponse
-            let head = HTTPResponseHead(
-                status: http?.statusCode ?? 502,
-                headers: forwardResponseHeaders(http)
-            )
+            let status = http?.statusCode ?? 502
+            let headers = forwardResponseHeaders(http)
             await MainActor.run {
                 runtime.recordProxyEvent(
                     level: .info,
-                    message: "\(request.path) -> \(resolved.providerName) · \(ProviderDisplay.appTypeLabel(resolved.candidate.appType)) \(head.status)"
+                    message: "\(request.path) -> \(resolved.providerName) · \(ProviderDisplay.appTypeLabel(resolved.candidate.appType)) \(status)"
                 )
             }
+            if resolved.responseTransform != .none {
+                try await sendTransformedResponse(
+                    bytes: bytes,
+                    status: status,
+                    headers: headers,
+                    resolved: resolved,
+                    on: connection
+                )
+                return
+            }
+            let head = HTTPResponseHead(
+                status: status,
+                headers: headers
+            )
             try await sendHead(head, on: connection)
             var buffer = Data()
             buffer.reserveCapacity(8_192)
@@ -229,6 +241,58 @@ final class LocalProxyServer: @unchecked Sendable {
                 runtime.recordProxyEvent(level: .error, message: "\(request.path) upstream error: \(error.localizedDescription)")
             }
             send(.json(status: 502, body: ["error": error.localizedDescription]), on: connection)
+        }
+    }
+
+    private func sendTransformedResponse(
+        bytes: URLSession.AsyncBytes,
+        status: Int,
+        headers: [String: String],
+        resolved: ResolvedRoute,
+        on connection: NWConnection
+    ) async throws {
+        var body = Data()
+        for try await byte in bytes {
+            body.append(byte)
+            if body.count > 10_485_760 {
+                send(.json(status: 413, body: ["error": "Response too large"]), on: connection)
+                return
+            }
+        }
+
+        guard status >= 200 && status < 300 else {
+            let response = HTTPResponse(
+                status: status,
+                headers: headers,
+                body: body
+            )
+            send(response, on: connection)
+            return
+        }
+
+        switch resolved.responseTransform {
+        case .none:
+            send(HTTPResponse(status: status, headers: headers, body: body), on: connection)
+        case .openAIChatToCodexResponse:
+            let value = try JSONSerialization.jsonObject(with: body)
+            guard let object = value as? [String: Any] else {
+                throw CodexChatBridgeError.invalidChatResponse
+            }
+            let transformed = try CodexChatBridge.responsesBody(
+                from: object,
+                fallbackModel: resolved.outboundModel
+            )
+            var responseHeaders = headers
+            removeEntityHeaders(from: &responseHeaders)
+            responseHeaders["content-type"] = "application/json; charset=utf-8"
+            let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
+            send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
+        }
+    }
+
+    private func removeEntityHeaders(from headers: inout [String: String]) {
+        for key in Array(headers.keys) where ["content-type", "content-encoding", "content-md5"].contains(key.lowercased()) {
+            headers.removeValue(forKey: key)
         }
     }
 

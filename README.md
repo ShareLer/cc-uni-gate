@@ -74,6 +74,16 @@ Run Swift tests:
 swift test
 ```
 
+Run a real end-to-end smoke test against the configured local port:
+
+```bash
+./scripts/e2e-smoke.sh
+```
+
+This sends real requests through UniGate to the configured upstream providers
+and may consume provider quota. By default it probes `deepseek-v4-flash` for
+Codex and `Deepseek-v4-flash` for Claude Code.
+
 Build, install, and launch the local macOS app:
 
 ```bash
@@ -163,15 +173,15 @@ POST /anthropic/v1/messages/count_tokens
 
 ## Important Limitation
 
-The Swift app proxy currently supports protocol-preserving routes. If a
-selected route requires a transform, the proxy fails closed with a clear error.
-OpenAI Responses-to-Responses routes are streamed through without buffering the
-whole upstream response.
+The Swift app proxy supports protocol-preserving routes and non-streaming text
+bridging from Codex Responses to OpenAI Chat upstreams. If another transform is
+required, the proxy fails closed with a clear error. OpenAI
+Responses-to-Responses routes are streamed through without buffering the whole
+upstream response.
 
-For Codex providers, this app treats Codex TOML `wire_api` as the upstream
-protocol source of truth. cc-switch `meta.apiFormat` may describe cc-switch's
-own routing/conversion layer; it is not used to override a Codex provider whose
-TOML says `wire_api = "responses"`.
+For Codex providers, this app treats Codex TOML `wire_api` as the local client
+protocol. cc-switch `meta.apiFormat` describes the real upstream protocol used
+behind the local route.
 
 ## Next Implementation Step
 
