@@ -129,7 +129,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     await self.handle(request, on: connection)
                 }
             } else if next.count > 10_485_760 {
-                send(.json(status: 413, body: ["error": "Request too large"]), on: connection)
+                send(.json(status: 413, body: ["error": "Request too large"], allowsCORS: true), on: connection)
             } else {
                 receive(on: connection, data: next)
             }
@@ -149,7 +149,7 @@ final class LocalProxyServer: @unchecked Sendable {
     private func respond(to request: HTTPRequest) async -> HTTPResponse {
         do {
             if request.method == "OPTIONS" {
-                return .empty(status: 204)
+                return .empty(status: 204, allowsCORS: true)
             }
 
             if request.method == "GET", request.path == "/__manager/health" {
@@ -159,12 +159,12 @@ final class LocalProxyServer: @unchecked Sendable {
                     "serverID": id.uuidString,
                     "providers": snapshot.catalog.providers.count,
                     "candidates": snapshot.catalog.candidates.count
-                ])
+                ], allowsCORS: true)
             }
 
             if request.method == "POST", request.path == "/__manager/reload" {
                 _ = try await MainActor.run { try runtime.reloadProxyRuntime() }
-                return .json(status: 200, body: ["ok": true])
+                return .json(status: 200, body: ["ok": true], allowsCORS: true)
             }
 
             if request.method == "GET", request.path == "/__manager/catalog" {
@@ -184,7 +184,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     let providerRefText = body["providerRef"] as? String,
                     let providerRef = ProviderRef(description: providerRefText)
                 else {
-                    return .json(status: 400, body: ["error": "logicalModel and providerRef are required"])
+                    return .json(status: 400, body: ["error": "logicalModel and providerRef are required"], allowsCORS: true)
                 }
                 let appType = body["appType"] as? String ?? providerRef.appType
                 let snapshot = try await MainActor.run {
@@ -196,9 +196,9 @@ final class LocalProxyServer: @unchecked Sendable {
                 return routesResponse(snapshot)
             }
 
-            return .json(status: 404, body: ["error": "Not found"])
+            return .json(status: 404, body: ["error": "Not found"], allowsCORS: true)
         } catch {
-            return .json(status: 500, body: ["error": error.localizedDescription])
+            return .json(status: 500, body: ["error": error.localizedDescription], allowsCORS: true)
         }
     }
 
@@ -407,14 +407,14 @@ final class LocalProxyServer: @unchecked Sendable {
             "providers": providers,
             "candidates": candidates,
             "routes": routeDictionary(snapshot.routes)
-        ])
+        ], allowsCORS: true)
     }
 
     private func routesResponse(_ snapshot: ProxyRuntimeSnapshot) -> HTTPResponse {
         .json(status: 200, body: [
             "ok": true,
             "routes": routeDictionary(snapshot.routes)
-        ])
+        ], allowsCORS: true)
     }
 
     private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot, appType: String?) -> HTTPResponse {
@@ -430,7 +430,7 @@ final class LocalProxyServer: @unchecked Sendable {
             "object": "list",
             "data": data,
             "models": models
-        ])
+        ], allowsCORS: true)
     }
 
     private func codexModelCatalog(routeKeys: [ModelRouteKey], candidates: [ModelCandidate]) -> [[String: Any]] {
@@ -569,55 +569,43 @@ private struct HTTPResponse {
     let status: Int
     let headers: [String: String]
     let body: Data
+    let allowsCORS: Bool
 
-    static func json(status: Int, body: [String: Any]) -> HTTPResponse {
+    init(status: Int, headers: [String: String], body: Data, allowsCORS: Bool = false) {
+        self.status = status
+        self.headers = headers
+        self.body = body
+        self.allowsCORS = allowsCORS
+    }
+
+    static func json(status: Int, body: [String: Any], allowsCORS: Bool = false) -> HTTPResponse {
         let data = (try? JSONSerialization.data(withJSONObject: body, options: [.prettyPrinted, .sortedKeys]))
             ?? Data("{}".utf8)
         return HTTPResponse(
             status: status,
             headers: ["content-type": "application/json; charset=utf-8"],
-            body: data + Data("\n".utf8)
+            body: data + Data("\n".utf8),
+            allowsCORS: allowsCORS
         )
     }
 
-    static func empty(status: Int) -> HTTPResponse {
-        HTTPResponse(status: status, headers: [:], body: Data())
+    static func empty(status: Int, allowsCORS: Bool = false) -> HTTPResponse {
+        HTTPResponse(status: status, headers: [:], body: Data(), allowsCORS: allowsCORS)
     }
 
     var data: Data {
-        var response = "HTTP/1.1 \(status) \(reasonPhrase(status))\r\n"
+        var response = "HTTP/1.1 \(status) \(httpReasonPhrase(status))\r\n"
         var mergedHeaders = headers
         mergedHeaders["content-length"] = "\(body.count)"
         mergedHeaders["connection"] = "close"
-        mergedHeaders["access-control-allow-origin"] = "http://127.0.0.1:5173"
-        mergedHeaders["access-control-allow-methods"] = "GET,POST,OPTIONS"
-        mergedHeaders["access-control-allow-headers"] = "content-type,authorization"
+        if allowsCORS {
+            addLocalCORSHeaders(to: &mergedHeaders)
+        }
         for (key, value) in mergedHeaders {
             response += "\(key): \(value)\r\n"
         }
         response += "\r\n"
         return Data(response.utf8) + body
-    }
-
-    private func reasonPhrase(_ status: Int) -> String {
-        switch status {
-        case 200:
-            return "OK"
-        case 204:
-            return "No Content"
-        case 400:
-            return "Bad Request"
-        case 404:
-            return "Not Found"
-        case 413:
-            return "Payload Too Large"
-        case 500:
-            return "Internal Server Error"
-        case 502:
-            return "Bad Gateway"
-        default:
-            return "OK"
-        }
     }
 }
 
@@ -626,31 +614,52 @@ private struct HTTPResponseHead {
     let headers: [String: String]
 
     var data: Data {
-        var response = "HTTP/1.1 \(status) \(reasonPhrase(status))\r\n"
+        var response = "HTTP/1.1 \(status) \(httpReasonPhrase(status))\r\n"
         var mergedHeaders = headers
         mergedHeaders["connection"] = "close"
-        mergedHeaders["access-control-allow-origin"] = "http://127.0.0.1:5173"
-        mergedHeaders["access-control-allow-methods"] = "GET,POST,OPTIONS"
-        mergedHeaders["access-control-allow-headers"] = "content-type,authorization"
         for (key, value) in mergedHeaders {
             response += "\(key): \(value)\r\n"
         }
         response += "\r\n"
         return Data(response.utf8)
     }
+}
 
-    private func reasonPhrase(_ status: Int) -> String {
-        switch status {
-        case 200:
-            return "OK"
-        case 400:
-            return "Bad Request"
-        case 500:
-            return "Internal Server Error"
-        case 502:
-            return "Bad Gateway"
-        default:
-            return "OK"
-        }
+private func addLocalCORSHeaders(to headers: inout [String: String]) {
+    headers["access-control-allow-origin"] = "*"
+    headers["access-control-allow-methods"] = "GET,POST,OPTIONS"
+    headers["access-control-allow-headers"] = "content-type,authorization"
+}
+
+private func httpReasonPhrase(_ status: Int) -> String {
+    switch status {
+    case 200:
+        return "OK"
+    case 204:
+        return "No Content"
+    case 400:
+        return "Bad Request"
+    case 404:
+        return "Not Found"
+    case 408:
+        return "Request Timeout"
+    case 409:
+        return "Conflict"
+    case 413:
+        return "Payload Too Large"
+    case 425:
+        return "Too Early"
+    case 429:
+        return "Too Many Requests"
+    case 500:
+        return "Internal Server Error"
+    case 502:
+        return "Bad Gateway"
+    case 503:
+        return "Service Unavailable"
+    case 504:
+        return "Gateway Timeout"
+    default:
+        return "OK"
     }
 }

@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var proxyStatus: ProxyStatus = .starting
     private var recentEvents: [ProxyEvent] = []
     private var forwardedRequestCounts: [String: Int] = [:]
+    private var menuNeedsUpdate = false
+    private var isRebuildingMenu = false
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
     private weak var proxyStatusMenuItem: NSMenuItem?
@@ -82,6 +84,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
+        fillMenu(menu)
+        statusItem.menu = menu
+    }
+
+    private func refreshMenuInPlace(_ menu: NSMenu) {
+        fillMenu(menu)
+    }
+
+    private func fillMenu(_ menu: NSMenu) {
+        isRebuildingMenu = true
+        defer {
+            menuNeedsUpdate = false
+            isRebuildingMenu = false
+        }
+        menu.removeAllItems()
+        menu.delegate = self
         let titleItem = NSMenuItem(title: "CC Uni Gate", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
@@ -159,7 +178,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(appMenuItem(title: "设置...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(appMenuItem(title: "重新加载 cc-switch DB", action: #selector(reloadAction), keyEquivalent: "r"))
         menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
         updateStatusItemAppearance()
     }
 
@@ -412,6 +430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.log(level, message)
     }
 
+    private func markMenuNeedsUpdate() {
+        menuNeedsUpdate = true
+    }
+
     private func updateProxyStatus(
         _ status: ProxyStatus,
         eventLevel: ProxyEvent.Level? = nil,
@@ -528,12 +550,12 @@ extension AppDelegate: LocalProxyRuntime {
 
     func recordProxyEvent(level: ProxyEvent.Level, message: String) {
         recordEvent(level, message)
-        rebuildMenu()
+        markMenuNeedsUpdate()
     }
 
     func recordForwardedRequest(appType: String) {
         forwardedRequestCounts[appType, default: 0] += 1
-        rebuildMenu()
+        markMenuNeedsUpdate()
     }
 
     func proxyProviderDidSucceed() {
@@ -591,6 +613,15 @@ extension AppDelegate: LocalProxyRuntime {
                 eventMessage: "代理监听已停止"
             )
         }
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menuNeedsUpdate, !isRebuildingMenu else {
+            return
+        }
+        refreshMenuInPlace(menu)
     }
 }
 

@@ -130,6 +130,34 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func excludesGeminiProvidersUntilGeminiProxyIsSupported() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "gemini",
+                appType: "gemini",
+                name: "Gemini Provider",
+                settings: """
+                {
+                  "env": {
+                    "GOOGLE_GEMINI_BASE_URL": "https://generativelanguage.googleapis.com",
+                    "GEMINI_API_KEY": "key-1"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"gemini_native"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+
+        #expect(catalog.providers.isEmpty)
+        #expect(catalog.candidates.isEmpty)
+    }
+
+    @Test
     func importsClaudeFableModelField() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)

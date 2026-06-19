@@ -19,7 +19,7 @@ public struct CcSwitchImporter: Sendable {
                 sql: """
                 select id, app_type, name, settings_config, category, sort_index, meta, is_current
                 from providers
-                where app_type in ('claude', 'claude-desktop', 'codex', 'gemini')
+                where app_type in ('claude', 'claude-desktop', 'codex')
                 order by app_type, coalesce(sort_index, 999999), name, id
                 """
             )
