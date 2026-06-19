@@ -1135,7 +1135,7 @@ private struct CustomModelEditorView: View {
             Divider()
             footer
         }
-        .frame(width: 520, height: 620)
+        .frame(width: 520, height: 680)
         .background(UGStyle.canvas)
     }
 
@@ -1148,8 +1148,9 @@ private struct CustomModelEditorView: View {
                 .foregroundStyle(.secondary)
             Spacer()
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 28)
+        .padding(.top, 24)
+        .padding(.bottom, 18)
     }
 
     private var form: some View {
@@ -1195,7 +1196,7 @@ private struct CustomModelEditorView: View {
 
             targetList
         }
-        .padding(.horizontal, 22)
+        .padding(.horizontal, 28)
         .padding(.vertical, 16)
         .onChange(of: appType) { _, _ in
             selectedTargetIDs.removeAll()
@@ -1271,8 +1272,9 @@ private struct CustomModelEditorView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(!canSave)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 28)
+        .padding(.top, 16)
+        .padding(.bottom, 24)
     }
 
     private var filteredCandidates: [ModelCandidate] {

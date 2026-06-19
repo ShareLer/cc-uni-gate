@@ -32,11 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.toolTip = "CC Uni Gate"
         updateStatusItemAppearance()
-        do {
-            try AppPaths.migrateLegacyApplicationSupportDirectory()
-        } catch {
-            showError(error)
-        }
         reloadCatalog()
         startProxyServer()
     }
