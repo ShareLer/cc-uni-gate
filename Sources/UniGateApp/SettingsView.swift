@@ -65,6 +65,7 @@ final class SettingsViewModel: ObservableObject {
     var onClose: (() -> Void)?
 
     private let onSave: (AppPreferences, CustomModelState) -> Void
+    private var toastToken = UUID()
 
     init(
         providers: [ImportedProvider],
@@ -362,11 +363,20 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func showToast(_ message: String) {
-        toast = message
+        let token = UUID()
+        toastToken = token
+        withAnimation(.easeOut(duration: 0.12)) {
+            toast = message
+        }
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            if toast == message {
-                toast = nil
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard toastToken == token else {
+                return
+            }
+            withAnimation(.easeOut(duration: 0.18)) {
+                if toast == message {
+                    toast = nil
+                }
             }
         }
     }
@@ -502,20 +512,23 @@ struct SettingsRootView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
+            Divider()
             detail
         }
         .frame(minWidth: 900, minHeight: 640)
         .background(UGStyle.canvas)
-        .overlay(alignment: .topTrailing) {
+        .overlay {
             if let toast = model.toast {
                 Text(toast)
-                    .font(UGStyle.caption)
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.primary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGStyle.line))
-                    .padding(18)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 12)
+                    .background(UGStyle.toastBackground, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(UGStyle.line.opacity(0.7)))
+                    .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 8)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                    .allowsHitTesting(false)
             }
         }
         .sheet(item: $model.customModelEditorContext) { context in
@@ -569,26 +582,43 @@ struct SettingsRootView: View {
 
     private var detail: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    pageHeader
-                    switch model.page {
-                    case .general:
-                        generalPage
-                    case .models:
-                        modelsPage
-                    case .providers:
-                        providersPage
-                    }
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            pageContent
             Divider()
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(UGStyle.canvas)
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        switch model.page {
+        case .general:
+            ScrollView {
+                pageShell {
+                    generalPage
+                }
+            }
+        case .models:
+            pageShell {
+                modelsPage
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        case .providers:
+            pageShell {
+                providersPage
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func pageShell<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            pageHeader
+            content()
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var pageHeader: some View {
@@ -664,10 +694,13 @@ struct SettingsRootView: View {
                     Button {
                         model.addCustomModel()
                     } label: {
-                        Label("自定义模型", systemImage: "plus")
+                        Label("自定义", systemImage: "plus")
                     }
-                    Button("全选当前列表") { model.selectAllModels() }
-                    Button("取消当前列表") { model.selectNoModels() }
+                    .fixedSize()
+                    Button("全选") { model.selectAllModels() }
+                        .fixedSize()
+                    Button("取消全部") { model.selectNoModels() }
+                        .fixedSize()
                 }
                 rowList {
                     ForEach(model.filteredModelKeys, id: \.description) { key in
@@ -730,23 +763,27 @@ struct SettingsRootView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
+                        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
                         .foregroundStyle(selected == appType ? .white : .primary)
                         .background(selected == appType ? UGStyle.accent : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .contentShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
                 }
                 Spacer(minLength: 0)
             }
             .padding(10)
             .frame(width: 172, alignment: .top)
-            .frame(minHeight: 456, alignment: .top)
+            .frame(maxHeight: .infinity, alignment: .top)
             .background(UGStyle.card, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGStyle.line))
 
             content()
-                .frame(maxWidth: .infinity, minHeight: 456, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func modelRow(_ key: ModelRouteKey) -> some View {
@@ -915,7 +952,7 @@ struct SettingsRootView: View {
             }
             .padding(5)
         }
-        .frame(minHeight: 390, maxHeight: .infinity)
+        .frame(minHeight: 320, maxHeight: .infinity)
         .background(UGStyle.card, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGStyle.line))
     }
@@ -996,7 +1033,7 @@ private struct CustomModelEditorView: View {
             Divider()
             footer
         }
-        .frame(width: 600, height: 560)
+        .frame(width: 520, height: 620)
         .background(UGStyle.canvas)
     }
 
@@ -1015,44 +1052,32 @@ private struct CustomModelEditorView: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 20) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("模型名")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    TextField("例如 customer_model", text: $name)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(minWidth: 280)
-                }
+            editorField(title: "模型名") {
+                TextField("例如 customer_model", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
+            }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("应用")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Picker("", selection: $appType) {
-                        ForEach(appTypes, id: \.self) { item in
-                            Text(ProviderDisplay.appTypeLabel(item)).tag(item)
-                        }
+            editorField(title: "应用") {
+                Picker("", selection: $appType) {
+                    ForEach(appTypes, id: \.self) { item in
+                        Text(ProviderDisplay.appTypeLabel(item)).tag(item)
                     }
-                    .labelsHidden()
-                    .frame(width: 180)
                 }
-                Spacer()
+                .labelsHidden()
+                .frame(width: 220, alignment: .leading)
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("转发目标")
                     .font(.system(size: 15, weight: .semibold))
-                Text("当前目标用于默认转发。")
+                Text("可勾选多个现有模型。")
                     .font(UGStyle.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
 
-            HStack(spacing: 12) {
-                Text("当前目标")
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 76, alignment: .leading)
+            editorField(title: "默认转发目标") {
                 Picker("", selection: $currentTargetID) {
                     if selectedCandidates.isEmpty {
                         Text("先勾选转发目标").tag("")
@@ -1063,8 +1088,7 @@ private struct CustomModelEditorView: View {
                 }
                 .labelsHidden()
                 .disabled(selectedCandidates.isEmpty)
-                .frame(width: 340)
-                Spacer()
+                .frame(width: 320, alignment: .leading)
             }
 
             targetList
@@ -1075,6 +1099,16 @@ private struct CustomModelEditorView: View {
             selectedTargetIDs.removeAll()
             currentTargetID = ""
         }
+    }
+
+    private func editorField<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var targetList: some View {
@@ -1097,10 +1131,14 @@ private struct CustomModelEditorView: View {
     private func targetRow(_ candidate: ModelCandidate) -> some View {
         let id = targetID(candidate)
         let selected = selectedTargetIDs.contains(id)
-        return Toggle(isOn: Binding(
-            get: { selectedTargetIDs.contains(id) },
-            set: { setTarget(id, selected: $0) }
-        )) {
+        return HStack(alignment: .center, spacing: 10) {
+            Toggle("", isOn: Binding(
+                get: { selectedTargetIDs.contains(id) },
+                set: { setTarget(id, selected: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.checkbox)
+
             VStack(alignment: .leading, spacing: 3) {
                 Text(targetTitle(candidate))
                     .font(UGStyle.body)
@@ -1110,10 +1148,11 @@ private struct CustomModelEditorView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            Spacer(minLength: 0)
         }
-        .toggleStyle(.checkbox)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(selected ? Color.blue.opacity(0.08) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -1200,10 +1239,11 @@ private struct CustomModelEditorView: View {
 
 private enum UGStyle {
     static let accent = Color(red: 0.231, green: 0.510, blue: 0.965)
-    static let canvas = Color(nsColor: .windowBackgroundColor)
-    static let sidebar = Color(nsColor: .underPageBackgroundColor)
+    static let canvas = Color.white
+    static let sidebar = Color.white
     static let card = Color(nsColor: .controlBackgroundColor)
     static let line = Color(nsColor: .separatorColor)
+    static let toastBackground = Color(red: 0.98, green: 0.985, blue: 0.995)
     static let body = Font.system(size: 13)
     static let caption = Font.system(size: 11)
 }

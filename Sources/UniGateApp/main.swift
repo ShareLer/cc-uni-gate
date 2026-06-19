@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recentEvents: [ProxyEvent] = []
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
+    private weak var proxyStatusMenuItem: NSMenuItem?
     private let logger = FileLogger()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -98,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         proxyItem.isEnabled = false
         menu.addItem(proxyItem)
+        proxyStatusMenuItem = proxyItem
         menu.addItem(.separator())
 
         let visibleRouteKeys = preferences.visibleRouteKeyList(allRouteKeys: catalog.routeKeys)
@@ -154,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func rebuildErrorMenu(_ error: Error) {
+        proxyStatusMenuItem = nil
         let menu = NSMenu()
         let errorItem = NSMenuItem(title: "加载 cc-switch DB 失败", action: nil, keyEquivalent: "")
         errorItem.isEnabled = false
@@ -227,12 +230,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         return
                     }
                     do {
+                        let previousPort = self.currentProxyPort()
                         self.preferences = preferences
                         self.customModels = customModels
                         try self.preferencesStore.save(preferences)
                         try self.customModelStore.save(customModels)
                         self.reloadCatalog()
-                        self.startProxyServer()
+                        if self.currentProxyPort() != previousPort {
+                            self.startProxyServer()
+                        }
                     } catch {
                         self.showError(error)
                     }
@@ -341,11 +347,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recordEvent(eventLevel, eventMessage)
         }
         if didChange {
+            updateVisibleProxyStatusMenuItem()
             rebuildMenu()
             settingsWindowController?.updateProxyStatus(status)
         } else {
             updateStatusItemAppearance()
         }
+    }
+
+    private func updateVisibleProxyStatusMenuItem() {
+        proxyStatusMenuItem?.title = proxyStatus.title(port: currentProxyPort())
     }
 
     private func updateStatusItemAppearance() {
