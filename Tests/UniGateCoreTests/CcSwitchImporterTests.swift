@@ -77,6 +77,21 @@ struct CcSwitchImporterTests {
             )
             try insertProvider(
                 db,
+                id: "unigate-claude",
+                appType: "claude",
+                name: "UniGate",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:17888/claude-code",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL": "Deepseek-v4-flash[1M]"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic"}"#
+            )
+            try insertProvider(
+                db,
                 id: "deepseek",
                 appType: "codex",
                 name: "DeepSeek",
@@ -104,6 +119,11 @@ struct CcSwitchImporterTests {
         ])
         #expect(catalog.candidates.first(where: { $0.logicalModel == "deepseek-v4-pro" })?.label == "GPT-5.5")
         #expect(catalog.candidates.allSatisfy { $0.supportsLongContext })
+
+        let scope = try CcSwitchImporter(dbPath: dbURL.path).loadUniGateModelScope()
+        #expect(scope.contains(ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")))
+        #expect(scope.contains(ModelRouteKey(appType: "claude", logicalModel: "deepseek-v4-flash")))
+        #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "deepseek-v4-pro")))
     }
 
     @Test

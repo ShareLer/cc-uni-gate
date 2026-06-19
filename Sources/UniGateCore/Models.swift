@@ -379,6 +379,34 @@ public struct ProviderCatalog: Sendable {
     }
 }
 
+public struct UniGateModelScope: Sendable {
+    private let normalizedModelsByApp: [String: Set<String>]
+
+    public init(modelsByApp: [String: Set<String>] = [:]) {
+        self.normalizedModelsByApp = modelsByApp.mapValues { models in
+            Set(models.map(Self.normalizedModel))
+        }
+    }
+
+    public func contains(_ routeKey: ModelRouteKey) -> Bool {
+        guard let models = normalizedModelsByApp[routeKey.appType] else {
+            return false
+        }
+        return models.contains(Self.normalizedModel(routeKey.logicalModel))
+    }
+
+    private static func normalizedModel(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutSuffix: String
+        if let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) {
+            withoutSuffix = String(trimmed[..<range.lowerBound])
+        } else {
+            withoutSuffix = trimmed
+        }
+        return withoutSuffix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+}
+
 public struct ActiveRoute: Codable, Sendable {
     public let appType: String
     public let logicalModel: String

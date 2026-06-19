@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let proxyHost = "127.0.0.1"
     private var statusItem: NSStatusItem!
     private var catalog: ProviderCatalog = ProviderCatalog(providers: [], candidates: [])
+    private var uniGateModelScope = UniGateModelScope()
     private var routes = RouteState()
     private var preferences = AppPreferences()
     private var customModels = CustomModelState()
@@ -16,7 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var customModelStore = CustomModelStore()
     private var settingsWindowController: SettingsWindowController?
     private var proxyServer: LocalProxyServer?
-    private lazy var importer = CcSwitchImporter(dbPath: defaultCcSwitchDBPath())
     private var proxyStatus: ProxyStatus = .starting
     private var recentEvents: [ProxyEvent] = []
     private var currentProxyServerID: UUID?
@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
             catalog = try loadExpandedCatalog()
+            uniGateModelScope = try currentImporter().loadUniGateModelScope()
             routes = try routeStore.load(catalog: catalog)
             rebuildMenu()
         } catch {
@@ -102,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         proxyStatusMenuItem = proxyItem
         menu.addItem(.separator())
 
-        let visibleRouteKeys = preferences.visibleRouteKeyList(allRouteKeys: catalog.routeKeys)
+        let visibleRouteKeys = menuRouteKeys()
         if visibleRouteKeys.isEmpty {
             let emptyItem = NSMenuItem(title: "未选择模型", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
@@ -184,8 +185,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let displayLogicalModel = stripOneMSuffix(candidate.logicalModel)
         if displayUpstreamModel != displayLogicalModel {
             parts.append(displayUpstreamModel)
-        } else if let label = candidate.label, label != candidate.providerName {
-            parts.append(label)
         }
         if candidate.requiresTransform {
             parts.append("需要转换")
@@ -193,6 +192,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             parts.append(candidate.apiFormat.rawValue)
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func menuRouteKeys() -> [ModelRouteKey] {
+        let configuredRouteKeys = catalog.routeKeys.filter { key in
+            guard key.appType == "claude" || key.appType == "codex" else {
+                return true
+            }
+            return uniGateModelScope.contains(key)
+        }
+        return preferences.visibleRouteKeyList(allRouteKeys: configuredRouteKeys)
     }
 
     private func stripOneMSuffix(_ model: String) -> String {
@@ -233,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 candidates: catalog.candidates,
                 routeKeys: catalog.routeKeys,
                 customModels: customModels,
+                uniGateModelScope: uniGateModelScope,
                 proxyStatus: proxyStatus,
                 preferences: preferences,
                 onSave: { [weak self] preferences, customModels in
@@ -260,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 candidates: catalog.candidates,
                 routeKeys: catalog.routeKeys,
                 customModels: customModels,
+                uniGateModelScope: uniGateModelScope,
                 proxyStatus: proxyStatus,
                 preferences: preferences
             )
@@ -293,8 +304,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let path = ProcessInfo.processInfo.environment["API_MANAGER_CC_SWITCH_DB"], !path.isEmpty {
             return path
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.cc-switch/cc-switch.db"
+        return preferences.resolvedCcSwitchDBPath
+    }
+
+    private func currentImporter() -> CcSwitchImporter {
+        CcSwitchImporter(dbPath: defaultCcSwitchDBPath())
     }
 
     private func defaultRouteStoreURL() -> URL {
@@ -312,7 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadExpandedCatalog() throws -> ProviderCatalog {
-        let imported = try importer.loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+        let imported = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
         let customCandidates = customModels.expandedCandidates(from: imported)
         return ProviderCatalog(
             providers: imported.providers,
@@ -440,6 +454,7 @@ extension AppDelegate: LocalProxyRuntime {
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()
         catalog = try loadExpandedCatalog()
+        uniGateModelScope = try currentImporter().loadUniGateModelScope()
         routes = try routeStore.load(catalog: catalog)
         recordEvent(.info, "已重新加载 cc-switch DB")
         rebuildMenu()
@@ -660,6 +675,7 @@ private final class SettingsWindowController: NSWindowController {
         candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
         customModels: CustomModelState,
+        uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences,
         onSave: @escaping (AppPreferences, CustomModelState) -> Void
@@ -670,6 +686,7 @@ private final class SettingsWindowController: NSWindowController {
             candidates: candidates,
             routeKeys: routeKeys,
             customModels: customModels,
+            uniGateModelScope: uniGateModelScope,
             proxyStatus: proxyStatus,
             preferences: preferences,
             onSave: onSave
@@ -700,6 +717,7 @@ private final class SettingsWindowController: NSWindowController {
         candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
         customModels: CustomModelState,
+        uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences
     ) {
@@ -709,6 +727,7 @@ private final class SettingsWindowController: NSWindowController {
             candidates: candidates,
             routeKeys: routeKeys,
             customModels: customModels,
+            uniGateModelScope: uniGateModelScope,
             proxyStatus: proxyStatus,
             preferences: preferences
         )

@@ -4,21 +4,25 @@ public struct AppPreferences: Codable, Sendable {
     public var visibleModels: Set<String>?
     public var protocolOverrides: [String: ApiFormat]
     public var port: UInt16
+    public var ccSwitchDBPath: String?
 
     public init(
         visibleModels: Set<String>? = nil,
         protocolOverrides: [String: ApiFormat] = [:],
-        port: UInt16 = 17888
+        port: UInt16 = 17888,
+        ccSwitchDBPath: String? = nil
     ) {
         self.visibleModels = visibleModels
         self.protocolOverrides = protocolOverrides
         self.port = port
+        self.ccSwitchDBPath = ccSwitchDBPath
     }
 
     enum CodingKeys: String, CodingKey {
         case visibleModels
         case protocolOverrides
         case port
+        case ccSwitchDBPath
     }
 
     public init(from decoder: Decoder) throws {
@@ -26,6 +30,7 @@ public struct AppPreferences: Codable, Sendable {
         self.visibleModels = try container.decodeIfPresent(Set<String>.self, forKey: .visibleModels)
         self.protocolOverrides = try container.decodeIfPresent([String: ApiFormat].self, forKey: .protocolOverrides) ?? [:]
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 17888
+        self.ccSwitchDBPath = try container.decodeIfPresent(String.self, forKey: .ccSwitchDBPath)
     }
 
     public func visibleModelList(allModels: [String]) -> [String] {
@@ -50,6 +55,20 @@ public struct AppPreferences: Codable, Sendable {
 
     public var normalizedPort: UInt16 {
         port == 0 ? 17888 : port
+    }
+
+    public var resolvedCcSwitchDBPath: String {
+        let path = ccSwitchDBPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !path.isEmpty {
+            return (path as NSString).expandingTildeInPath
+        }
+        return Self.defaultCcSwitchDBPath()
+    }
+
+    public static func defaultCcSwitchDBPath() -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cc-switch/cc-switch.db")
+            .path
     }
 }
 

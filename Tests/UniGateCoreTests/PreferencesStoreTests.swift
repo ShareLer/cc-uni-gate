@@ -69,6 +69,8 @@ struct PreferencesStoreTests {
         ]) == [ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")])
         #expect(loaded.protocolOverrides.isEmpty)
         #expect(loaded.port == 17888)
+        #expect(loaded.ccSwitchDBPath == nil)
+        #expect(loaded.resolvedCcSwitchDBPath == AppPreferences.defaultCcSwitchDBPath())
     }
 
     @Test
@@ -94,5 +96,19 @@ struct PreferencesStoreTests {
         let loaded = try store.load()
 
         #expect(loaded.port == 17988)
+    }
+
+    @Test
+    func persistsCcSwitchDBPath() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        let store = PreferencesStore(fileURL: tmp)
+        try store.save(AppPreferences(ccSwitchDBPath: "~/.cc-switch/custom.db"))
+
+        let loaded = try store.load()
+
+        #expect(loaded.ccSwitchDBPath == "~/.cc-switch/custom.db")
+        #expect(loaded.resolvedCcSwitchDBPath.hasSuffix("/.cc-switch/custom.db"))
     }
 }

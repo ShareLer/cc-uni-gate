@@ -32,6 +32,36 @@ public struct CcSwitchImporter: Sendable {
         )
     }
 
+    public func loadUniGateModelScope() throws -> UniGateModelScope {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
+
+        let providers = try dbQueue.read { db in
+            try ProviderRow.fetchAll(
+                db,
+                sql: """
+                select id, app_type, name, settings_config, category, sort_index, meta, is_current
+                from providers
+                where app_type in ('claude', 'codex')
+                order by app_type, coalesce(sort_index, 999999), name, id
+                """
+            )
+        }
+
+        let modelsByApp = providers
+            .map(importProvider)
+            .filter(isUniGateProvider)
+            .reduce(into: [String: Set<String>]()) { result, provider in
+                let models = uniGateConfiguredModels(provider)
+                guard !models.isEmpty else {
+                    return
+                }
+                result[provider.appType, default: []].formUnion(models)
+            }
+        return UniGateModelScope(modelsByApp: modelsByApp)
+    }
+
     private func importProvider(_ row: ProviderRow) -> ImportedProvider {
         let settings = JSONValueParser.parseObject(row.settingsConfig)
         let meta = JSONValueParser.parseObject(row.meta)
@@ -75,6 +105,47 @@ public struct CcSwitchImporter: Sendable {
         }
         candidates.append(codexCandidate(provider: provider, logicalModel: model, upstreamModel: model, label: provider.name))
         return candidates
+    }
+
+    private func uniGateConfiguredModels(_ provider: ImportedProvider) -> Set<String> {
+        switch provider.appType {
+        case "codex":
+            let catalogModels = extractCodexCatalogModels(provider)
+            if !catalogModels.isEmpty {
+                return catalogModels
+            }
+            let parsed = CodexConfigParser.parse(JSONValueParser.string(provider.settings, ["config"]))
+            return parsed.model.map { [$0] } ?? []
+        case "claude":
+            return extractClaudeConfiguredModels(provider)
+        default:
+            return []
+        }
+    }
+
+    private func extractCodexCatalogModels(_ provider: ImportedProvider) -> Set<String> {
+        guard case let .array(models)? = JSONValueParser.value(provider.settings, ["modelCatalog", "models"]) else {
+            return []
+        }
+        return Set(models.compactMap { entry in
+            guard case let .object(modelObject) = entry else {
+                return nil
+            }
+            return string(modelObject["model"])
+        })
+    }
+
+    private func extractClaudeConfiguredModels(_ provider: ImportedProvider) -> Set<String> {
+        let fields = [
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+        ]
+        return Set(fields.compactMap { field in
+            JSONValueParser.string(provider.settings, ["env", field])
+        })
     }
 
     private func extractCodexCatalogCandidates(_ provider: ImportedProvider) -> [ModelCandidate] {

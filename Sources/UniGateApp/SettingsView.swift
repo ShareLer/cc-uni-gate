@@ -50,11 +50,13 @@ final class SettingsViewModel: ObservableObject {
     @Published var candidates: [ModelCandidate]
     @Published var routeKeys: [ModelRouteKey]
     @Published var customModels: CustomModelState
+    @Published var uniGateModelScope: UniGateModelScope
     @Published var preferences: AppPreferences
     @Published var proxyStatus: ProxyStatus
     @Published var selectedRouteKeys: Set<ModelRouteKey>
     @Published var protocolOverrides: [String: ApiFormat]
     @Published var portText: String
+    @Published var ccSwitchDBPathText: String
     @Published var selectedModelAppType: String?
     @Published var selectedProviderAppType: String?
     @Published var modelSearch = ""
@@ -72,6 +74,7 @@ final class SettingsViewModel: ObservableObject {
         candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
         customModels: CustomModelState,
+        uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences,
         onSave: @escaping (AppPreferences, CustomModelState) -> Void
@@ -80,13 +83,18 @@ final class SettingsViewModel: ObservableObject {
         self.candidates = candidates
         self.routeKeys = routeKeys
         self.customModels = customModels
+        self.uniGateModelScope = uniGateModelScope
         self.preferences = preferences
         self.proxyStatus = proxyStatus
         self.protocolOverrides = preferences.protocolOverrides
         self.portText = "\(preferences.normalizedPort)"
-        self.selectedRouteKeys = preferences.visibleModels == nil
-            ? Set(routeKeys)
-            : Set(preferences.visibleRouteKeyList(allRouteKeys: routeKeys))
+        self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
+        self.selectedRouteKeys = Self.visibleRouteKeys(
+            preferences: preferences,
+            routeKeys: routeKeys,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope
+        )
         self.onSave = onSave
         self.selectedModelAppType = nil
         self.selectedProviderAppType = nil
@@ -97,6 +105,7 @@ final class SettingsViewModel: ObservableObject {
         candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
         customModels: CustomModelState,
+        uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences
     ) {
@@ -104,13 +113,18 @@ final class SettingsViewModel: ObservableObject {
         self.candidates = candidates
         self.routeKeys = routeKeys
         self.customModels = customModels
+        self.uniGateModelScope = uniGateModelScope
         self.proxyStatus = proxyStatus
         self.preferences = preferences
         self.protocolOverrides = preferences.protocolOverrides
         self.portText = "\(preferences.normalizedPort)"
-        self.selectedRouteKeys = preferences.visibleModels == nil
-            ? Set(routeKeys)
-            : Set(preferences.visibleRouteKeyList(allRouteKeys: routeKeys))
+        self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
+        self.selectedRouteKeys = Self.visibleRouteKeys(
+            preferences: preferences,
+            routeKeys: routeKeys,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope
+        )
         if let selectedModelAppType, !modelAppTypes.contains(selectedModelAppType) {
             self.selectedModelAppType = nil
         }
@@ -128,15 +142,33 @@ final class SettingsViewModel: ObservableObject {
             showToast("端口无效")
             return
         }
-        let saveRouteKeys = Set(modelRouteKeys())
+        let saveRouteKeys = Set(modelRouteKeys().filter(isModelSelectable))
         let visible = selectedRouteKeys.intersection(saveRouteKeys)
         let visibleModels = visible == saveRouteKeys ? nil : Set(visible.map(\.description))
+        let ccSwitchDBPath = ccSwitchDBPathText.trimmingCharacters(in: .whitespacesAndNewlines)
         onSave(AppPreferences(
             visibleModels: visibleModels,
             protocolOverrides: protocolOverrides,
-            port: port
+            port: port,
+            ccSwitchDBPath: ccSwitchDBPath.isEmpty ? nil : ccSwitchDBPath
         ), customModels)
         onClose?()
+    }
+
+    private static func visibleRouteKeys(
+        preferences: AppPreferences,
+        routeKeys: [ModelRouteKey],
+        customModels: CustomModelState,
+        uniGateModelScope: UniGateModelScope
+    ) -> Set<ModelRouteKey> {
+        let allRouteKeys = modelRouteKeys(routeKeys: routeKeys, customModels: customModels)
+        let selectable = Set(allRouteKeys.filter {
+            Self.isModelSelectable($0, uniGateModelScope: uniGateModelScope)
+        })
+        guard preferences.visibleModels != nil else {
+            return selectable
+        }
+        return Set(preferences.visibleRouteKeyList(allRouteKeys: allRouteKeys)).intersection(selectable)
     }
 
     func cancel() {
@@ -196,8 +228,9 @@ final class SettingsViewModel: ObservableObject {
     var modelCountText: String {
         let appType = currentModelAppType
         let appKeys = modelRouteKeys().filter { appType == nil || $0.appType == appType }
-        let visibleInApp = appKeys.filter { selectedRouteKeys.contains($0) }.count
-        let selectedText = "已显示 \(visibleInApp)/\(appKeys.count) 个模型"
+        let selectableInApp = appKeys.filter(isModelSelectable)
+        let visibleInApp = selectableInApp.filter { selectedRouteKeys.contains($0) }.count
+        let selectedText = "已显示 \(visibleInApp)/\(selectableInApp.count) 个可用模型"
         if filteredModelKeys.count == appKeys.count {
             return selectedText
         }
@@ -227,19 +260,19 @@ final class SettingsViewModel: ObservableObject {
         providerSearch = ""
     }
 
-    func selectAllModels() {
-        selectedRouteKeys.formUnion(filteredModelKeys)
-    }
-
-    func selectNoModels() {
-        selectedRouteKeys.subtract(filteredModelKeys)
-    }
-
     func isVisible(_ routeKey: ModelRouteKey) -> Bool {
         selectedRouteKeys.contains(routeKey)
     }
 
+    func isModelSelectable(_ routeKey: ModelRouteKey) -> Bool {
+        Self.isModelSelectable(routeKey, uniGateModelScope: uniGateModelScope)
+    }
+
     func setVisible(_ routeKey: ModelRouteKey, visible: Bool) {
+        guard isModelSelectable(routeKey) else {
+            selectedRouteKeys.remove(routeKey)
+            return
+        }
         if visible {
             selectedRouteKeys.insert(routeKey)
         } else {
@@ -357,7 +390,9 @@ final class SettingsViewModel: ObservableObject {
             selectedRouteKeys.remove(ModelRouteKey(appType: existing.appType, logicalModel: existing.name))
         }
         let routeKey = ModelRouteKey(appType: edited.appType, logicalModel: edited.name)
-        selectedRouteKeys.insert(routeKey)
+        if isModelSelectable(routeKey) {
+            selectedRouteKeys.insert(routeKey)
+        }
         selectedModelAppType = edited.appType
         modelSearch = ""
     }
@@ -487,7 +522,14 @@ final class SettingsViewModel: ObservableObject {
 
     private func modelRouteKeys() -> [ModelRouteKey] {
         let baseRouteKeys = baseModelCandidates().map(\.routeKey)
-        return Array(Set(baseRouteKeys).union(customModels.models.map {
+        return Self.modelRouteKeys(routeKeys: baseRouteKeys, customModels: customModels)
+    }
+
+    private static func modelRouteKeys(
+        routeKeys: [ModelRouteKey],
+        customModels: CustomModelState
+    ) -> [ModelRouteKey] {
+        Array(Set(routeKeys).union(customModels.models.map {
             ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
         })).sorted { lhs, rhs in
             let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)
@@ -497,6 +539,16 @@ final class SettingsViewModel: ObservableObject {
             }
             return lhs.logicalModel.localizedStandardCompare(rhs.logicalModel) == .orderedAscending
         }
+    }
+
+    private static func isModelSelectable(
+        _ routeKey: ModelRouteKey,
+        uniGateModelScope: UniGateModelScope
+    ) -> Bool {
+        guard routeKey.appType == "claude" || routeKey.appType == "codex" else {
+            return true
+        }
+        return uniGateModelScope.contains(routeKey)
     }
 }
 
@@ -662,6 +714,14 @@ struct SettingsRootView: View {
                         .multilineTextAlignment(.trailing)
                         .frame(width: 108)
                 }
+                Divider()
+                settingsRow(title: "cc-switch 数据库路径", subtitle: "留空使用默认路径。") {
+                    TextField(AppPreferences.defaultCcSwitchDBPath(), text: $model.ccSwitchDBPathText)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(minWidth: 300)
+                }
             }
 
             card(spacing: 0) {
@@ -697,10 +757,6 @@ struct SettingsRootView: View {
                         Label("自定义", systemImage: "plus")
                     }
                     .fixedSize()
-                    Button("全选") { model.selectAllModels() }
-                        .fixedSize()
-                    Button("取消全部") { model.selectNoModels() }
-                        .fixedSize()
                 }
                 rowList {
                     ForEach(model.filteredModelKeys, id: \.description) { key in
@@ -788,12 +844,14 @@ struct SettingsRootView: View {
 
     private func modelRow(_ key: ModelRouteKey) -> some View {
         let custom = model.customModel(for: key)
+        let isSelectable = model.isModelSelectable(key)
         return HStack(alignment: .center, spacing: 10) {
             Toggle("", isOn: Binding(
-                get: { model.isVisible(key) },
+                get: { isSelectable && model.isVisible(key) },
                 set: { model.setVisible(key, visible: $0) }
             ))
             .labelsHidden()
+            .disabled(!isSelectable)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -807,6 +865,14 @@ struct SettingsRootView: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                    if !isSelectable {
+                        Text("未配置")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
                     }
                 }
                 Text(model.modelDetailText(for: key))
@@ -834,7 +900,8 @@ struct SettingsRootView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(model.isVisible(key) ? Color.blue.opacity(0.08) : Color.clear)
+        .opacity(isSelectable ? 1 : 0.48)
+        .background(isSelectable && model.isVisible(key) ? Color.blue.opacity(0.08) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
