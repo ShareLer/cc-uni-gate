@@ -135,9 +135,9 @@ final class LocalProxyServer: @unchecked Sendable {
                 return catalogResponse(snapshot)
             }
 
-            if request.method == "GET", ProxyRequestPath(request.path) == .models {
+            if request.method == "GET", case let .models(appType) = ProxyRequestPath(request.path) {
                 let snapshot = await MainActor.run { runtime.proxySnapshot() }
-                return modelsResponse(snapshot)
+                return modelsResponse(snapshot, appType: appType)
             }
 
             if request.method == "POST", request.path == "/__manager/routes" {
@@ -301,9 +301,10 @@ final class LocalProxyServer: @unchecked Sendable {
         ])
     }
 
-    private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot) -> HTTPResponse {
+    private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot, appType: String?) -> HTTPResponse {
+        let appType = appType ?? "codex"
         let modelIDs = Array(Set(snapshot.catalog.routeKeys
-            .filter { $0.appType == "codex" }
+            .filter { $0.appType == appType }
             .map(\.logicalModel)))
             .sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }

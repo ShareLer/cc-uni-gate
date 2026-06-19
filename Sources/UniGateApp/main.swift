@@ -1062,7 +1062,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     private func updateBaseURLLabel() {
         let port = UInt16(portField.stringValue) ?? 17888
-        baseURLLabel.stringValue = "http://127.0.0.1:\(port)/openai"
+        baseURLLabel.stringValue = "http://127.0.0.1:\(port)/codex"
     }
 }
 

@@ -17,37 +17,56 @@ public enum ClientProtocolKind: String, Codable, Sendable {
 
 public enum ProxyRequestPath: Equatable, Sendable {
     case proxy(protocolKind: ClientProtocolKind, appType: String)
-    case models
+    case models(appType: String?)
     case unsupported
 
     public init(_ rawPath: String) {
-        let path = rawPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? rawPath
+        let rawPath = rawPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? rawPath
+        let scoped = Self.scopedPath(rawPath)
+        let path = scoped.path
 
         if Self.modelPaths.contains(path) {
-            self = .models
+            self = .models(appType: scoped.appType)
         } else if Self.claudePaths.contains(path) {
-            self = .proxy(protocolKind: .anthropicMessages, appType: "claude")
+            self = .proxy(protocolKind: .anthropicMessages, appType: scoped.appType ?? "claude")
         } else if Self.claudeDesktopPaths.contains(path) {
             self = .proxy(protocolKind: .anthropicMessages, appType: "claude-desktop")
         } else if Self.codexResponsesPaths.contains(path) {
-            self = .proxy(protocolKind: .codexResponses, appType: "codex")
+            self = .proxy(protocolKind: .codexResponses, appType: scoped.appType ?? "codex")
         } else if Self.openAIChatPaths.contains(path) {
-            self = .proxy(protocolKind: .openaiChat, appType: "codex")
+            self = .proxy(protocolKind: .openaiChat, appType: scoped.appType ?? "codex")
         } else {
             self = .unsupported
         }
     }
 
+    private static func scopedPath(_ path: String) -> (path: String, appType: String?) {
+        for (prefix, appType) in appPrefixes {
+            if path == prefix {
+                return ("/", appType)
+            }
+            if path.hasPrefix("\(prefix)/") {
+                return (String(path.dropFirst(prefix.count)), appType)
+            }
+        }
+        return (path, nil)
+    }
+
+    private static let appPrefixes: [(String, String)] = [
+        ("/claude-desktop", "claude-desktop"),
+        ("/claude-code", "claude"),
+        ("/claude", "claude"),
+        ("/anthropic", "claude"),
+        ("/codex", "codex"),
+        ("/openai", "codex")
+    ]
+
     private static let modelPaths: Set<String> = [
-        "/models", "/v1/models", "/v1/v1/models",
-        "/openai/models", "/openai/v1/models",
-        "/codex/models", "/codex/v1/models"
+        "/models", "/v1/models", "/v1/v1/models"
     ]
 
     private static let claudePaths: Set<String> = [
-        "/v1/messages", "/v1/messages/count_tokens",
-        "/anthropic/v1/messages", "/anthropic/v1/messages/count_tokens",
-        "/claude/v1/messages", "/claude/v1/messages/count_tokens"
+        "/v1/messages", "/v1/messages/count_tokens"
     ]
 
     private static let claudeDesktopPaths: Set<String> = [
@@ -58,16 +77,12 @@ public enum ProxyRequestPath: Equatable, Sendable {
     private static let codexResponsesPaths: Set<String> = [
         "/responses", "/responses/compact",
         "/v1/responses", "/v1/responses/compact",
-        "/v1/v1/responses", "/v1/v1/responses/compact",
-        "/openai/v1/responses", "/openai/v1/responses/compact",
-        "/codex/v1/responses", "/codex/v1/responses/compact"
+        "/v1/v1/responses", "/v1/v1/responses/compact"
     ]
 
     private static let openAIChatPaths: Set<String> = [
         "/chat/completions", "/v1/chat/completions",
-        "/v1/v1/chat/completions",
-        "/openai/v1/chat/completions",
-        "/codex/v1/chat/completions"
+        "/v1/v1/chat/completions"
     ]
 }
 

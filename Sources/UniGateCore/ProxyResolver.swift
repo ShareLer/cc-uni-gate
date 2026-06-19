@@ -153,7 +153,7 @@ public enum ProxyResolver {
         }
 
         if provider.appType == "claude" || provider.appType == "claude-desktop" {
-            return stripManagerPrefixes(path, prefixes: ["/anthropic", "/claude", "/claude-desktop"])
+            return stripManagerPrefixes(path, prefixes: ["/anthropic", "/claude-code", "/claude", "/claude-desktop"])
         }
 
         return path

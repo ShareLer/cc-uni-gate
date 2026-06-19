@@ -70,6 +70,37 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesExplicitCodexPrefixPath() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com/v1",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let candidate = candidate(provider: provider, requiresTransform: false)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: Data(#"{"model":"gpt-5.5","input":"hello"}"#.utf8)
+        )
+
+        #expect(resolved.upstreamURL.absoluteString == "https://api.example.com/v1/responses")
+    }
+
+    @Test
     func failsClosedWhenTransformIsRequired() throws {
         let provider = ImportedProvider(
             id: "p1",
@@ -193,6 +224,49 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesExplicitClaudeCodePrefixPath() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "claude",
+            name: "Claude Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://anthropic.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("claude-token")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "claude-sonnet-4-6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "upstream-sonnet",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude",
+            path: "/claude-code/v1/messages",
+            body: Data(#"{"model":"claude-sonnet-4-6","messages":[]}"#.utf8)
+        )
+
+        #expect(resolved.upstreamURL.absoluteString == "https://anthropic.example.com/v1/messages")
+    }
+
+    @Test
     func resolvesExplicitClaudeDesktopPath() throws {
         let provider = ImportedProvider(
             id: "p1",
@@ -241,8 +315,14 @@ struct ProxyResolverTests {
         #expect(ProxyRequestPath("/v1/v1/responses") == .proxy(protocolKind: .codexResponses, appType: "codex"))
         #expect(ProxyRequestPath("/v1/chat/completions") == .proxy(protocolKind: .openaiChat, appType: "codex"))
         #expect(ProxyRequestPath("/v1/messages") == .proxy(protocolKind: .anthropicMessages, appType: "claude"))
+        #expect(ProxyRequestPath("/codex/responses") == .proxy(protocolKind: .codexResponses, appType: "codex"))
+        #expect(ProxyRequestPath("/codex/v1/chat/completions") == .proxy(protocolKind: .openaiChat, appType: "codex"))
+        #expect(ProxyRequestPath("/claude-code/v1/messages") == .proxy(protocolKind: .anthropicMessages, appType: "claude"))
         #expect(ProxyRequestPath("/claude-desktop/v1/messages") == .proxy(protocolKind: .anthropicMessages, appType: "claude-desktop"))
-        #expect(ProxyRequestPath("/v1/models") == .models)
+        #expect(ProxyRequestPath("/v1/models") == .models(appType: nil))
+        #expect(ProxyRequestPath("/codex/v1/models") == .models(appType: "codex"))
+        #expect(ProxyRequestPath("/claude-code/v1/models") == .models(appType: "claude"))
+        #expect(ProxyRequestPath("/claude-desktop/v1/models") == .models(appType: "claude-desktop"))
     }
 
     @Test

@@ -37,7 +37,7 @@ Use the `Copy` button in `Settings... -> General` when configuring Codex or
 another OpenAI-compatible client:
 
 ```text
-http://127.0.0.1:17888/openai
+http://127.0.0.1:17888/codex
 ```
 
 The selected provider is written to:
@@ -170,6 +170,18 @@ Route switch body:
 ```
 
 Proxy endpoints:
+
+```text
+POST /codex/v1/responses
+POST /codex/v1/responses/compact
+POST /codex/v1/chat/completions
+POST /claude-code/v1/messages
+POST /claude-code/v1/messages/count_tokens
+POST /claude-desktop/v1/messages
+POST /claude-desktop/v1/messages/count_tokens
+```
+
+Compatibility endpoints:
 
 ```text
 POST /openai/v1/responses
