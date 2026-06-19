@@ -16,13 +16,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var importer = CcSwitchImporter(dbPath: defaultCcSwitchDBPath())
     private var proxyStatus: ProxyStatus = .starting
     private var recentEvents: [ProxyEvent] = []
+    private var currentProxyServerID: UUID?
+    private var healthCheckTask: Task<Void, Never>?
     private let logger = FileLogger()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "API"
         statusItem.button?.toolTip = "CC Uni Gate"
+        updateStatusItemAppearance()
         do {
             try AppPaths.migrateLegacyApplicationSupportDirectory()
         } catch {
@@ -33,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        healthCheckTask?.cancel()
+        currentProxyServerID = nil
         proxyServer?.stop()
     }
 
@@ -49,17 +53,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startProxyServer() {
         do {
+            healthCheckTask?.cancel()
+            currentProxyServerID = nil
             proxyServer?.stop()
+            updateProxyStatus(.starting, eventLevel: .info, eventMessage: "代理启动中 \(managerBaseURL())")
             let server = LocalProxyServer(port: currentProxyPort(), runtime: self)
+            currentProxyServerID = server.id
             try server.start()
             proxyServer = server
-            proxyStatus = .running
-            recordEvent(.info, "代理正在监听 \(managerBaseURL())")
-            rebuildMenu()
+            startHealthMonitoring()
         } catch {
-            proxyStatus = .failed(error.localizedDescription)
-            recordEvent(.error, "代理启动失败：\(error.localizedDescription)")
-            rebuildMenu()
+            currentProxyServerID = nil
+            updateProxyStatus(
+                .failed(error.localizedDescription),
+                eventLevel: .error,
+                eventMessage: "代理启动失败：\(error.localizedDescription)"
+            )
             showError(error)
         }
     }
@@ -137,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(appMenuItem(title: "重新加载 cc-switch DB", action: #selector(reloadAction), keyEquivalent: "r"))
         menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
+        updateStatusItemAppearance()
     }
 
     private func rebuildErrorMenu(_ error: Error) {
@@ -152,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(appMenuItem(title: "打开应用文件夹", action: #selector(openAppFolder), keyEquivalent: ""))
         menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
+        updateStatusItemAppearance()
     }
 
     private func appMenuItem(title: String, action: Selector, keyEquivalent: String) -> NSMenuItem {
@@ -301,6 +312,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         logger.log(level, message)
     }
+
+    private func updateProxyStatus(
+        _ status: ProxyStatus,
+        eventLevel: ProxyEvent.Level? = nil,
+        eventMessage: String? = nil
+    ) {
+        let didChange = proxyStatus != status
+        proxyStatus = status
+        if let eventLevel, let eventMessage, didChange {
+            recordEvent(eventLevel, eventMessage)
+        }
+        if didChange {
+            rebuildMenu()
+            settingsWindowController?.updateProxyStatus(status)
+        } else {
+            updateStatusItemAppearance()
+        }
+    }
+
+    private func updateStatusItemAppearance() {
+        guard let button = statusItem?.button else {
+            return
+        }
+        let title = NSMutableAttributedString(
+            string: "UniGate ",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: NSColor.labelColor
+            ]
+        )
+        title.append(NSAttributedString(
+            string: "●",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: proxyStatus.accentColor,
+                .baselineOffset: 1
+            ]
+        ))
+        button.attributedTitle = title
+        button.toolTip = "CC Uni Gate · \(proxyStatus.title(port: currentProxyPort()))"
+    }
+
+    private func startHealthMonitoring() {
+        healthCheckTask?.cancel()
+        healthCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await self?.checkProxyHealth()
+            }
+        }
+    }
+
+    private func checkProxyHealth() async {
+        guard let serverID = currentProxyServerID else {
+            return
+        }
+        let url = URL(string: "\(managerBaseURL())/__manager/health")!
+        let result = await ProxyHealthProbe.check(url: url, expectedServerID: serverID)
+        guard serverID == currentProxyServerID else {
+            return
+        }
+
+        switch result {
+        case .success:
+            if !proxyStatus.isRunning {
+                updateProxyStatus(
+                    .running,
+                    eventLevel: .info,
+                    eventMessage: "代理健康检查恢复 \(managerBaseURL())"
+                )
+            }
+        case .failure(let message):
+            updateProxyStatus(
+                .failed("健康检查失败：\(message)"),
+                eventLevel: .error,
+                eventMessage: "代理健康检查失败：\(message)"
+            )
+        }
+    }
 }
 
 extension AppDelegate: LocalProxyRuntime {
@@ -334,12 +424,54 @@ extension AppDelegate: LocalProxyRuntime {
         recordEvent(level, message)
         rebuildMenu()
     }
+
+    func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID) {
+        guard serverID == currentProxyServerID else {
+            return
+        }
+
+        switch state {
+        case .setup:
+            updateProxyStatus(.starting)
+        case .waiting(let message):
+            updateProxyStatus(
+                .failed("监听等待：\(message)"),
+                eventLevel: .error,
+                eventMessage: "代理监听等待：\(message)"
+            )
+        case .ready:
+            updateProxyStatus(
+                .running,
+                eventLevel: .info,
+                eventMessage: "代理正在监听 \(managerBaseURL())"
+            )
+        case .failed(let message):
+            updateProxyStatus(
+                .failed("监听失败：\(message)"),
+                eventLevel: .error,
+                eventMessage: "代理监听失败：\(message)"
+            )
+        case .cancelled:
+            updateProxyStatus(
+                .failed("监听已停止"),
+                eventLevel: .error,
+                eventMessage: "代理监听已停止"
+            )
+        }
+    }
 }
 
-enum ProxyStatus {
+enum ProxyStatus: Equatable {
     case starting
     case running
     case failed(String)
+
+    var isRunning: Bool {
+        if case .running = self {
+            return true
+        }
+        return false
+    }
 
     func title(port: UInt16) -> String {
         switch self {
@@ -366,11 +498,46 @@ enum ProxyStatus {
     var accentColor: NSColor {
         switch self {
         case .starting:
-            return .systemOrange
+            return .systemRed
         case .running:
             return .systemGreen
         case .failed:
             return .systemRed
+        }
+    }
+}
+
+private enum ProxyHealthResult {
+    case success
+    case failure(String)
+}
+
+private enum ProxyHealthProbe {
+    static func check(url: URL, expectedServerID: UUID) async -> ProxyHealthResult {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 0.6
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .failure("无 HTTP 响应")
+            }
+            if http.statusCode == 200 {
+                guard
+                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let serverID = json["serverID"] as? String
+                else {
+                    return .failure("健康检查缺少实例标识")
+                }
+                if serverID == expectedServerID.uuidString {
+                    return .success
+                }
+                return .failure("端口由其他实例占用")
+            }
+            return .failure("HTTP \(http.statusCode)")
+        } catch {
+            return .failure(error.localizedDescription)
         }
     }
 }
@@ -529,6 +696,13 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         applyProviderFilter()
         updateProviderCount()
         renderSelectedSection()
+    }
+
+    func updateProxyStatus(_ proxyStatus: ProxyStatus) {
+        self.proxyStatus = proxyStatus
+        if selectedSection == .general {
+            renderSelectedSection()
+        }
     }
 
     override func showWindow(_ sender: Any?) {

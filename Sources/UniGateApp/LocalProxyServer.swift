@@ -8,6 +8,7 @@ protocol LocalProxyRuntime: AnyObject {
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
     func recordProxyEvent(level: ProxyEvent.Level, message: String)
+    func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID)
 }
 
 struct ProxyRuntimeSnapshot: Sendable {
@@ -15,7 +16,16 @@ struct ProxyRuntimeSnapshot: Sendable {
     let routes: RouteState
 }
 
+enum ProxyListenerState: Sendable {
+    case setup
+    case waiting(String)
+    case ready
+    case failed(String)
+    case cancelled
+}
+
 final class LocalProxyServer: @unchecked Sendable {
+    let id = UUID()
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
     private let runtime: any LocalProxyRuntime
@@ -33,18 +43,41 @@ final class LocalProxyServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in
             self?.handle(connection)
         }
-        listener.stateUpdateHandler = { state in
-            if case let .failed(error) = state {
-                fputs("UniGate proxy failed: \(error)\n", stderr)
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else {
+                return
             }
+            self.report(state)
         }
-        listener.start(queue: queue)
         self.listener = listener
+        listener.start(queue: queue)
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+    }
+
+    private func report(_ state: NWListener.State) {
+        let proxyState: ProxyListenerState
+        switch state {
+        case .setup:
+            proxyState = .setup
+        case .waiting(let error):
+            proxyState = .waiting(error.localizedDescription)
+        case .ready:
+            proxyState = .ready
+        case .failed(let error):
+            proxyState = .failed(error.localizedDescription)
+        case .cancelled:
+            proxyState = .cancelled
+        @unknown default:
+            proxyState = .failed("未知监听状态")
+        }
+
+        Task { @MainActor in
+            self.runtime.proxyListenerDidChange(proxyState, serverID: self.id)
+        }
     }
 
     private func handle(_ connection: NWConnection) {
@@ -120,6 +153,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 let snapshot = await MainActor.run { runtime.proxySnapshot() }
                 return .json(status: 200, body: [
                     "ok": true,
+                    "serverID": id.uuidString,
                     "providers": snapshot.catalog.providers.count,
                     "candidates": snapshot.catalog.candidates.count
                 ])
