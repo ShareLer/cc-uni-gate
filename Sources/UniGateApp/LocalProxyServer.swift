@@ -8,6 +8,7 @@ protocol LocalProxyRuntime: AnyObject {
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
     func recordProxyEvent(level: ProxyEvent.Level, message: String)
+    func recordForwardedRequest(appType: String)
     func proxyProviderDidSucceed()
     func proxyProviderDidFail(_ message: String)
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID)
@@ -216,6 +217,9 @@ final class LocalProxyServer: @unchecked Sendable {
                 path: request.path,
                 body: request.body
             )
+            await MainActor.run {
+                runtime.recordForwardedRequest(appType: route.appType)
+            }
 
             var upstreamRequest = URLRequest(url: resolved.upstreamURL)
             upstreamRequest.httpMethod = "POST"

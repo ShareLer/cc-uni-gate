@@ -237,6 +237,15 @@ final class SettingsViewModel: ObservableObject {
         return "\(selectedText) · 匹配 \(filteredModelKeys.count) 个"
     }
 
+    var uniGateScopeWarningText: String? {
+        let missing = missingUniGateScopeAppTypes()
+        guard !missing.isEmpty else {
+            return nil
+        }
+        let labels = missing.map(ProviderDisplay.appTypeLabel).joined(separator: "、")
+        return "未识别到 \(labels) 的 UniGate 自供应商配置，请检查 cc-switch 里的供应商名称或 Base URL。"
+    }
+
     var providerCountText: String {
         let overrides = filteredProviders.filter { protocolOverrides[$0.ref.description] != nil }.count
         return "\(filteredProviders.count) 个供应商 · \(overrides) 个覆盖"
@@ -429,6 +438,13 @@ final class SettingsViewModel: ObservableObject {
             !customModels.models.contains {
                 $0.appType == candidate.appType && $0.name == candidate.logicalModel
             }
+        }
+    }
+
+    private func missingUniGateScopeAppTypes() -> [String] {
+        ["claude", "codex"].filter { appType in
+            baseModelCandidates().contains { $0.appType == appType }
+                && !uniGateModelScope.hasModels(for: appType)
         }
     }
 
@@ -746,6 +762,9 @@ struct SettingsRootView: View {
                     model.currentModelAppType.map(ProviderDisplay.appTypeLabel) ?? "应用",
                     detail: model.modelCountText
                 )
+                if let warningText = model.uniGateScopeWarningText {
+                    warningBanner(warningText)
+                }
                 HStack(spacing: 8) {
                     TextField("搜索模型", text: $model.modelSearch)
                         .textFieldStyle(.roundedBorder)
@@ -997,6 +1016,22 @@ struct SettingsRootView: View {
         .padding(12)
         .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.28)))
+    }
+
+    private func warningBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(UGStyle.caption)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.28)))
     }
 
     private func card<Content: View>(spacing: CGFloat = 12, @ViewBuilder content: () -> Content) -> some View {

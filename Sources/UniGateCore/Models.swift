@@ -395,6 +395,13 @@ public struct UniGateModelScope: Sendable {
         return models.contains(Self.normalizedModel(routeKey.logicalModel))
     }
 
+    public func hasModels(for appType: String) -> Bool {
+        guard let models = normalizedModelsByApp[appType] else {
+            return false
+        }
+        return !models.isEmpty
+    }
+
     private static func normalizedModel(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let withoutSuffix: String

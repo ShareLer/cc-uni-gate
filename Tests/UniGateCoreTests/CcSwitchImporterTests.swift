@@ -121,6 +121,9 @@ struct CcSwitchImporterTests {
         #expect(catalog.candidates.allSatisfy { $0.supportsLongContext })
 
         let scope = try CcSwitchImporter(dbPath: dbURL.path).loadUniGateModelScope()
+        #expect(scope.hasModels(for: "codex"))
+        #expect(scope.hasModels(for: "claude"))
+        #expect(!scope.hasModels(for: "gemini"))
         #expect(scope.contains(ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")))
         #expect(scope.contains(ModelRouteKey(appType: "claude", logicalModel: "deepseek-v4-flash")))
         #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "deepseek-v4-pro")))

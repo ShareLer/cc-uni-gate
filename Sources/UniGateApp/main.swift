@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var proxyServer: LocalProxyServer?
     private var proxyStatus: ProxyStatus = .starting
     private var recentEvents: [ProxyEvent] = []
+    private var forwardedRequestCounts: [String: Int] = [:]
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
     private weak var proxyStatusMenuItem: NSMenuItem?
@@ -101,6 +102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         proxyItem.isEnabled = false
         menu.addItem(proxyItem)
         proxyStatusMenuItem = proxyItem
+        for item in forwardedRequestCountItems() {
+            menu.addItem(item)
+        }
+        for item in uniGateScopeWarningItems() {
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
 
         let visibleRouteKeys = menuRouteKeys()
@@ -202,6 +209,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return uniGateModelScope.contains(key)
         }
         return preferences.visibleRouteKeyList(allRouteKeys: configuredRouteKeys)
+    }
+
+    private func forwardedRequestCountItems() -> [NSMenuItem] {
+        let appTypes = ["claude", "codex", "claude-desktop", "gemini"]
+        return appTypes.compactMap { appType in
+            guard let count = forwardedRequestCounts[appType], count > 0 else {
+                return nil
+            }
+            let item = NSMenuItem(
+                title: "\(ProviderDisplay.appTypeLabel(appType))：\(count) req",
+                action: nil,
+                keyEquivalent: ""
+            )
+            item.isEnabled = false
+            return item
+        }
+    }
+
+    private func uniGateScopeWarningItems() -> [NSMenuItem] {
+        let missing = missingUniGateScopeAppTypes()
+        guard !missing.isEmpty else {
+            return []
+        }
+        let labels = missing.map(ProviderDisplay.appTypeLabel).joined(separator: "、")
+        let titleItem = NSMenuItem(
+            title: "未识别到 \(labels) 的 UniGate 配置",
+            action: nil,
+            keyEquivalent: ""
+        )
+        titleItem.isEnabled = false
+        let detailItem = NSMenuItem(
+            title: "请检查 cc-switch 供应商名称或 Base URL",
+            action: nil,
+            keyEquivalent: ""
+        )
+        detailItem.isEnabled = false
+        return [titleItem, detailItem]
+    }
+
+    private func missingUniGateScopeAppTypes() -> [String] {
+        ["claude", "codex"].filter { appType in
+            catalog.candidates.contains {
+                $0.appType == appType && $0.providerRef == $0.upstreamProviderRef
+            } && !uniGateModelScope.hasModels(for: appType)
+        }
     }
 
     private func stripOneMSuffix(_ model: String) -> String {
@@ -476,6 +528,11 @@ extension AppDelegate: LocalProxyRuntime {
 
     func recordProxyEvent(level: ProxyEvent.Level, message: String) {
         recordEvent(level, message)
+        rebuildMenu()
+    }
+
+    func recordForwardedRequest(appType: String) {
+        forwardedRequestCounts[appType, default: 0] += 1
         rebuildMenu()
     }
 
