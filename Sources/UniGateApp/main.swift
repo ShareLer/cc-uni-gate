@@ -344,11 +344,11 @@ enum ProxyStatus {
     func title(port: UInt16) -> String {
         switch self {
         case .starting:
-            return "代理：启动中 · :\(port)"
+            return "代理端口: \(port) | 启动中"
         case .running:
-            return "代理：运行中 · :\(port)"
+            return "代理端口: \(port) | 运行中"
         case let .failed(message):
-            return "代理：失败 · \(message)"
+            return "代理端口: \(port) | 失败：\(message)"
         }
     }
 

@@ -5,7 +5,7 @@ import Testing
 
 struct CcSwitchImporterTests {
     @Test
-    func codexMetaApiFormatDescribesRealUpstreamProtocol() throws {
+    func codexWireAPIOverridesStaleMetaApiFormat() throws {
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent("cc-switch.db")
@@ -54,7 +54,7 @@ struct CcSwitchImporterTests {
         let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
         let candidate = try #require(catalog.candidates.first)
 
-        #expect(candidate.apiFormat == .openaiChat)
+        #expect(candidate.apiFormat == .openaiResponses)
         #expect(!candidate.requiresTransform)
     }
 

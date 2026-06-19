@@ -199,6 +199,14 @@ public struct CcSwitchImporter: Sendable {
         settings: [String: SendableValue],
         meta: [String: SendableValue]
     ) -> ApiFormat {
+        if appType == "codex" {
+            let parsed = CodexConfigParser.parse(JSONValueParser.string(settings, ["config"]))
+            let wireFormat = normalizeApiFormat(parsed.wireAPI)
+            if wireFormat != .unknown {
+                return wireFormat
+            }
+        }
+
         let metaFormat = normalizeApiFormat(string(meta["apiFormat"]))
         if metaFormat != .unknown {
             return metaFormat
@@ -209,14 +217,6 @@ public struct CcSwitchImporter: Sendable {
         )
         if settingsFormat != .unknown {
             return settingsFormat
-        }
-
-        if appType == "codex" {
-            let parsed = CodexConfigParser.parse(JSONValueParser.string(settings, ["config"]))
-            let wireFormat = normalizeApiFormat(parsed.wireAPI)
-            if wireFormat != .unknown {
-                return wireFormat
-            }
         }
 
         if appType == "claude" || appType == "claude-desktop" {
