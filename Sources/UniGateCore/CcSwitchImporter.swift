@@ -25,7 +25,7 @@ public struct CcSwitchImporter: Sendable {
             )
         }
 
-        let imported = providers.map(importProvider)
+        let imported = providers.map(importProvider).filter { !isUniGateProvider($0) }
         return ProviderCatalog(
             providers: imported,
             candidates: imported.flatMap(extractCandidates)
@@ -65,24 +65,45 @@ public struct CcSwitchImporter: Sendable {
 
     private func extractCodexCandidates(_ provider: ImportedProvider) -> [ModelCandidate] {
         let parsed = CodexConfigParser.parse(JSONValueParser.string(provider.settings, ["config"]))
+        var candidates = extractCodexCatalogCandidates(provider)
+        if !candidates.isEmpty {
+            return candidates
+        }
+
         guard let model = parsed.model else {
             return []
         }
-        return [
-            ModelCandidate(
-                logicalModel: model,
-                providerRef: provider.ref,
-                providerName: provider.name,
-                appType: provider.appType,
-                clientProtocol: .codexResponses,
-                apiFormat: provider.apiFormat,
-                upstreamModel: model,
-                baseURL: provider.baseURL,
-                requiresTransform: provider.apiFormat == .openaiChat,
-                label: provider.name,
-                supportsLongContext: hasLongContextSuffix(model)
+        candidates.append(codexCandidate(provider: provider, logicalModel: model, upstreamModel: model, label: provider.name))
+        return candidates
+    }
+
+    private func extractCodexCatalogCandidates(_ provider: ImportedProvider) -> [ModelCandidate] {
+        guard case let .array(models)? = JSONValueParser.value(provider.settings, ["modelCatalog", "models"]) else {
+            return []
+        }
+
+        var seen = Set<String>()
+        return models.compactMap { entry in
+            guard case let .object(modelObject) = entry else {
+                return nil
+            }
+            guard let upstreamModel = string(modelObject["model"]) else {
+                return nil
+            }
+            let displayName = string(modelObject["displayName"]) ?? string(modelObject["display_name"])
+            guard !seen.contains(upstreamModel) else {
+                return nil
+            }
+            seen.insert(upstreamModel)
+            return codexCandidate(
+                provider: provider,
+                logicalModel: upstreamModel,
+                upstreamModel: upstreamModel,
+                label: displayName ?? provider.name,
+                supportsLongContext: longContextValue(modelObject["contextWindow"] ?? modelObject["context_window"])
+                    ?? hasLongContextSuffix(upstreamModel)
             )
-        ]
+        }
     }
 
     private func extractClaudeCandidates(
@@ -92,6 +113,7 @@ public struct CcSwitchImporter: Sendable {
         let fields = [
             "ANTHROPIC_MODEL",
             "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL"
         ]
@@ -148,6 +170,28 @@ public struct CcSwitchImporter: Sendable {
                 supportsLongContext: bool(route["supports1m"]) ?? false
             )
         }
+    }
+
+    private func codexCandidate(
+        provider: ImportedProvider,
+        logicalModel: String,
+        upstreamModel: String,
+        label: String?,
+        supportsLongContext: Bool? = nil
+    ) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: provider.apiFormat,
+            upstreamModel: upstreamModel,
+            baseURL: provider.baseURL,
+            requiresTransform: provider.apiFormat == .openaiChat,
+            label: label,
+            supportsLongContext: supportsLongContext ?? hasLongContextSuffix(upstreamModel)
+        )
     }
 
     private func inferApiFormat(
@@ -256,8 +300,30 @@ public struct CcSwitchImporter: Sendable {
         return flag
     }
 
+    private func longContextValue(_ value: SendableValue?) -> Bool? {
+        guard case let .number(number)? = value else {
+            return nil
+        }
+        return number >= 1_000_000
+    }
+
     private func hasLongContextSuffix(_ model: String) -> Bool {
         model.range(of: #"\[\s*1m\s*\]"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func isUniGateProvider(_ provider: ImportedProvider) -> Bool {
+        if provider.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("UniGate") == .orderedSame {
+            return true
+        }
+        guard let baseURL = provider.baseURL?.lowercased() else {
+            return false
+        }
+        return isLoopbackURL(baseURL)
+            && (baseURL.contains("/codex") || baseURL.contains("/claude-code") || baseURL.contains("/claude-desktop"))
+    }
+
+    private func isLoopbackURL(_ value: String) -> Bool {
+        value.contains("://127.") || value.contains("://localhost") || value.contains("://[::1]")
     }
 }
 

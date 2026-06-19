@@ -51,16 +51,19 @@ public enum ProxyResolver {
         guard let requestedModel = stringField(json["model"]) else {
             throw ProxyResolverError.missingModel
         }
-        let routeKey = ModelRouteKey(
-            appType: appType ?? defaultAppType(for: protocolKind),
-            logicalModel: requestedModel
+        let routeAppType = appType ?? defaultAppType(for: protocolKind)
+        let routeKey = resolveRouteKey(
+            requestedModel: requestedModel,
+            appType: routeAppType,
+            routes: routes,
+            catalog: catalog
         )
 
         guard
             let route = routes.routes[routeKey.description],
             let candidate = catalog.candidates.first(where: {
                 $0.appType == routeKey.appType
-                    && $0.logicalModel == requestedModel
+                    && $0.logicalModel == routeKey.logicalModel
                     && $0.providerRef == route.providerRef
             })
         else {
@@ -80,18 +83,53 @@ public enum ProxyResolver {
         }
 
         var outboundBody = json
-        outboundBody["model"] = candidate.upstreamModel
+        outboundBody["model"] = stripOneMSuffix(candidate.upstreamModel)
         let outboundData = try JSONSerialization.data(withJSONObject: outboundBody, options: [])
         let upstreamURL = try buildUpstreamURL(provider: provider, inboundPath: path)
 
         return ResolvedRoute(
             candidate: candidate,
             providerName: provider.name,
-            outboundModel: candidate.upstreamModel,
+            outboundModel: stripOneMSuffix(candidate.upstreamModel),
             upstreamURL: upstreamURL,
             headers: buildAuthHeaders(provider),
             body: outboundData
         )
+    }
+
+    private static func resolveRouteKey(
+        requestedModel: String,
+        appType: String,
+        routes: RouteState,
+        catalog: ProviderCatalog
+    ) -> ModelRouteKey {
+        let exactKey = ModelRouteKey(appType: appType, logicalModel: requestedModel)
+        if routes.routes[exactKey.description] != nil {
+            return exactKey
+        }
+
+        let normalizedRequest = stripOneMSuffix(requestedModel)
+        let normalizedKey = ModelRouteKey(appType: appType, logicalModel: normalizedRequest)
+        if routes.routes[normalizedKey.description] != nil {
+            return normalizedKey
+        }
+
+        guard appType == "claude" || appType == "claude-desktop" else {
+            return exactKey
+        }
+        guard let role = claudeRoleKeyword(normalizedRequest) else {
+            return exactKey
+        }
+
+        let keys = catalog.routeKeys(for: appType)
+        if let match = keys.first(where: { claudeRoleKeyword($0.logicalModel) == role && routes.routes[$0.description] != nil }) {
+            return match
+        }
+        if role == "fable",
+           let opus = keys.first(where: { claudeRoleKeyword($0.logicalModel) == "opus" && routes.routes[$0.description] != nil }) {
+            return opus
+        }
+        return exactKey
     }
 
     private static func parseJSONBody(_ body: Data) throws -> [String: Any] {
@@ -122,6 +160,31 @@ public enum ProxyResolver {
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func stripOneMSuffix(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
+            return trimmed
+        }
+        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func claudeRoleKeyword(_ model: String) -> String? {
+        let normalized = model.lowercased()
+        if normalized.contains("opus") {
+            return "opus"
+        }
+        if normalized.contains("haiku") {
+            return "haiku"
+        }
+        if normalized.contains("fable") {
+            return "fable"
+        }
+        if normalized.contains("sonnet") {
+            return "sonnet"
+        }
+        return nil
     }
 
     private static func buildUpstreamURL(provider: ImportedProvider, inboundPath: String) throws -> URL {

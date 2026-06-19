@@ -310,6 +310,94 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func mapsClaudeRoleRequestToConfiguredRouteAndStripsOneMSuffix() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "claude",
+            name: "Claude Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://anthropic.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("claude-token")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "claude-sonnet-4-6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "deepseek-v4-pro[1M]",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: true
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude",
+            path: "/claude-code/v1/messages",
+            body: Data(#"{"model":"claude-sonnet-4-6-20260101[1M]","messages":[]}"#.utf8)
+        )
+
+        #expect(resolved.outboundModel == "deepseek-v4-pro")
+        let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
+        #expect(outbound?["model"] as? String == "deepseek-v4-pro")
+    }
+
+    @Test
+    func fallsBackFableRoleToOpusRouteWhenFableRouteIsAbsent() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "claude-desktop",
+            name: "Desktop Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://desktop.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("desktop-token")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "claude-opus-4-8",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "opus-upstream",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude-desktop",
+            path: "/claude-desktop/v1/messages",
+            body: Data(#"{"model":"claude-fable-5","messages":[]}"#.utf8)
+        )
+
+        #expect(resolved.outboundModel == "opus-upstream")
+    }
+
+    @Test
     func parsesCcSwitchStyleProxyPaths() {
         #expect(ProxyRequestPath("/v1/responses") == .proxy(protocolKind: .codexResponses, appType: "codex"))
         #expect(ProxyRequestPath("/v1/v1/responses") == .proxy(protocolKind: .codexResponses, appType: "codex"))

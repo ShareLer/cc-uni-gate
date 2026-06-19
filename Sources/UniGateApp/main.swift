@@ -162,6 +162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func providerTitle(_ candidate: ModelCandidate) -> String {
         var parts = [candidate.providerName]
+        if candidate.upstreamModel != candidate.logicalModel {
+            parts.append(candidate.upstreamModel)
+        } else if let label = candidate.label, label != candidate.providerName {
+            parts.append(label)
+        }
         if candidate.requiresTransform {
             parts.append("需要转换")
         } else {
@@ -197,6 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 providers: catalog.providers,
+                candidates: catalog.candidates,
                 routeKeys: catalog.routeKeys,
                 proxyStatus: proxyStatus,
                 preferences: preferences,
@@ -217,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             settingsWindowController?.update(
                 providers: catalog.providers,
+                candidates: catalog.candidates,
                 routeKeys: catalog.routeKeys,
                 proxyStatus: proxyStatus,
                 preferences: preferences
@@ -436,6 +443,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private var copySuccessPopover: NSPopover?
     private var providers: [ImportedProvider]
     private var filteredProviders: [ImportedProvider]
+    private var candidates: [ModelCandidate]
     private var routeKeys: [ModelRouteKey]
     private var filteredRouteKeys: [ModelRouteKey]
     private var selectedRouteKeys: Set<ModelRouteKey>
@@ -449,6 +457,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     init(
         providers: [ImportedProvider],
+        candidates: [ModelCandidate],
         routeKeys: [ModelRouteKey],
         proxyStatus: ProxyStatus,
         preferences: AppPreferences,
@@ -456,6 +465,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     ) {
         self.providers = providers
         self.filteredProviders = providers
+        self.candidates = candidates
         self.routeKeys = routeKeys
         self.filteredRouteKeys = routeKeys
         self.preferences = preferences
@@ -488,9 +498,16 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         nil
     }
 
-    func update(providers: [ImportedProvider], routeKeys: [ModelRouteKey], proxyStatus: ProxyStatus, preferences: AppPreferences) {
+    func update(
+        providers: [ImportedProvider],
+        candidates: [ModelCandidate],
+        routeKeys: [ModelRouteKey],
+        proxyStatus: ProxyStatus,
+        preferences: AppPreferences
+    ) {
         self.providers = providers
         self.filteredProviders = providers
+        self.candidates = candidates
         self.routeKeys = routeKeys
         self.filteredRouteKeys = routeKeys
         self.preferences = preferences
@@ -1091,7 +1108,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         filteredRouteKeys = routeKeys.filter { key in
             let appMatches = selectedModelAppType == nil || key.appType == selectedModelAppType
-            let queryMatches = query.isEmpty || key.logicalModel.localizedCaseInsensitiveContains(query)
+            let queryMatches = query.isEmpty || modelSearchText(for: key).localizedCaseInsensitiveContains(query)
             return appMatches && queryMatches
         }
         modelTableView.reloadData()
@@ -1176,7 +1193,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? ModelToggleCell
             ?? ModelToggleCell(identifier: identifier, target: self, action: #selector(toggleModel(_:)))
         let routeKey = filteredRouteKeys[row]
-        cell.configure(routeKey: routeKey, isSelected: isVisible(routeKey), tag: row)
+        cell.configure(routeKey: routeKey, detail: modelDetailText(for: routeKey), isSelected: isVisible(routeKey), tag: row)
         return cell
     }
 
@@ -1361,6 +1378,62 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         let port = UInt16(portField.stringValue) ?? 17888
         return "http://127.0.0.1:\(port)\(path)"
     }
+
+    private func routeCandidates(for routeKey: ModelRouteKey) -> [ModelCandidate] {
+        candidates
+            .filter { $0.appType == routeKey.appType && $0.logicalModel == routeKey.logicalModel }
+            .sorted { lhs, rhs in
+                lhs.providerName.localizedStandardCompare(rhs.providerName) == .orderedAscending
+            }
+    }
+
+    private func upstreamNames(for routeKey: ModelRouteKey) -> [String] {
+        var seen = Set<String>()
+        var names: [String] = []
+        for candidate in routeCandidates(for: routeKey) {
+            let display = upstreamDisplayName(candidate)
+            guard !seen.contains(display) else {
+                continue
+            }
+            seen.insert(display)
+            names.append(display)
+        }
+        return names
+    }
+
+    private func upstreamDisplayName(_ candidate: ModelCandidate) -> String {
+        if candidate.upstreamModel != candidate.logicalModel {
+            return candidate.upstreamModel
+        }
+        if let label = candidate.label, label != candidate.providerName {
+            return label
+        }
+        return candidate.upstreamModel
+    }
+
+    private func modelDetailText(for routeKey: ModelRouteKey) -> String {
+        let appLabel = ProviderDisplay.appTypeLabel(routeKey.appType)
+        let upstreams = upstreamNames(for: routeKey)
+        guard !upstreams.isEmpty, upstreams != [routeKey.logicalModel] else {
+            return appLabel
+        }
+        return "\(appLabel) · 上游模型：\(upstreams.joined(separator: "、"))"
+    }
+
+    private func modelSearchText(for routeKey: ModelRouteKey) -> String {
+        let candidateText = routeCandidates(for: routeKey).map { candidate in
+            [
+                candidate.providerName,
+                candidate.upstreamModel,
+                candidate.label ?? ""
+            ].joined(separator: " ")
+        }.joined(separator: " ")
+        return [
+            routeKey.logicalModel,
+            ProviderDisplay.appTypeLabel(routeKey.appType),
+            candidateText
+        ].joined(separator: " ")
+    }
 }
 
 private final class SettingsSidebarCell: NSTableCellView {
@@ -1434,12 +1507,13 @@ private final class ModelToggleCell: NSTableCellView {
         nil
     }
 
-    func configure(routeKey: ModelRouteKey, isSelected: Bool, tag: Int) {
+    func configure(routeKey: ModelRouteKey, detail: String, isSelected: Bool, tag: Int) {
         checkbox.title = routeKey.logicalModel
-        checkbox.toolTip = routeKey.description
+        checkbox.toolTip = "\(routeKey.description)\n\(detail)"
         checkbox.tag = tag
         checkbox.state = isSelected ? .on : .off
-        detailLabel.stringValue = ProviderDisplay.appTypeLabel(routeKey.appType)
+        detailLabel.stringValue = detail
+        detailLabel.toolTip = detail
     }
 }
 

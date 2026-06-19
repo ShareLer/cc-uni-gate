@@ -303,16 +303,38 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot, appType: String?) -> HTTPResponse {
         let appType = appType ?? "codex"
-        let modelIDs = Array(Set(snapshot.catalog.routeKeys
+        let routeKeys = snapshot.catalog.routeKeys
             .filter { $0.appType == appType }
-            .map(\.logicalModel)))
-            .sorted()
+        let modelIDs = Array(Set(routeKeys.map(\.logicalModel))).sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }
+        let models: Any = appType == "codex"
+            ? codexModelCatalog(routeKeys: routeKeys, candidates: snapshot.catalog.candidates)
+            : modelIDs
         return .json(status: 200, body: [
             "object": "list",
             "data": data,
-            "models": modelIDs
+            "models": models
         ])
+    }
+
+    private func codexModelCatalog(routeKeys: [ModelRouteKey], candidates: [ModelCandidate]) -> [[String: Any]] {
+        routeKeys.map { key in
+            let routeCandidates = candidates.filter {
+                $0.appType == key.appType && $0.logicalModel == key.logicalModel
+            }
+            let displayName = routeCandidates
+                .compactMap(\.label)
+                .first { !$0.isEmpty && $0 != routeCandidates.first?.providerName }
+                ?? key.logicalModel
+            let contextWindow = routeCandidates.contains(where: \.supportsLongContext) ? 1_000_000 : 128_000
+            return [
+                "slug": key.logicalModel,
+                "display_name": displayName,
+                "description": displayName,
+                "context_window": contextWindow,
+                "max_context_window": contextWindow
+            ]
+        }
     }
 
     private func routeDictionary(_ routes: RouteState) -> [String: Any] {

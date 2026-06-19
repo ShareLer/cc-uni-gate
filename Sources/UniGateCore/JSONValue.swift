@@ -29,7 +29,7 @@ enum JSONValueParser {
         return value
     }
 
-    private static func value(_ object: [String: SendableValue], _ path: [String]) -> SendableValue? {
+    static func value(_ object: [String: SendableValue], _ path: [String]) -> SendableValue? {
         var current: SendableValue = .object(object)
         for key in path {
             guard case let .object(dictionary) = current, let next = dictionary[key] else {
@@ -63,4 +63,3 @@ enum JSONValueParser {
         }
     }
 }
-
