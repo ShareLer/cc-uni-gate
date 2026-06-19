@@ -54,11 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try server.start()
             proxyServer = server
             proxyStatus = .running
-            recordEvent(.info, "Proxy listening at \(managerBaseURL())")
+            recordEvent(.info, "代理正在监听 \(managerBaseURL())")
             rebuildMenu()
         } catch {
             proxyStatus = .failed(error.localizedDescription)
-            recordEvent(.error, "Proxy failed: \(error.localizedDescription)")
+            recordEvent(.error, "代理启动失败：\(error.localizedDescription)")
             rebuildMenu()
             showError(error)
         }
@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(titleItem)
 
         let summaryItem = NSMenuItem(
-            title: "\(catalog.providers.count) providers, \(catalog.models.count) models",
+            title: "\(catalog.providers.count) 个供应商，\(catalog.models.count) 个模型",
             action: nil,
             keyEquivalent: ""
         )
@@ -89,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let visibleRouteKeys = preferences.visibleRouteKeyList(allRouteKeys: catalog.routeKeys)
         if visibleRouteKeys.isEmpty {
-            let emptyItem = NSMenuItem(title: "No models selected", action: nil, keyEquivalent: "")
+            let emptyItem = NSMenuItem(title: "未选择模型", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             menu.addItem(emptyItem)
         }
@@ -132,25 +132,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(appMenuItem(title: "Open App Folder", action: #selector(openAppFolder), keyEquivalent: ""))
-        menu.addItem(appMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
-        menu.addItem(appMenuItem(title: "Reload cc-switch DB", action: #selector(reloadAction), keyEquivalent: "r"))
-        menu.addItem(appMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(appMenuItem(title: "打开应用文件夹", action: #selector(openAppFolder), keyEquivalent: ""))
+        menu.addItem(appMenuItem(title: "设置...", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(appMenuItem(title: "重新加载 cc-switch DB", action: #selector(reloadAction), keyEquivalent: "r"))
+        menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
 
     private func rebuildErrorMenu(_ error: Error) {
         let menu = NSMenu()
-        let errorItem = NSMenuItem(title: "Failed to load cc-switch DB", action: nil, keyEquivalent: "")
+        let errorItem = NSMenuItem(title: "加载 cc-switch DB 失败", action: nil, keyEquivalent: "")
         errorItem.isEnabled = false
         menu.addItem(errorItem)
         let detailItem = NSMenuItem(title: error.localizedDescription, action: nil, keyEquivalent: "")
         detailItem.isEnabled = false
         menu.addItem(detailItem)
         menu.addItem(.separator())
-        menu.addItem(appMenuItem(title: "Retry", action: #selector(reloadAction), keyEquivalent: "r"))
-        menu.addItem(appMenuItem(title: "Open App Folder", action: #selector(openAppFolder), keyEquivalent: ""))
-        menu.addItem(appMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(appMenuItem(title: "重试", action: #selector(reloadAction), keyEquivalent: "r"))
+        menu.addItem(appMenuItem(title: "打开应用文件夹", action: #selector(openAppFolder), keyEquivalent: ""))
+        menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
 
@@ -163,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func providerTitle(_ candidate: ModelCandidate) -> String {
         var parts = [candidate.providerName]
         if candidate.requiresTransform {
-            parts.append("transform")
+            parts.append("需要转换")
         } else {
             parts.append(candidate.apiFormat.rawValue)
         }
@@ -198,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController = SettingsWindowController(
                 providers: catalog.providers,
                 routeKeys: catalog.routeKeys,
+                proxyStatus: proxyStatus,
                 preferences: preferences,
                 onSave: { [weak self] preferences in
                     guard let self else {
@@ -217,6 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController?.update(
                 providers: catalog.providers,
                 routeKeys: catalog.routeKeys,
+                proxyStatus: proxyStatus,
                 preferences: preferences
             )
         }
@@ -303,7 +305,7 @@ extension AppDelegate: LocalProxyRuntime {
         preferences = try preferencesStore.load()
         catalog = try importer.loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
         routes = try routeStore.load(catalog: catalog)
-        recordEvent(.info, "Reloaded cc-switch DB")
+        recordEvent(.info, "已重新加载 cc-switch DB")
         rebuildMenu()
         return proxySnapshot()
     }
@@ -335,11 +337,33 @@ enum ProxyStatus {
     func title(port: UInt16) -> String {
         switch self {
         case .starting:
-            return "Proxy: starting · :\(port)"
+            return "代理：启动中 · :\(port)"
         case .running:
-            return "Proxy: running · :\(port)"
+            return "代理：运行中 · :\(port)"
         case let .failed(message):
-            return "Proxy: failed · \(message)"
+            return "代理：失败 · \(message)"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .starting:
+            return "启动中"
+        case .running:
+            return "运行中"
+        case .failed:
+            return "失败"
+        }
+    }
+
+    var accentColor: NSColor {
+        switch self {
+        case .starting:
+            return .systemOrange
+        case .running:
+            return .systemGreen
+        case .failed:
+            return .systemRed
         }
     }
 }
@@ -375,11 +399,11 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         var title: String {
             switch self {
             case .general:
-                return "General"
+                return "通用"
             case .models:
-                return "Models"
+                return "模型"
             case .providers:
-                return "Providers"
+                return "供应商"
             }
         }
 
@@ -400,13 +424,15 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private let modelTableView = NSTableView()
     private let providerTableView = NSTableView()
     private let searchField = NSSearchField()
+    private let providerSearchField = NSSearchField()
     private let modelAppFilter = NSSegmentedControl()
     private let providerAppFilter = NSSegmentedControl()
     private let countLabel = NSTextField(labelWithString: "")
     private let providerCountLabel = NSTextField(labelWithString: "")
     private let portField = NSTextField()
-    private let baseURLLabel = NSTextField(labelWithString: "")
-    private let copyBaseURLButton = NSButton(title: "Copy", target: nil, action: nil)
+    private let codexBaseURLLabel = NSTextField(labelWithString: "")
+    private let claudeCodeBaseURLLabel = NSTextField(labelWithString: "")
+    private let claudeDesktopBaseURLLabel = NSTextField(labelWithString: "")
     private var providers: [ImportedProvider]
     private var filteredProviders: [ImportedProvider]
     private var routeKeys: [ModelRouteKey]
@@ -417,11 +443,13 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private var protocolOverrides: [String: ApiFormat]
     private var selectedSection: SettingsSection = .general
     private var preferences: AppPreferences
+    private var proxyStatus: ProxyStatus
     private let onSave: (AppPreferences) -> Void
 
     init(
         providers: [ImportedProvider],
         routeKeys: [ModelRouteKey],
+        proxyStatus: ProxyStatus,
         preferences: AppPreferences,
         onSave: @escaping (AppPreferences) -> Void
     ) {
@@ -434,18 +462,19 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             ? Set(routeKeys)
             : Set(preferences.visibleRouteKeyList(allRouteKeys: routeKeys))
         self.protocolOverrides = preferences.protocolOverrides
+        self.proxyStatus = proxyStatus
         self.onSave = onSave
-        self.selectedModelAppType = routeKeys.first?.appType
-        self.selectedProviderAppType = providers.first?.appType
+        self.selectedModelAppType = nil
+        self.selectedProviderAppType = nil
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "CC Uni Gate"
-        window.minSize = NSSize(width: 700, height: 500)
+        window.minSize = NSSize(width: 820, height: 560)
         window.center()
         super.init(window: window)
         buildContent()
@@ -458,7 +487,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         nil
     }
 
-    func update(providers: [ImportedProvider], routeKeys: [ModelRouteKey], preferences: AppPreferences) {
+    func update(providers: [ImportedProvider], routeKeys: [ModelRouteKey], proxyStatus: ProxyStatus, preferences: AppPreferences) {
         self.providers = providers
         self.filteredProviders = providers
         self.routeKeys = routeKeys
@@ -468,14 +497,16 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             ? Set(routeKeys)
             : Set(preferences.visibleRouteKeyList(allRouteKeys: routeKeys))
         self.protocolOverrides = preferences.protocolOverrides
-        if selectedModelAppType == nil || !routeKeys.contains(where: { $0.appType == selectedModelAppType }) {
-            selectedModelAppType = routeKeys.first?.appType
+        self.proxyStatus = proxyStatus
+        if let selectedModelAppType, !routeKeys.contains(where: { $0.appType == selectedModelAppType }) {
+            self.selectedModelAppType = nil
         }
-        if selectedProviderAppType == nil || !providers.contains(where: { $0.appType == selectedProviderAppType }) {
-            selectedProviderAppType = providers.first?.appType
+        if let selectedProviderAppType, !providers.contains(where: { $0.appType == selectedProviderAppType }) {
+            self.selectedProviderAppType = nil
         }
         updatePortField()
         searchField.stringValue = ""
+        providerSearchField.stringValue = ""
         applyFilter()
         applyProviderFilter()
         updateProviderCount()
@@ -514,7 +545,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         let rightPane = NSStackView()
         rightPane.orientation = .vertical
         rightPane.alignment = .leading
-        rightPane.spacing = 16
+        rightPane.spacing = 18
         rightPane.translatesAutoresizingMaskIntoConstraints = false
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
@@ -526,8 +557,8 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         footer.spacing = 8
         footer.translatesAutoresizingMaskIntoConstraints = false
         let spacer = NSView()
-        let cancelButton = button(title: "Cancel", action: #selector(cancel))
-        let saveButton = button(title: "Save", action: #selector(save))
+        let cancelButton = button(title: "取消", action: #selector(cancel))
+        let saveButton = button(title: "保存更改", action: #selector(save))
         saveButton.keyEquivalent = "\r"
         footer.addArrangedSubview(spacer)
         footer.addArrangedSubview(cancelButton)
@@ -594,8 +625,11 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     private func generalView() -> NSView {
-        let root = pageStack(title: "General", subtitle: "Proxy")
-        let group = settingsGroup()
+        let root = pageStack(title: "通用", subtitle: "代理状态与客户端 Base URL")
+        let overview = overviewGrid()
+        root.addArrangedSubview(overview)
+
+        let proxyGroup = settingsGroup()
 
         portField.alignment = .right
         portField.placeholderString = "17888"
@@ -603,37 +637,43 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         portField.target = self
         portField.action = #selector(portChanged(_:))
         portField.translatesAutoresizingMaskIntoConstraints = false
-        updateBaseURLLabel()
-        baseURLLabel.textColor = .secondaryLabelColor
-        baseURLLabel.lineBreakMode = .byTruncatingMiddle
-        copyBaseURLButton.target = self
-        copyBaseURLButton.action = #selector(copyOpenAIBaseURL)
-        copyBaseURLButton.bezelStyle = .rounded
+        updateBaseURLLabels()
 
-        group.addArrangedSubview(settingRow(
-            title: "Local proxy port",
-            detail: "The manager listens on this port after you save.",
+        proxyGroup.addArrangedSubview(settingRow(
+            title: "本地代理端口",
+            detail: "保存后生效。",
             control: portField
         ))
-        group.addArrangedSubview(separator())
+        root.addArrangedSubview(proxyGroup)
 
-        let baseURLControls = NSStackView()
-        baseURLControls.orientation = .horizontal
-        baseURLControls.alignment = .centerY
-        baseURLControls.spacing = 8
-        baseURLControls.addArrangedSubview(baseURLLabel)
-        baseURLControls.addArrangedSubview(copyBaseURLButton)
-        group.addArrangedSubview(settingRow(
-            title: "OpenAI base URL",
-            detail: "Use this value in Codex or OpenAI-compatible clients.",
-            control: baseURLControls
+        let endpointGroup = settingsGroup()
+        endpointGroup.addArrangedSubview(endpointRow(
+            title: "Codex",
+            detail: "OpenAI 兼容客户端",
+            label: codexBaseURLLabel,
+            path: "/codex"
         ))
-        root.addArrangedSubview(group)
+        endpointGroup.addArrangedSubview(separator())
+        endpointGroup.addArrangedSubview(endpointRow(
+            title: "Claude Code",
+            detail: "Anthropic Messages API 客户端",
+            label: claudeCodeBaseURLLabel,
+            path: "/claude-code"
+        ))
+        endpointGroup.addArrangedSubview(separator())
+        endpointGroup.addArrangedSubview(endpointRow(
+            title: "Claude Desktop",
+            detail: "Anthropic Messages API 客户端",
+            label: claudeDesktopBaseURLLabel,
+            path: "/claude-desktop"
+        ))
+        root.addArrangedSubview(endpointGroup)
 
         NSLayoutConstraint.activate([
-            group.widthAnchor.constraint(equalTo: root.widthAnchor),
-            portField.widthAnchor.constraint(equalToConstant: 96),
-            baseURLLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 220)
+            overview.widthAnchor.constraint(equalTo: root.widthAnchor),
+            proxyGroup.widthAnchor.constraint(equalTo: root.widthAnchor),
+            endpointGroup.widthAnchor.constraint(equalTo: root.widthAnchor),
+            portField.widthAnchor.constraint(equalToConstant: 96)
         ])
         return root
     }
@@ -646,7 +686,9 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         group.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
         group.wantsLayer = true
         group.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        group.layer?.cornerRadius = 10
+        group.layer?.cornerRadius = 8
+        group.layer?.borderWidth = 1
+        group.layer?.borderColor = NSColor.separatorColor.cgColor
         group.translatesAutoresizingMaskIntoConstraints = false
         return group
     }
@@ -684,6 +726,101 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         return row
     }
 
+    private func overviewGrid() -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .top
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.distribution = .fillEqually
+
+        let visibleModels = selectedRouteKeys.count
+        stack.addArrangedSubview(statCard(
+            title: "代理",
+            value: proxyStatus.shortTitle,
+            detail: "本地监听",
+            color: proxyStatus.accentColor
+        ))
+        stack.addArrangedSubview(statCard(
+            title: "供应商",
+            value: "\(providers.count)",
+            detail: "\(sortedAppTypes().count) 个应用",
+            color: .systemBlue
+        ))
+        stack.addArrangedSubview(statCard(
+            title: "模型",
+            value: "\(visibleModels)/\(routeKeys.count)",
+            detail: "显示在菜单",
+            color: .systemGreen
+        ))
+        stack.addArrangedSubview(statCard(
+            title: "覆盖",
+            value: "\(protocolOverrides.count)",
+            detail: "协议固定",
+            color: .systemOrange
+        ))
+        return stack
+    }
+
+    private func statCard(title: String, value: String, detail: String, color: NSColor) -> NSView {
+        let card = NSStackView()
+        card.orientation = .vertical
+        card.alignment = .leading
+        card.spacing = 4
+        card.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 8
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = color.withAlphaComponent(0.35).cgColor
+        card.layer?.backgroundColor = color.withAlphaComponent(0.08).cgColor
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        titleLabel.textColor = .secondaryLabelColor
+
+        let valueLabel = NSTextField(labelWithString: value)
+        valueLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        valueLabel.lineBreakMode = .byTruncatingTail
+
+        let detailLabel = NSTextField(labelWithString: detail)
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+
+        card.addArrangedSubview(titleLabel)
+        card.addArrangedSubview(valueLabel)
+        card.addArrangedSubview(detailLabel)
+        NSLayoutConstraint.activate([
+            card.heightAnchor.constraint(greaterThanOrEqualToConstant: 92)
+        ])
+        return card
+    }
+
+    private func endpointRow(title: String, detail: String, label: NSTextField, path: String) -> NSView {
+        label.textColor = .secondaryLabelColor
+        label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        label.lineBreakMode = .byTruncatingMiddle
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let copyButton = button(title: "复制", action: #selector(copyBaseURL(_:)))
+        copyButton.identifier = NSUserInterfaceItemIdentifier(path)
+
+        let controls = NSStackView()
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 8
+        controls.addArrangedSubview(label)
+        controls.addArrangedSubview(copyButton)
+        controls.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = settingRow(title: title, detail: detail, control: controls)
+        NSLayoutConstraint.activate([
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 280)
+        ])
+        return row
+    }
+
     private func separator() -> NSView {
         let view = NSBox()
         view.boxType = .separator
@@ -691,7 +828,9 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     private func modelsView() -> NSView {
-        let root = pageStack(title: "Models", subtitle: "Status bar menu")
+        let root = pageStack(title: "模型", subtitle: "菜单栏显示控制")
+        let countBar = appCountBar(totalTitle: "\(routeKeys.count) 个模型", counts: routeKeyCountsByApp(), unit: "个")
+        root.addArrangedSubview(countBar)
         root.addArrangedSubview(countLabel)
         configureAppFilter(modelAppFilter, selectedAppType: selectedModelAppType, action: #selector(modelAppFilterChanged(_:)))
         root.addArrangedSubview(modelAppFilter)
@@ -702,19 +841,19 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         controls.spacing = 8
         controls.translatesAutoresizingMaskIntoConstraints = false
 
-        searchField.placeholderString = "Search models"
+        searchField.placeholderString = "搜索模型"
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
         searchField.sendsSearchStringImmediately = true
         controls.addArrangedSubview(searchField)
         let controlSpacer = NSView()
         controls.addArrangedSubview(controlSpacer)
-        controls.addArrangedSubview(button(title: "Select All", action: #selector(selectAllModels)))
-        controls.addArrangedSubview(button(title: "Select None", action: #selector(selectNoModels)))
+        controls.addArrangedSubview(button(title: "显示当前列表", action: #selector(selectAllModels)))
+        controls.addArrangedSubview(button(title: "隐藏当前列表", action: #selector(selectNoModels)))
         root.addArrangedSubview(controls)
 
         let scrollView = roundedScrollView()
-        configureTable(modelTableView, rowHeight: 34)
+        configureTable(modelTableView, rowHeight: 44)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("model"))
         column.minWidth = 220
@@ -725,6 +864,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         scrollView.documentView = modelTableView
         root.addArrangedSubview(scrollView)
         NSLayoutConstraint.activate([
+            countBar.widthAnchor.constraint(equalTo: root.widthAnchor),
             modelAppFilter.widthAnchor.constraint(equalTo: root.widthAnchor),
             controls.widthAnchor.constraint(equalTo: root.widthAnchor),
             searchField.widthAnchor.constraint(equalToConstant: 220),
@@ -735,12 +875,29 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     private func providersView() -> NSView {
-        let root = pageStack(title: "Providers", subtitle: "Protocol overrides")
+        let root = pageStack(title: "供应商", subtitle: "协议覆盖")
+        let countBar = appCountBar(totalTitle: "\(providers.count) 个供应商", counts: providerCountsByApp(), unit: "个")
+        root.addArrangedSubview(countBar)
         root.addArrangedSubview(providerCountLabel)
         configureAppFilter(providerAppFilter, selectedAppType: selectedProviderAppType, action: #selector(providerAppFilterChanged(_:)))
         root.addArrangedSubview(providerAppFilter)
+
+        let controls = NSStackView()
+        controls.orientation = .horizontal
+        controls.alignment = .centerY
+        controls.spacing = 8
+        controls.translatesAutoresizingMaskIntoConstraints = false
+        providerSearchField.placeholderString = "搜索供应商"
+        providerSearchField.target = self
+        providerSearchField.action = #selector(providerSearchChanged(_:))
+        providerSearchField.sendsSearchStringImmediately = true
+        controls.addArrangedSubview(providerSearchField)
+        controls.addArrangedSubview(NSView())
+        controls.addArrangedSubview(button(title: "清除当前列表覆盖", action: #selector(clearListedOverrides)))
+        root.addArrangedSubview(controls)
+
         let providerScrollView = roundedScrollView()
-        configureTable(providerTableView, rowHeight: 36)
+        configureTable(providerTableView, rowHeight: 54)
         let providerColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("provider"))
         providerColumn.minWidth = 260
         if providerTableView.tableColumns.isEmpty {
@@ -749,9 +906,12 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         providerScrollView.documentView = providerTableView
         root.addArrangedSubview(providerScrollView)
         NSLayoutConstraint.activate([
+            countBar.widthAnchor.constraint(equalTo: root.widthAnchor),
             providerAppFilter.widthAnchor.constraint(equalTo: root.widthAnchor),
+            controls.widthAnchor.constraint(equalTo: root.widthAnchor),
+            providerSearchField.widthAnchor.constraint(equalToConstant: 240),
             providerScrollView.widthAnchor.constraint(equalTo: root.widthAnchor),
-            providerScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 390)
+            providerScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 330)
         ])
         return root
     }
@@ -761,7 +921,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         selectedAppType: String?,
         action: Selector
     ) {
-        let appTypes = sortedAppTypes()
+        let appTypes = appFilterValues()
         control.segmentCount = appTypes.count
         control.target = self
         control.action = action
@@ -769,7 +929,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         control.trackingMode = .selectOne
         let segmentWidth = max(96, min(150, 460 / max(appTypes.count, 1)))
         for (index, appType) in appTypes.enumerated() {
-            control.setLabel(ProviderDisplay.appTypeLabel(appType), forSegment: index)
+            control.setLabel(appType.map(ProviderDisplay.appTypeLabel) ?? "全部应用", forSegment: index)
             control.setWidth(CGFloat(segmentWidth), forSegment: index)
             if appType == selectedAppType {
                 control.selectedSegment = index
@@ -780,9 +940,74 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         }
     }
 
+    private func appFilterValues() -> [String?] {
+        [nil] + sortedAppTypes().map(Optional.some)
+    }
+
     private func sortedAppTypes() -> [String] {
         Array(Set(routeKeys.map(\.appType) + providers.map(\.appType))).sorted {
             ProviderDisplay.appTypeLabel($0).localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
+        }
+    }
+
+    private func routeKeyCountsByApp() -> [String: Int] {
+        Dictionary(grouping: routeKeys, by: \.appType).mapValues(\.count)
+    }
+
+    private func providerCountsByApp() -> [String: Int] {
+        Dictionary(grouping: providers, by: \.appType).mapValues(\.count)
+    }
+
+    private func appCountBar(totalTitle: String, counts: [String: Int], unit: String) -> NSStackView {
+        let bar = NSStackView()
+        bar.orientation = .horizontal
+        bar.alignment = .centerY
+        bar.spacing = 8
+        bar.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
+        bar.wantsLayer = true
+        bar.layer?.cornerRadius = 8
+        bar.layer?.borderWidth = 1
+        bar.layer?.borderColor = NSColor.separatorColor.cgColor
+        bar.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.7).cgColor
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        bar.addArrangedSubview(badgeLabel(totalTitle, color: .labelColor))
+        bar.addArrangedSubview(NSView())
+        for appType in sortedAppTypes() {
+            let title = "\(ProviderDisplay.appTypeLabel(appType)): \(counts[appType] ?? 0) \(unit)"
+            bar.addArrangedSubview(badgeLabel(title, color: appAccentColor(appType)))
+        }
+        return bar
+    }
+
+    private func badgeLabel(_ title: String, color: NSColor) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.textColor = color
+        label.alignment = .center
+        label.wantsLayer = true
+        label.layer?.cornerRadius = 6
+        label.layer?.backgroundColor = color.withAlphaComponent(0.10).cgColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            label.heightAnchor.constraint(equalToConstant: 24),
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 72)
+        ])
+        return label
+    }
+
+    private func appAccentColor(_ appType: String) -> NSColor {
+        switch appType {
+        case "codex":
+            return .systemBlue
+        case "claude":
+            return .systemPurple
+        case "claude-desktop":
+            return .systemTeal
+        case "gemini":
+            return .systemOrange
+        default:
+            return .secondaryLabelColor
         }
     }
 
@@ -817,13 +1042,6 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         scrollView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         return scrollView
-    }
-
-    private func fieldLabel(_ title: String) -> NSTextField {
-        let label = NSTextField(labelWithString: title)
-        label.alignment = .right
-        label.textColor = .secondaryLabelColor
-        return label
     }
 
     private func portFormatter() -> NumberFormatter {
@@ -868,8 +1086,14 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     private func applyProviderFilter() {
+        let query = providerSearchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         filteredProviders = providers.filter { provider in
-            selectedProviderAppType == nil || provider.appType == selectedProviderAppType
+            let appMatches = selectedProviderAppType == nil || provider.appType == selectedProviderAppType
+            let queryMatches = query.isEmpty
+                || provider.name.localizedCaseInsensitiveContains(query)
+                || provider.id.localizedCaseInsensitiveContains(query)
+                || (provider.baseURL?.localizedCaseInsensitiveContains(query) ?? false)
+            return appMatches && queryMatches
         }
         providerTableView.reloadData()
         updateProviderCount()
@@ -880,12 +1104,12 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             selectedModelAppType == nil || $0.appType == selectedModelAppType
         }
         let visibleInApp = appKeys.filter { selectedRouteKeys.contains($0) }.count
-        let appLabel = selectedModelAppType.map(ProviderDisplay.appTypeLabel) ?? "All apps"
-        let selectedText = "\(appLabel) · \(visibleInApp) of \(appKeys.count) visible"
+        let appLabel = selectedModelAppType.map(ProviderDisplay.appTypeLabel) ?? "全部应用"
+        let selectedText = "\(appLabel) · 已显示 \(visibleInApp)/\(appKeys.count)"
         if filteredRouteKeys.count == appKeys.count {
-            countLabel.stringValue = "\(selectedText) · \(selectedRouteKeys.count) total"
+            countLabel.stringValue = "\(selectedText) · 全局已显示 \(selectedRouteKeys.count)"
         } else {
-            countLabel.stringValue = "\(selectedText) · \(filteredRouteKeys.count) matching · \(selectedRouteKeys.count) total"
+            countLabel.stringValue = "\(selectedText) · 匹配 \(filteredRouteKeys.count) 个 · 全局已显示 \(selectedRouteKeys.count)"
         }
     }
 
@@ -971,7 +1195,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func modelAppFilterChanged(_ sender: NSSegmentedControl) {
-        let appTypes = sortedAppTypes()
+        let appTypes = appFilterValues()
         guard sender.selectedSegment >= 0, sender.selectedSegment < appTypes.count else {
             return
         }
@@ -980,7 +1204,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     }
 
     @objc private func providerAppFilterChanged(_ sender: NSSegmentedControl) {
-        let appTypes = sortedAppTypes()
+        let appTypes = appFilterValues()
         guard sender.selectedSegment >= 0, sender.selectedSegment < appTypes.count else {
             return
         }
@@ -1001,6 +1225,10 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         updateCount()
     }
 
+    @objc private func providerSearchChanged(_ sender: NSSearchField) {
+        applyProviderFilter()
+    }
+
     @objc private func protocolChanged(_ sender: NSPopUpButton) {
         guard sender.tag >= 0, sender.tag < filteredProviders.count else {
             return
@@ -1017,19 +1245,28 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         updateProviderCount()
     }
 
-    @objc private func portChanged(_ sender: NSTextField) {
-        updateBaseURLLabel()
+    @objc private func clearListedOverrides() {
+        for provider in filteredProviders {
+            protocolOverrides.removeValue(forKey: provider.ref.description)
+        }
+        providerTableView.reloadData()
+        updateProviderCount()
     }
 
-    @objc private func copyOpenAIBaseURL() {
-        updateBaseURLLabel()
+    @objc private func portChanged(_ sender: NSTextField) {
+        updateBaseURLLabels()
+    }
+
+    @objc private func copyBaseURL(_ sender: NSButton) {
+        updateBaseURLLabels()
+        let path = sender.identifier?.rawValue ?? "/codex"
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(baseURLLabel.stringValue, forType: .string)
+        NSPasteboard.general.setString(baseURL(path: path), forType: .string)
     }
 
     private func updateProviderCount() {
-        let appLabel = selectedProviderAppType.map(ProviderDisplay.appTypeLabel) ?? "All apps"
-        providerCountLabel.stringValue = "\(appLabel) · \(filteredProviders.count) providers · \(protocolOverrides.count) overrides"
+        let appLabel = selectedProviderAppType.map(ProviderDisplay.appTypeLabel) ?? "全部应用"
+        providerCountLabel.stringValue = "\(appLabel) · \(filteredProviders.count) 个供应商 · \(protocolOverrides.count) 个覆盖"
     }
 
     @objc private func cancel() {
@@ -1057,12 +1294,18 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
     private func updatePortField() {
         portField.stringValue = "\(preferences.normalizedPort)"
-        updateBaseURLLabel()
+        updateBaseURLLabels()
     }
 
-    private func updateBaseURLLabel() {
+    private func updateBaseURLLabels() {
+        codexBaseURLLabel.stringValue = baseURL(path: "/codex")
+        claudeCodeBaseURLLabel.stringValue = baseURL(path: "/claude-code")
+        claudeDesktopBaseURLLabel.stringValue = baseURL(path: "/claude-desktop")
+    }
+
+    private func baseURL(path: String) -> String {
         let port = UInt16(portField.stringValue) ?? 17888
-        baseURLLabel.stringValue = "http://127.0.0.1:\(port)/codex"
+        return "http://127.0.0.1:\(port)\(path)"
     }
 }
 
@@ -1105,6 +1348,7 @@ private final class SettingsSidebarCell: NSTableCellView {
 
 private final class ModelToggleCell: NSTableCellView {
     private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let detailLabel = NSTextField(labelWithString: "")
 
     init(identifier: NSUserInterfaceItemIdentifier, target: AnyObject, action: Selector) {
         super.init(frame: .zero)
@@ -1114,11 +1358,21 @@ private final class ModelToggleCell: NSTableCellView {
         checkbox.font = .systemFont(ofSize: 13)
         checkbox.lineBreakMode = .byTruncatingMiddle
         checkbox.translatesAutoresizingMaskIntoConstraints = false
+
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingMiddle
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+
         addSubview(checkbox)
+        addSubview(detailLabel)
         NSLayoutConstraint.activate([
             checkbox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             checkbox.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            checkbox.centerYAnchor.constraint(equalTo: centerYAnchor)
+            checkbox.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            detailLabel.leadingAnchor.constraint(equalTo: checkbox.leadingAnchor, constant: 20),
+            detailLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            detailLabel.topAnchor.constraint(equalTo: checkbox.bottomAnchor, constant: 1)
         ])
     }
 
@@ -1127,16 +1381,19 @@ private final class ModelToggleCell: NSTableCellView {
     }
 
     func configure(routeKey: ModelRouteKey, isSelected: Bool, tag: Int) {
-        checkbox.title = routeKey.displayName
+        checkbox.title = routeKey.logicalModel
         checkbox.toolTip = routeKey.description
         checkbox.tag = tag
         checkbox.state = isSelected ? .on : .off
+        detailLabel.stringValue = ProviderDisplay.appTypeLabel(routeKey.appType)
     }
 }
 
 private final class ProviderProtocolCell: NSTableCellView {
     private let nameLabel = NSTextField(labelWithString: "")
     private let formatLabel = NSTextField(labelWithString: "")
+    private let badgeLabel = NSTextField(labelWithString: "")
+    private let urlLabel = NSTextField(labelWithString: "")
     private let popup = NSPopUpButton(frame: .zero, pullsDown: false)
 
     init(identifier: NSUserInterfaceItemIdentifier, target: AnyObject, action: Selector) {
@@ -1153,9 +1410,30 @@ private final class ProviderProtocolCell: NSTableCellView {
         nameLabel.lineBreakMode = .byTruncatingTail
         labels.addArrangedSubview(nameLabel)
 
+        let metaRow = NSStackView()
+        metaRow.orientation = .horizontal
+        metaRow.alignment = .centerY
+        metaRow.spacing = 6
+        metaRow.translatesAutoresizingMaskIntoConstraints = false
+
+        badgeLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        badgeLabel.alignment = .center
+        badgeLabel.wantsLayer = true
+        badgeLabel.layer?.cornerRadius = 5
+        badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+
         formatLabel.font = .systemFont(ofSize: 11)
         formatLabel.textColor = .secondaryLabelColor
-        labels.addArrangedSubview(formatLabel)
+        formatLabel.lineBreakMode = .byTruncatingTail
+
+        metaRow.addArrangedSubview(badgeLabel)
+        metaRow.addArrangedSubview(formatLabel)
+        labels.addArrangedSubview(metaRow)
+
+        urlLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        urlLabel.textColor = .tertiaryLabelColor
+        urlLabel.lineBreakMode = .byTruncatingMiddle
+        labels.addArrangedSubview(urlLabel)
 
         popup.target = target
         popup.action = action
@@ -1170,7 +1448,9 @@ private final class ProviderProtocolCell: NSTableCellView {
             labels.trailingAnchor.constraint(lessThanOrEqualTo: popup.leadingAnchor, constant: -12),
             popup.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             popup.centerYAnchor.constraint(equalTo: centerYAnchor),
-            popup.widthAnchor.constraint(equalToConstant: 170)
+            popup.widthAnchor.constraint(equalToConstant: 170),
+            badgeLabel.heightAnchor.constraint(equalToConstant: 18),
+            badgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 74)
         ])
     }
 
@@ -1179,16 +1459,37 @@ private final class ProviderProtocolCell: NSTableCellView {
     }
 
     func configure(provider: ImportedProvider, override: ApiFormat?, tag: Int) {
-        nameLabel.stringValue = provider.displayName
-        formatLabel.stringValue = "Detected: \(provider.apiFormat.rawValue)"
+        nameLabel.stringValue = provider.name
+        badgeLabel.stringValue = ProviderDisplay.appTypeLabel(provider.appType)
+        badgeLabel.textColor = appAccentColor(provider.appType)
+        badgeLabel.layer?.backgroundColor = appAccentColor(provider.appType).withAlphaComponent(0.10).cgColor
+        formatLabel.stringValue = override == nil
+            ? "检测到：\(provider.apiFormat.rawValue)"
+            : "已覆盖 · 检测到 \(provider.apiFormat.rawValue)"
+        urlLabel.stringValue = provider.baseURL ?? "未检测到 Base URL"
         popup.tag = tag
         let selected = override?.rawValue ?? "inherit"
         selectItem(representedObject: selected)
     }
 
+    private func appAccentColor(_ appType: String) -> NSColor {
+        switch appType {
+        case "codex":
+            return .systemBlue
+        case "claude":
+            return .systemPurple
+        case "claude-desktop":
+            return .systemTeal
+        case "gemini":
+            return .systemOrange
+        default:
+            return .secondaryLabelColor
+        }
+    }
+
     private func addProtocolItems() {
         popup.removeAllItems()
-        addItem("Inherit", representedObject: "inherit")
+        addItem("继承检测结果", representedObject: "inherit")
         popup.menu?.addItem(.separator())
         addItem("OpenAI Responses", representedObject: ApiFormat.openaiResponses.rawValue)
         addItem("OpenAI Chat", representedObject: ApiFormat.openaiChat.rawValue)
