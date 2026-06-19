@@ -50,7 +50,7 @@ struct CustomModelStoreTests {
 
         #expect(candidate.logicalModel == "customer_model")
         #expect(candidate.upstreamModel == "upstream-gpt-5.5")
-        #expect(candidate.providerRef == provider.ref)
+        #expect(candidate.upstreamProviderRef == provider.ref)
         #expect(candidate.supportsLongContext)
     }
 
@@ -80,7 +80,7 @@ struct CustomModelStoreTests {
     }
 
     @Test
-    func expandsOnlySelectedTargetForCustomModel() throws {
+    func expandsAllSelectedTargetsForCustomModel() throws {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -134,7 +134,8 @@ struct CustomModelStoreTests {
 
         let expanded = state.expandedCandidates(from: catalog)
 
-        #expect(expanded.count == 1)
+        #expect(expanded.count == 2)
         #expect(expanded.first?.upstreamModel == "pro-upstream")
+        #expect(expanded.last?.upstreamModel == "fast-upstream")
     }
 }

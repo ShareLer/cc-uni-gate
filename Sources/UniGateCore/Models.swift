@@ -243,6 +243,7 @@ public struct ModelCandidate: Identifiable, Sendable {
     public let requiresTransform: Bool
     public let label: String?
     public let supportsLongContext: Bool
+    public let upstreamProviderRef: ProviderRef
 
     public var id: String {
         "\(routeKey.description)|\(providerRef.description)"
@@ -263,7 +264,8 @@ public struct ModelCandidate: Identifiable, Sendable {
         baseURL: String?,
         requiresTransform: Bool,
         label: String?,
-        supportsLongContext: Bool
+        supportsLongContext: Bool,
+        upstreamProviderRef: ProviderRef? = nil
     ) {
         self.logicalModel = logicalModel
         self.providerRef = providerRef
@@ -276,6 +278,7 @@ public struct ModelCandidate: Identifiable, Sendable {
         self.requiresTransform = requiresTransform
         self.label = label
         self.supportsLongContext = supportsLongContext
+        self.upstreamProviderRef = upstreamProviderRef ?? providerRef
     }
 
     public func withApiFormat(_ apiFormat: ApiFormat) -> ModelCandidate {
@@ -290,7 +293,8 @@ public struct ModelCandidate: Identifiable, Sendable {
             baseURL: baseURL,
             requiresTransform: requiresTransform(for: appType, apiFormat: apiFormat),
             label: label,
-            supportsLongContext: supportsLongContext
+            supportsLongContext: supportsLongContext,
+            upstreamProviderRef: upstreamProviderRef
         )
     }
 

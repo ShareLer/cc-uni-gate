@@ -74,8 +74,8 @@ public enum ProxyResolver {
             throw ProxyResolverError.noRoute(routeKey: routeKey.description)
         }
 
-        guard let provider = catalog.providers.first(where: { $0.ref == candidate.providerRef }) else {
-            throw ProxyResolverError.missingProvider(ref: candidate.providerRef.description)
+        guard let provider = catalog.providers.first(where: { $0.ref == candidate.upstreamProviderRef }) else {
+            throw ProxyResolverError.missingProvider(ref: candidate.upstreamProviderRef.description)
         }
 
         let responseTransform = try responseTransform(

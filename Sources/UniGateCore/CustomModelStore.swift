@@ -49,33 +49,43 @@ public struct CustomModelState: Codable, Sendable {
     }
 
     public func expandedCandidates(from catalog: ProviderCatalog) -> [ModelCandidate] {
-        models.compactMap { definition in
-            guard let target = definition.selectedTarget else {
-                return nil
-            }
-            guard
-                target.routeKey.appType == definition.appType,
-                let candidate = catalog.candidates.first(where: {
+        models.flatMap { definition in
+            let preferredTargetID = definition.selectedTarget?.id
+            var matchedTargets: [(CustomModelTarget, ModelCandidate)] = []
+
+            for target in definition.targets where target.routeKey.appType == definition.appType {
+                guard let candidate = catalog.candidates.first(where: {
                     $0.appType == target.routeKey.appType
                         && $0.logicalModel == target.routeKey.logicalModel
                         && $0.providerRef == target.providerRef
-                })
-            else {
-                return nil
+                }) else {
+                    continue
+                }
+                matchedTargets.append((target, candidate))
             }
-            return ModelCandidate(
-                logicalModel: definition.name,
-                providerRef: candidate.providerRef,
-                providerName: candidate.providerName,
-                appType: definition.appType,
-                clientProtocol: candidate.clientProtocol,
-                apiFormat: candidate.apiFormat,
-                upstreamModel: candidate.upstreamModel,
-                baseURL: candidate.baseURL,
-                requiresTransform: candidate.requiresTransform,
-                label: "自定义：\(candidate.logicalModel)",
-                supportsLongContext: candidate.supportsLongContext
-            )
+
+            if let preferredTargetID,
+               let index = matchedTargets.firstIndex(where: { $0.0.id == preferredTargetID }) {
+                let preferred = matchedTargets.remove(at: index)
+                matchedTargets.insert(preferred, at: 0)
+            }
+
+            return matchedTargets.map { _, candidate in
+                ModelCandidate(
+                    logicalModel: definition.name,
+                    providerRef: ProviderRef(appType: definition.appType, id: "\(candidate.providerRef.description)|\(candidate.routeKey.description)"),
+                    providerName: candidate.providerName,
+                    appType: definition.appType,
+                    clientProtocol: candidate.clientProtocol,
+                    apiFormat: candidate.apiFormat,
+                    upstreamModel: candidate.upstreamModel,
+                    baseURL: candidate.baseURL,
+                    requiresTransform: candidate.requiresTransform,
+                    label: "自定义：\(candidate.logicalModel)",
+                    supportsLongContext: candidate.supportsLongContext,
+                    upstreamProviderRef: candidate.providerRef
+                )
+            }
         }
     }
 }

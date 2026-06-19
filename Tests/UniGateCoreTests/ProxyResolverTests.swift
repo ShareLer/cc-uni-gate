@@ -498,6 +498,86 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesCustomModelAliasTargetsFromSameProviderIndependently() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let fast = ModelCandidate(
+            logicalModel: "fast",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "fast-upstream",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let pro = ModelCandidate(
+            logicalModel: "pro",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "pro-upstream",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let fastTarget = CustomModelTarget(routeKey: fast.routeKey, providerRef: provider.ref)
+        let proTarget = CustomModelTarget(routeKey: pro.routeKey, providerRef: provider.ref)
+        let imported = ProviderCatalog(providers: [provider], candidates: [fast, pro])
+        let custom = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                targets: [fastTarget, proTarget],
+                selectedTargetID: proTarget.id
+            )
+        ])
+        let catalog = ProviderCatalog(
+            providers: imported.providers,
+            candidates: imported.candidates + custom.expandedCandidates(from: imported)
+        )
+        let customCandidates = catalog.candidates(for: ModelRouteKey(appType: "codex", logicalModel: "customer_model"))
+        let fastCandidate = try #require(customCandidates.first { $0.upstreamModel == "fast-upstream" })
+        var routes = RouteStore.defaultState(candidates: catalog.candidates)
+        routes.routes["codex:customer_model"] = ActiveRoute(
+            appType: "codex",
+            logicalModel: "customer_model",
+            providerRef: fastCandidate.providerRef,
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: Data(#"{"model":"customer_model","input":"hello"}"#.utf8)
+        )
+
+        #expect(customCandidates.count == 2)
+        #expect(RouteStore.defaultState(candidates: catalog.candidates).routes["codex:customer_model"]?.providerRef != fastCandidate.providerRef)
+        #expect(resolved.outboundModel == "fast-upstream")
+    }
+
+    @Test
     func fallsBackFableRoleToOpusRouteWhenFableRouteIsAbsent() throws {
         let provider = ImportedProvider(
             id: "p1",
