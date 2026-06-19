@@ -440,7 +440,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private let codexBaseURLLabel = NSTextField(labelWithString: "")
     private let claudeCodeBaseURLLabel = NSTextField(labelWithString: "")
     private let claudeDesktopBaseURLLabel = NSTextField(labelWithString: "")
-    private var copySuccessPopover: NSPopover?
+    private var actionPopover: NSPopover?
     private var providers: [ImportedProvider]
     private var filteredProviders: [ImportedProvider]
     private var candidates: [ModelCandidate]
@@ -669,21 +669,24 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
             title: "Codex",
             detail: "OpenAI 兼容客户端",
             label: codexBaseURLLabel,
-            path: "/codex"
+            path: "/codex",
+            ccSwitchApp: "codex"
         ))
         endpointGroup.addArrangedSubview(separator())
         endpointGroup.addArrangedSubview(endpointRow(
             title: "Claude Code",
             detail: "Anthropic Messages API 客户端",
             label: claudeCodeBaseURLLabel,
-            path: "/claude-code"
+            path: "/claude-code",
+            ccSwitchApp: "claude"
         ))
         endpointGroup.addArrangedSubview(separator())
         endpointGroup.addArrangedSubview(endpointRow(
             title: "Claude Desktop",
             detail: "Anthropic Messages API 客户端",
             label: claudeDesktopBaseURLLabel,
-            path: "/claude-desktop"
+            path: "/claude-desktop",
+            ccSwitchApp: nil
         ))
         root.addArrangedSubview(endpointGroup)
         root.addArrangedSubview(NSView())
@@ -819,26 +822,35 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         return card
     }
 
-    private func endpointRow(title: String, detail: String, label: NSTextField, path: String) -> NSView {
+    private func endpointRow(title: String, detail: String, label: NSTextField, path: String, ccSwitchApp: String?) -> NSView {
         label.textColor = .secondaryLabelColor
         label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         label.lineBreakMode = .byTruncatingMiddle
         label.translatesAutoresizingMaskIntoConstraints = false
 
+        let importButton = button(title: "导入并切换", action: #selector(importToCcSwitch(_:)))
+        importButton.identifier = NSUserInterfaceItemIdentifier(path)
+        importButton.toolTip = ccSwitchApp == nil
+            ? "cc-switch 当前不支持通过 deeplink 导入 Claude Desktop 供应商"
+            : "导入到 cc-switch 并设为当前供应商"
+        importButton.isHidden = ccSwitchApp == nil
+
         let copyButton = button(title: "复制", action: #selector(copyBaseURL(_:)))
         copyButton.identifier = NSUserInterfaceItemIdentifier(path)
+        copyButton.toolTip = "复制 Base URL"
 
         let controls = NSStackView()
         controls.orientation = .horizontal
         controls.alignment = .centerY
         controls.spacing = 8
         controls.addArrangedSubview(label)
+        controls.addArrangedSubview(importButton)
         controls.addArrangedSubview(copyButton)
         controls.translatesAutoresizingMaskIntoConstraints = false
 
         let row = settingRow(title: title, detail: detail, control: controls)
         NSLayoutConstraint.activate([
-            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 280)
+            label.widthAnchor.constraint(greaterThanOrEqualToConstant: 220)
         ])
         return row
     }
@@ -1292,13 +1304,39 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         let path = sender.identifier?.rawValue ?? "/codex"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(baseURL(path: path), forType: .string)
-        showCopySuccess(from: sender)
+        showActionMessage("已复制", from: sender)
     }
 
-    private func showCopySuccess(from sender: NSButton) {
-        copySuccessPopover?.close()
+    @objc private func importToCcSwitch(_ sender: NSButton) {
+        updateBaseURLLabels()
+        let path = sender.identifier?.rawValue ?? "/codex"
+        guard let app = ccSwitchApp(for: path) else {
+            NSSound.beep()
+            showActionMessage("不支持导入", from: sender, width: 104)
+            return
+        }
+        guard let url = CcSwitchDeepLink.providerImportURL(
+            app: app,
+            endpoint: baseURL(path: path),
+            model: defaultModel(forAppType: app),
+            homepage: baseURL(path: "")
+        ) else {
+            NSSound.beep()
+            return
+        }
+        if NSWorkspace.shared.open(url) {
+            showActionMessage("已打开 cc-switch", from: sender, width: 132)
+        } else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            showActionMessage("已复制导入链接", from: sender, width: 132)
+        }
+    }
 
-        let label = NSTextField(labelWithString: "已复制")
+    private func showActionMessage(_ message: String, from sender: NSButton, width: CGFloat = 88) {
+        actionPopover?.close()
+
+        let label = NSTextField(labelWithString: message)
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.alignment = .center
         label.textColor = .labelColor
@@ -1310,7 +1348,7 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
         contentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(label)
         NSLayoutConstraint.activate([
-            contentView.widthAnchor.constraint(equalToConstant: 88),
+            contentView.widthAnchor.constraint(equalToConstant: width),
             contentView.heightAnchor.constraint(equalToConstant: 36),
             label.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
             label.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
@@ -1322,15 +1360,15 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 88, height: 36)
+        popover.contentSize = NSSize(width: width, height: 36)
         popover.contentViewController = controller
-        copySuccessPopover = popover
+        actionPopover = popover
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self, weak popover] in
             popover?.close()
-            if self?.copySuccessPopover === popover {
-                self?.copySuccessPopover = nil
+            if self?.actionPopover === popover {
+                self?.actionPopover = nil
             }
         }
     }
@@ -1377,6 +1415,30 @@ private final class SettingsWindowController: NSWindowController, NSTableViewDat
     private func baseURL(path: String) -> String {
         let port = UInt16(portField.stringValue) ?? 17888
         return "http://127.0.0.1:\(port)\(path)"
+    }
+
+    private func ccSwitchApp(for path: String) -> String? {
+        switch path {
+        case "/codex":
+            return "codex"
+        case "/claude-code":
+            return "claude"
+        default:
+            return nil
+        }
+    }
+
+    private func defaultModel(forAppType appType: String) -> String? {
+        let appKeys = routeKeys.filter { $0.appType == appType }
+        let visibleKeys = appKeys.filter { selectedRouteKeys.contains($0) }
+        return preferredDefaultModel(from: visibleKeys) ?? preferredDefaultModel(from: appKeys)
+    }
+
+    private func preferredDefaultModel(from keys: [ModelRouteKey]) -> String? {
+        if let exact = keys.first(where: { $0.logicalModel == "gpt-5.5" || $0.logicalModel == "auto" }) {
+            return exact.logicalModel
+        }
+        return keys.first?.logicalModel
     }
 
     private func routeCandidates(for routeKey: ModelRouteKey) -> [ModelCandidate] {
