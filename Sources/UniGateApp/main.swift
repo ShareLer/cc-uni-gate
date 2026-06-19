@@ -180,8 +180,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func providerTitle(_ candidate: ModelCandidate) -> String {
         var parts = [candidate.providerName]
-        if candidate.upstreamModel != candidate.logicalModel {
-            parts.append(candidate.upstreamModel)
+        let displayUpstreamModel = stripOneMSuffix(candidate.upstreamModel)
+        let displayLogicalModel = stripOneMSuffix(candidate.logicalModel)
+        if displayUpstreamModel != displayLogicalModel {
+            parts.append(displayUpstreamModel)
         } else if let label = candidate.label, label != candidate.providerName {
             parts.append(label)
         }
@@ -191,6 +193,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             parts.append(candidate.apiFormat.rawValue)
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func stripOneMSuffix(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
+            return trimmed
+        }
+        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @objc private func switchProvider(_ sender: NSMenuItem) {
