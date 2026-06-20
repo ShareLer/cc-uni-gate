@@ -6,7 +6,8 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let proxyHost = "127.0.0.1"
-    private var statusItem: NSStatusItem!
+    private let appState = UniGateAppState()
+    private let statusItemController = StatusItemController()
     private var catalog: ProviderCatalog = ProviderCatalog(providers: [], candidates: [])
     private var uniGateModelScope = UniGateModelScope()
     private var routes = RouteState()
@@ -15,23 +16,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var routeStore = RouteStore(fileURL: defaultRouteStoreURL())
     private lazy var preferencesStore = PreferencesStore(fileURL: defaultPreferencesStoreURL())
     private lazy var customModelStore = CustomModelStore()
-    private var settingsWindowController: SettingsWindowController?
     private var proxyServer: LocalProxyServer?
     private var proxyStatus: ProxyStatus = .starting
+    private var catalogLoadError: String?
     private var recentEvents: [ProxyEvent] = []
     private var forwardedRequestCounts: [String: Int] = [:]
-    private var menuNeedsUpdate = false
-    private var isRebuildingMenu = false
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
-    private weak var proxyStatusMenuItem: NSMenuItem?
     private let logger = FileLogger()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.toolTip = "CC Uni Gate"
-        updateStatusItemAppearance()
+        configureAppStateActions()
+        statusItemController.install(state: appState)
+        publishState()
         reloadCatalog()
         startProxyServer()
     }
@@ -49,9 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             routes = try routeStore.load(catalog: catalog)
-            rebuildMenu()
+            catalogLoadError = nil
+            publishState()
         } catch {
-            rebuildErrorMenu(error)
+            publishError(error)
         }
     }
 
@@ -77,275 +76,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func rebuildMenu() {
-        let menu = NSMenu()
-        menu.delegate = self
-        fillMenu(menu)
-        statusItem.menu = menu
-    }
-
-    private func refreshMenuInPlace(_ menu: NSMenu) {
-        fillMenu(menu)
-    }
-
-    private func fillMenu(_ menu: NSMenu) {
-        isRebuildingMenu = true
-        defer {
-            menuNeedsUpdate = false
-            isRebuildingMenu = false
-        }
-        menu.removeAllItems()
-        menu.delegate = self
-        let titleItem = NSMenuItem(title: "CC Uni Gate", action: nil, keyEquivalent: "")
-        titleItem.isEnabled = false
-        menu.addItem(titleItem)
-
-        let summaryItem = NSMenuItem(
-            title: "\(catalog.providers.count) 个供应商，\(catalog.models.count) 个模型",
-            action: nil,
-            keyEquivalent: ""
-        )
-        summaryItem.isEnabled = false
-        menu.addItem(summaryItem)
-
-        let proxyItem = NSMenuItem(
-            title: proxyStatus.title(port: currentProxyPort()),
-            action: nil,
-            keyEquivalent: ""
-        )
-        proxyItem.isEnabled = false
-        menu.addItem(proxyItem)
-        proxyStatusMenuItem = proxyItem
-        for item in forwardedRequestCountItems() {
-            menu.addItem(item)
-        }
-        for item in uniGateScopeWarningItems() {
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-
-        let visibleRouteKeys = menuRouteKeys()
-        if visibleRouteKeys.isEmpty {
-            let emptyItem = NSMenuItem(title: "未选择模型", action: nil, keyEquivalent: "")
-            emptyItem.isEnabled = false
-            menu.addItem(emptyItem)
-        }
-
-        for appType in catalog.appTypes {
-            let keys = visibleRouteKeys.filter { $0.appType == appType }
-            guard !keys.isEmpty else {
-                continue
-            }
-            let appItem = NSMenuItem(
-                title: ProviderDisplay.appTypeLabel(appType),
-                action: nil,
-                keyEquivalent: ""
-            )
-            let appSubmenu = NSMenu()
-            for key in keys {
-                let modelItem = NSMenuItem(title: key.logicalModel, action: nil, keyEquivalent: "")
-                let providerSubmenu = NSMenu()
-                for candidate in catalog.candidates(for: key) {
-                    let providerItem = NSMenuItem(
-                        title: providerTitle(candidate),
-                        action: #selector(switchProvider(_:)),
-                        keyEquivalent: ""
-                    )
-                    providerItem.target = self
-                    providerItem.representedObject = MenuRouteSelection(
-                        routeKey: key,
-                        providerRef: candidate.providerRef
-                    )
-                    if routes.routes[key.description]?.providerRef == candidate.providerRef {
-                        providerItem.state = .on
-                    }
-                    providerSubmenu.addItem(providerItem)
-                }
-                appSubmenu.setSubmenu(providerSubmenu, for: modelItem)
-                appSubmenu.addItem(modelItem)
-            }
-            menu.setSubmenu(appSubmenu, for: appItem)
-            menu.addItem(appItem)
-        }
-
-        menu.addItem(.separator())
-        menu.addItem(appMenuItem(title: "打开应用文件夹", action: #selector(openAppFolder), keyEquivalent: ""))
-        menu.addItem(appMenuItem(title: "设置...", action: #selector(openSettings), keyEquivalent: ","))
-        menu.addItem(appMenuItem(title: "重新加载 cc-switch DB", action: #selector(reloadAction), keyEquivalent: "r"))
-        menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
-        updateStatusItemAppearance()
-    }
-
-    private func rebuildErrorMenu(_ error: Error) {
-        proxyStatusMenuItem = nil
-        let menu = NSMenu()
-        let errorItem = NSMenuItem(title: "加载 cc-switch DB 失败", action: nil, keyEquivalent: "")
-        errorItem.isEnabled = false
-        menu.addItem(errorItem)
-        let detailItem = NSMenuItem(title: error.localizedDescription, action: nil, keyEquivalent: "")
-        detailItem.isEnabled = false
-        menu.addItem(detailItem)
-        menu.addItem(.separator())
-        menu.addItem(appMenuItem(title: "重试", action: #selector(reloadAction), keyEquivalent: "r"))
-        menu.addItem(appMenuItem(title: "打开应用文件夹", action: #selector(openAppFolder), keyEquivalent: ""))
-        menu.addItem(appMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q"))
-        statusItem.menu = menu
-        updateStatusItemAppearance()
-    }
-
-    private func appMenuItem(title: String, action: Selector, keyEquivalent: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
-        item.target = self
-        return item
-    }
-
-    private func providerTitle(_ candidate: ModelCandidate) -> String {
-        var parts = [candidate.providerName]
-        let displayUpstreamModel = stripOneMSuffix(candidate.upstreamModel)
-        let displayLogicalModel = stripOneMSuffix(candidate.logicalModel)
-        if displayUpstreamModel != displayLogicalModel {
-            parts.append(displayUpstreamModel)
-        }
-        if candidate.requiresTransform {
-            parts.append("需要转换")
-        } else {
-            parts.append(candidate.apiFormat.rawValue)
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    private func menuRouteKeys() -> [ModelRouteKey] {
-        let configuredRouteKeys = catalog.routeKeys.filter { key in
-            guard key.appType == "claude" || key.appType == "codex" else {
-                return true
-            }
-            return uniGateModelScope.contains(key)
-        }
-        return preferences.visibleRouteKeyList(allRouteKeys: configuredRouteKeys)
-    }
-
-    private func forwardedRequestCountItems() -> [NSMenuItem] {
-        let appTypes = ["claude", "codex", "claude-desktop", "gemini"]
-        return appTypes.compactMap { appType in
-            guard let count = forwardedRequestCounts[appType], count > 0 else {
-                return nil
-            }
-            let item = NSMenuItem(
-                title: "\(ProviderDisplay.appTypeLabel(appType))：\(count) req",
-                action: nil,
-                keyEquivalent: ""
-            )
-            item.isEnabled = false
-            return item
-        }
-    }
-
-    private func uniGateScopeWarningItems() -> [NSMenuItem] {
-        let missing = missingUniGateScopeAppTypes()
-        guard !missing.isEmpty else {
-            return []
-        }
-        let labels = missing.map(ProviderDisplay.appTypeLabel).joined(separator: "、")
-        let titleItem = NSMenuItem(
-            title: "未识别到 \(labels) 的 UniGate 配置",
-            action: nil,
-            keyEquivalent: ""
-        )
-        titleItem.isEnabled = false
-        let detailItem = NSMenuItem(
-            title: "请检查 cc-switch 供应商名称或 Base URL",
-            action: nil,
-            keyEquivalent: ""
-        )
-        detailItem.isEnabled = false
-        return [titleItem, detailItem]
-    }
-
-    private func missingUniGateScopeAppTypes() -> [String] {
-        ["claude", "codex"].filter { appType in
-            catalog.candidates.contains {
-                $0.appType == appType && $0.providerRef == $0.upstreamProviderRef
-            } && !uniGateModelScope.hasModels(for: appType)
-        }
-    }
-
-    private func stripOneMSuffix(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
-            return trimmed
-        }
-        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    @objc private func switchProvider(_ sender: NSMenuItem) {
-        guard let selection = sender.representedObject as? MenuRouteSelection else {
-            return
-        }
-
+    private func switchProvider(routeKey: ModelRouteKey, providerRef: ProviderRef) {
         do {
             routes = try routeStore.switchRoute(
                 routes,
                 catalog: catalog,
-                appType: selection.routeKey.appType,
-                logicalModel: selection.routeKey.logicalModel,
-                providerRef: selection.providerRef
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: providerRef
             )
-            rebuildMenu()
+            publishState()
         } catch {
             showError(error)
         }
     }
 
-    @objc private func reloadAction() {
+    private func reloadAction() {
         reloadCatalog()
     }
 
-    @objc private func openSettings() {
-        if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(
-                providers: catalog.providers,
-                candidates: catalog.candidates,
-                routeKeys: catalog.routeKeys,
-                customModels: customModels,
-                uniGateModelScope: uniGateModelScope,
-                proxyStatus: proxyStatus,
-                preferences: preferences,
-                onSave: { [weak self] preferences, customModels in
-                    guard let self else {
-                        return
-                    }
-                    do {
-                        let previousPort = self.currentProxyPort()
-                        self.preferences = preferences
-                        self.customModels = customModels
-                        try self.preferencesStore.save(preferences)
-                        try self.customModelStore.save(customModels)
-                        self.reloadCatalog()
-                        if self.currentProxyPort() != previousPort {
-                            self.startProxyServer()
-                        }
-                    } catch {
-                        self.showError(error)
-                    }
-                }
-            )
-        } else {
-            settingsWindowController?.update(
-                providers: catalog.providers,
-                candidates: catalog.candidates,
-                routeKeys: catalog.routeKeys,
-                customModels: customModels,
-                uniGateModelScope: uniGateModelScope,
-                proxyStatus: proxyStatus,
-                preferences: preferences
-            )
+    private func saveSettings(_ preferences: AppPreferences, customModels: CustomModelState) {
+        do {
+            let previousPort = currentProxyPort()
+            self.preferences = preferences
+            self.customModels = customModels
+            try preferencesStore.save(preferences)
+            try customModelStore.save(customModels)
+            reloadCatalog()
+            if currentProxyPort() != previousPort {
+                startProxyServer()
+            }
+            appState.closeSettings()
+            appState.showToast("已保存")
+        } catch {
+            showError(error)
         }
-        settingsWindowController?.showWindow(nil)
-        settingsWindowController?.window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func openAppFolder() {
+    private func openAppFolder() {
         try? FileManager.default.createDirectory(
             at: AppPaths.logsDirectory(),
             withIntermediateDirectories: true
@@ -353,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(AppPaths.applicationSupportDirectory())
     }
 
-    @objc private func quit() {
+    private func quit() {
         NSApp.terminate(nil)
     }
 
@@ -423,10 +191,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recentEvents.removeLast(recentEvents.count - 20)
         }
         logger.log(level, message)
+        appState.updateRecentEvents(recentEvents)
     }
 
-    private func markMenuNeedsUpdate() {
-        menuNeedsUpdate = true
+    private func configureAppStateActions() {
+        appState.onSwitchProvider = { [weak self] routeKey, providerRef in
+            self?.switchProvider(routeKey: routeKey, providerRef: providerRef)
+        }
+        appState.onReload = { [weak self] in
+            self?.reloadAction()
+        }
+        appState.onOpenAppFolder = { [weak self] in
+            self?.openAppFolder()
+        }
+        appState.onQuit = { [weak self] in
+            self?.quit()
+        }
+        appState.onSaveSettings = { [weak self] preferences, customModels in
+            self?.saveSettings(preferences, customModels: customModels)
+        }
+    }
+
+    private func publishState() {
+        appState.updateSnapshot(
+            catalog: catalog,
+            routes: routes,
+            preferences: preferences,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope,
+            proxyStatus: proxyStatus,
+            proxyPort: currentProxyPort(),
+            loadError: catalogLoadError
+        )
+        appState.updateRecentEvents(recentEvents)
+        appState.updateForwardedRequestCounts(forwardedRequestCounts)
+    }
+
+    private func publishError(_ error: Error) {
+        catalogLoadError = "加载 cc-switch DB 失败：\(error.localizedDescription)"
+        publishState()
     }
 
     private func updateProxyStatus(
@@ -439,40 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let eventLevel, let eventMessage, didChange {
             recordEvent(eventLevel, eventMessage)
         }
-        if didChange {
-            updateVisibleProxyStatusMenuItem()
-            rebuildMenu()
-            settingsWindowController?.updateProxyStatus(status)
-        } else {
-            updateStatusItemAppearance()
-        }
-    }
-
-    private func updateVisibleProxyStatusMenuItem() {
-        proxyStatusMenuItem?.title = proxyStatus.title(port: currentProxyPort())
-    }
-
-    private func updateStatusItemAppearance() {
-        guard let button = statusItem?.button else {
-            return
-        }
-        let title = NSMutableAttributedString(
-            string: "UniGate ",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
-                .foregroundColor: NSColor.labelColor
-            ]
-        )
-        title.append(NSAttributedString(
-            string: "●",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 10, weight: .semibold),
-                .foregroundColor: proxyStatus.accentColor,
-                .baselineOffset: 1
-            ]
-        ))
-        button.attributedTitle = title
-        button.toolTip = "CC Uni Gate · \(proxyStatus.title(port: currentProxyPort()))"
+        appState.updateProxyStatus(status, port: currentProxyPort())
+        appState.updateRecentEvents(recentEvents)
     }
 
     private func startHealthMonitoring() {
@@ -526,7 +297,7 @@ extension AppDelegate: LocalProxyRuntime {
         uniGateModelScope = try currentImporter().loadUniGateModelScope()
         routes = try routeStore.load(catalog: catalog)
         recordEvent(.info, "已重新加载 cc-switch DB")
-        rebuildMenu()
+        publishState()
         return proxySnapshot()
     }
 
@@ -539,18 +310,17 @@ extension AppDelegate: LocalProxyRuntime {
             providerRef: providerRef
         )
         recordEvent(.info, "Switched \(routeKey.description) to \(providerRef.description)")
-        rebuildMenu()
+        publishState()
         return proxySnapshot()
     }
 
     func recordProxyEvent(level: ProxyEvent.Level, message: String) {
         recordEvent(level, message)
-        markMenuNeedsUpdate()
     }
 
     func recordForwardedRequest(appType: String) {
         forwardedRequestCounts[appType, default: 0] += 1
-        markMenuNeedsUpdate()
+        appState.updateForwardedRequestCounts(forwardedRequestCounts)
     }
 
     func proxyProviderDidSucceed() {
@@ -608,15 +378,6 @@ extension AppDelegate: LocalProxyRuntime {
                 eventMessage: "代理监听已停止"
             )
         }
-    }
-}
-
-extension AppDelegate: NSMenuDelegate {
-    func menuWillOpen(_ menu: NSMenu) {
-        guard menuNeedsUpdate, !isRebuildingMenu else {
-            return
-        }
-        refreshMenuInPlace(menu)
     }
 }
 
@@ -736,98 +497,6 @@ struct ProxyEvent {
     let date: Date
     let level: Level
     let message: String
-}
-
-private final class MenuRouteSelection: NSObject {
-    let routeKey: ModelRouteKey
-    let providerRef: ProviderRef
-
-    init(routeKey: ModelRouteKey, providerRef: ProviderRef) {
-        self.routeKey = routeKey
-        self.providerRef = providerRef
-    }
-}
-
-@MainActor
-private final class SettingsWindowController: NSWindowController {
-    private var preferences: AppPreferences
-    private let viewModel: SettingsViewModel
-
-    init(
-        providers: [ImportedProvider],
-        candidates: [ModelCandidate],
-        routeKeys: [ModelRouteKey],
-        customModels: CustomModelState,
-        uniGateModelScope: UniGateModelScope,
-        proxyStatus: ProxyStatus,
-        preferences: AppPreferences,
-        onSave: @escaping (AppPreferences, CustomModelState) -> Void
-    ) {
-        self.preferences = preferences
-        self.viewModel = SettingsViewModel(
-            providers: providers,
-            candidates: candidates,
-            routeKeys: routeKeys,
-            customModels: customModels,
-            uniGateModelScope: uniGateModelScope,
-            proxyStatus: proxyStatus,
-            preferences: preferences,
-            onSave: onSave
-        )
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "CC Uni Gate"
-        window.minSize = NSSize(width: 820, height: 560)
-        window.center()
-        super.init(window: window)
-        viewModel.onClose = { [weak self] in
-            self?.close()
-        }
-        buildContent()
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    func update(
-        providers: [ImportedProvider],
-        candidates: [ModelCandidate],
-        routeKeys: [ModelRouteKey],
-        customModels: CustomModelState,
-        uniGateModelScope: UniGateModelScope,
-        proxyStatus: ProxyStatus,
-        preferences: AppPreferences
-    ) {
-        self.preferences = preferences
-        viewModel.update(
-            providers: providers,
-            candidates: candidates,
-            routeKeys: routeKeys,
-            customModels: customModels,
-            uniGateModelScope: uniGateModelScope,
-            proxyStatus: proxyStatus,
-            preferences: preferences
-        )
-    }
-
-    func updateProxyStatus(_ proxyStatus: ProxyStatus) {
-        viewModel.proxyStatus = proxyStatus
-    }
-
-    override func showWindow(_ sender: Any?) {
-        viewModel.portText = "\(preferences.normalizedPort)"
-        super.showWindow(sender)
-    }
-
-    private func buildContent() {
-        window?.contentView = NSHostingView(rootView: SettingsRootView(model: viewModel))
-    }
 }
 
 let app = NSApplication.shared

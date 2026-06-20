@@ -203,6 +203,7 @@ final class LocalProxyServer: @unchecked Sendable {
     }
 
     private func proxy(_ request: HTTPRequest, on connection: NWConnection) async {
+        var providerFailureContext: String?
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
             guard let route = proxyRoute(for: request.path) else {
@@ -217,6 +218,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 path: request.path,
                 body: request.body
             )
+            providerFailureContext = "\(ProviderDisplay.appTypeLabel(resolved.candidate.appType)) · \(resolved.providerName)"
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
             }
@@ -239,7 +241,7 @@ final class LocalProxyServer: @unchecked Sendable {
             let headers = forwardResponseHeaders(http)
             await MainActor.run {
                 if Self.isProviderFailureStatus(status) {
-                    runtime.proxyProviderDidFail("\(resolved.providerName) 返回 HTTP \(status)")
+                    runtime.proxyProviderDidFail("\(providerFailureContext ?? resolved.providerName) 返回 HTTP \(status)")
                 } else if status >= 200 && status < 400 {
                     runtime.proxyProviderDidSucceed()
                 }
@@ -285,7 +287,11 @@ final class LocalProxyServer: @unchecked Sendable {
             send(.json(status: 400, body: ["error": error.localizedDescription]), on: connection)
         } catch {
             await MainActor.run {
-                runtime.proxyProviderDidFail(error.localizedDescription)
+                if let providerFailureContext {
+                    runtime.proxyProviderDidFail("\(providerFailureContext)：\(error.localizedDescription)")
+                } else {
+                    runtime.proxyProviderDidFail(error.localizedDescription)
+                }
                 runtime.recordProxyEvent(level: .error, message: "\(request.path) upstream error: \(error.localizedDescription)")
             }
             send(.json(status: 502, body: ["error": error.localizedDescription]), on: connection)

@@ -1342,12 +1342,19 @@ private struct CustomModelEditorView: View {
 }
 
 private enum UGStyle {
-    static let accent = Color(red: 0.231, green: 0.510, blue: 0.965)
-    static let canvas = Color.white
-    static let sidebar = Color.white
-    static let card = Color(nsColor: .controlBackgroundColor)
-    static let line = Color(nsColor: .separatorColor)
-    static let toastBackground = Color(red: 0.98, green: 0.985, blue: 0.995)
+    static let accent = Color(red: 0xE8 / 255.0, green: 0x6D / 255.0, blue: 0x45 / 255.0)
+    static let canvas = Color.clear
+    static let sidebar = adaptive(light: Color.white.opacity(0.12), dark: Color.black.opacity(0.18))
+    static let card = adaptive(light: Color.white.opacity(0.20), dark: Color.black.opacity(0.21))
+    static let line = adaptive(light: Color.white.opacity(0.40), dark: Color.white.opacity(0.20))
+    static let toastBackground = adaptive(light: Color.white.opacity(0.25), dark: Color.black.opacity(0.28))
     static let body = Font.system(size: 13)
     static let caption = Font.system(size: 11)
+
+    static func adaptive(light: Color, dark: Color) -> Color {
+        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return NSColor(isDark ? dark : light)
+        }))
+    }
 }
