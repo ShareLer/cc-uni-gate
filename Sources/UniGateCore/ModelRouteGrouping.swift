@@ -97,16 +97,16 @@ public enum ModelRouteGrouping {
 
     private static func preferredRouteKey(in routeKeys: [ModelRouteKey]) -> ModelRouteKey {
         routeKeys.min { lhs, rhs in
-            let lhsNormalized = ModelCandidate.stripOneMSuffix(lhs.logicalModel)
-            let rhsNormalized = ModelCandidate.stripOneMSuffix(rhs.logicalModel)
+            let lhsNormalized = ModelNameNormalizer.stripOneMSuffix(lhs.logicalModel)
+            let rhsNormalized = ModelNameNormalizer.stripOneMSuffix(rhs.logicalModel)
             let lhsHasSuffix = lhsNormalized != lhs.logicalModel
             let rhsHasSuffix = rhsNormalized != rhs.logicalModel
             if lhsHasSuffix != rhsHasSuffix {
                 return !lhsHasSuffix
             }
 
-            let lhsRank = claudeRouteRoleRank(lhs)
-            let rhsRank = claudeRouteRoleRank(rhs)
+            let lhsRank = ClaudeRouteRole.rank(for: lhs)
+            let rhsRank = ClaudeRouteRole.rank(for: rhs)
             if lhsRank != rhsRank {
                 return lhsRank < rhsRank
             }
@@ -117,26 +117,6 @@ public enum ModelRouteGrouping {
             }
             return lhs.description.localizedStandardCompare(rhs.description) == .orderedAscending
         } ?? routeKeys[0]
-    }
-
-    private static func claudeRouteRoleRank(_ routeKey: ModelRouteKey) -> Int {
-        guard routeKey.appType == "claude" || routeKey.appType == "claude-desktop" else {
-            return 99
-        }
-        let normalized = routeKey.logicalModel.lowercased()
-        if normalized.contains("sonnet") {
-            return 0
-        }
-        if normalized.contains("opus") {
-            return 1
-        }
-        if normalized.contains("fable") {
-            return 2
-        }
-        if normalized.contains("haiku") {
-            return 3
-        }
-        return 4
     }
 
     private static func displayIdentity(

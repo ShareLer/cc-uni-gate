@@ -206,7 +206,11 @@ final class SettingsViewModel: ObservableObject {
         let baseRouteKeys = candidates
             .filter { $0.appType != "claude-desktop" }
             .map(\.routeKey)
-        let desktopRouteKeys = claudeDesktopVisibleModelKeys(candidates: candidates)
+        let desktopRouteKeys = ModelRouteVisibility.claudeDesktopVisibleModelKeys(
+            candidates: candidates,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope
+        )
         return Self.modelRouteKeys(routeKeys: baseRouteKeys, customModels: customModels)
             + desktopRouteKeys
     }
@@ -214,7 +218,7 @@ final class SettingsViewModel: ObservableObject {
     private func visibleRouteKeys() -> [ModelRouteKey] {
         let keys = modelRouteKeys()
         let selectableKeys = keys.filter {
-            Self.isModelSelectable($0, customModels: customModels, uniGateModelScope: uniGateModelScope)
+            ModelRouteVisibility.isModelSelectable($0, customModels: customModels, uniGateModelScope: uniGateModelScope)
         }
         guard preferences.visibleModels != nil else {
             return selectableKeys
@@ -225,27 +229,8 @@ final class SettingsViewModel: ObservableObject {
 
     private func scopedBaseModelCandidates() -> [ModelCandidate] {
         baseModelCandidates().filter {
-            Self.isCandidateSelectable($0, uniGateModelScope: uniGateModelScope)
+            ModelRouteVisibility.isCandidateSelectable($0, uniGateModelScope: uniGateModelScope)
         }
-    }
-
-    private func claudeDesktopVisibleModelKeys(candidates: [ModelCandidate]) -> [ModelRouteKey] {
-        let candidateModels = Set(
-            candidates
-                .filter { $0.appType == "claude-desktop" }
-                .map(\.upstreamModelDisplayName)
-                .map(Self.normalizedModelName)
-        )
-        let customModels = Set(
-            customModels.models
-                .filter { $0.appType == "claude-desktop" }
-                .map(\.name)
-                .map(Self.normalizedModelName)
-        )
-        return uniGateModelScope.models(for: "claude-desktop")
-            .filter { candidateModels.contains(Self.normalizedModelName($0)) }
-            .filter { !customModels.contains(Self.normalizedModelName($0)) }
-            .map { ModelRouteKey(appType: "claude-desktop", logicalModel: $0) }
     }
 
     private static func modelRouteKeys(
@@ -264,38 +249,4 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    private static func isModelSelectable(
-        _ routeKey: ModelRouteKey,
-        customModels: CustomModelState,
-        uniGateModelScope: UniGateModelScope
-    ) -> Bool {
-        guard isUniGateScopedApp(routeKey.appType) else {
-            return true
-        }
-        if customModels.models.contains(where: { $0.appType == routeKey.appType && $0.name == routeKey.logicalModel }) {
-            return uniGateModelScope.contains(routeKey)
-        }
-        if routeKey.appType == "claude-desktop" {
-            return true
-        }
-        return uniGateModelScope.contains(routeKey)
-    }
-
-    private static func isCandidateSelectable(
-        _ candidate: ModelCandidate,
-        uniGateModelScope: UniGateModelScope
-    ) -> Bool {
-        guard isUniGateScopedApp(candidate.appType) else {
-            return true
-        }
-        return uniGateModelScope.contains(candidate)
-    }
-
-    private static func isUniGateScopedApp(_ appType: String) -> Bool {
-        appType == "claude" || appType == "claude-desktop" || appType == "codex"
-    }
-
-    private static func normalizedModelName(_ model: String) -> String {
-        ModelCandidate.stripOneMSuffix(model).lowercased()
-    }
 }

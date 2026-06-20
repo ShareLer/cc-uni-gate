@@ -154,33 +154,13 @@ public struct CustomModelState: Codable, Sendable {
             return candidate.supportsLongContext
         }
 
-        let candidateRank = claudeRouteRoleRank(candidate)
-        let existingRank = claudeRouteRoleRank(existing)
+        let candidateRank = ClaudeRouteRole.rank(for: candidate.routeKey)
+        let existingRank = ClaudeRouteRole.rank(for: existing.routeKey)
         if candidateRank != existingRank {
             return candidateRank < existingRank
         }
 
         return candidate.logicalModel.localizedStandardCompare(existing.logicalModel) == .orderedAscending
-    }
-
-    private static func claudeRouteRoleRank(_ candidate: ModelCandidate) -> Int {
-        guard candidate.appType == "claude" || candidate.appType == "claude-desktop" else {
-            return 99
-        }
-        let normalized = candidate.logicalModel.lowercased()
-        if normalized.contains("sonnet") {
-            return 0
-        }
-        if normalized.contains("opus") {
-            return 1
-        }
-        if normalized.contains("fable") {
-            return 2
-        }
-        if normalized.contains("haiku") {
-            return 3
-        }
-        return 4
     }
 }
 

@@ -34,8 +34,6 @@ public enum ProxyRequestPath: Equatable, Sendable {
             self = .models(appType: scoped.appType)
         } else if Self.claudePaths.contains(path) {
             self = .proxy(protocolKind: .anthropicMessages, appType: scoped.appType ?? "claude")
-        } else if Self.claudeDesktopPaths.contains(path) {
-            self = .proxy(protocolKind: .anthropicMessages, appType: "claude-desktop")
         } else if Self.codexResponsesPaths.contains(path) {
             self = .proxy(protocolKind: .codexResponses, appType: scoped.appType ?? "codex")
         } else if Self.openAIChatPaths.contains(path) {
@@ -72,11 +70,6 @@ public enum ProxyRequestPath: Equatable, Sendable {
 
     private static let claudePaths: Set<String> = [
         "/v1/messages", "/v1/messages/count_tokens"
-    ]
-
-    private static let claudeDesktopPaths: Set<String> = [
-        "/claude-desktop/v1/messages",
-        "/claude-desktop/v1/messages/count_tokens"
     ]
 
     private static let codexResponsesPaths: Set<String> = [
@@ -335,11 +328,7 @@ public struct ModelCandidate: Identifiable, Sendable {
     }
 
     public static func stripOneMSuffix(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
-            return trimmed
-        }
-        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        ModelNameNormalizer.stripOneMSuffix(model)
     }
 }
 
@@ -454,14 +443,7 @@ public struct UniGateModelScope: Sendable {
     }
 
     private static func normalizedModel(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let withoutSuffix: String
-        if let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) {
-            withoutSuffix = String(trimmed[..<range.lowerBound])
-        } else {
-            withoutSuffix = trimmed
-        }
-        return withoutSuffix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        ModelNameNormalizer.normalized(model)
     }
 }
 

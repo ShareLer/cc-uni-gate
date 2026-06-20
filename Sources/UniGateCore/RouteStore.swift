@@ -177,23 +177,15 @@ public final class RouteStore: @unchecked Sendable {
         route: ActiveRoute,
         catalog: ProviderCatalog
     ) -> ModelCandidate? {
-        guard routeKey.appType == "claude" || routeKey.appType == "claude-desktop" else {
+        guard ModelRouteVisibility.isClaudeLikeApp(routeKey.appType) else {
             return nil
         }
-        let normalizedModel = stripOneMSuffix(routeKey.logicalModel)
+        let normalizedModel = ModelNameNormalizer.stripOneMSuffix(routeKey.logicalModel)
         return catalog.candidates.first {
             $0.appType == routeKey.appType
                 && $0.providerRef == route.providerRef
-                && stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedModel) == .orderedSame
+                && ModelNameNormalizer.stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedModel) == .orderedSame
         }
-    }
-
-    private func stripOneMSuffix(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
-            return trimmed
-        }
-        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

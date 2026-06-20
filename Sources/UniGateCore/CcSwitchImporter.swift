@@ -186,7 +186,7 @@ public struct CcSwitchImporter: Sendable {
                 upstreamModel: upstreamModel,
                 label: displayName ?? provider.name,
                 supportsLongContext: longContextValue(modelObject["contextWindow"] ?? modelObject["context_window"])
-                    ?? hasLongContextSuffix(upstreamModel)
+                    ?? ModelNameNormalizer.hasOneMMarker(upstreamModel)
             )
         }
     }
@@ -210,13 +210,13 @@ public struct CcSwitchImporter: Sendable {
             else {
                 continue
             }
-            let logicalModel = stripOneMSuffix(upstreamModel)
+            let logicalModel = ModelNameNormalizer.stripOneMSuffix(upstreamModel)
             let label = field.name.flatMap { JSONValueParser.string(provider.settings, ["env", $0]) }
             let dedupeKey = logicalModel.lowercased()
             guard !seen.contains(dedupeKey) else {
-                if hasLongContextSuffix(upstreamModel),
+                if ModelNameNormalizer.hasOneMMarker(upstreamModel),
                    let index = models.firstIndex(where: { $0.logical.caseInsensitiveCompare(logicalModel) == .orderedSame }),
-                   !hasLongContextSuffix(models[index].upstream) {
+                   !ModelNameNormalizer.hasOneMMarker(models[index].upstream) {
                     models[index] = (logicalModel, upstreamModel, label)
                 }
                 continue
@@ -236,7 +236,7 @@ public struct CcSwitchImporter: Sendable {
                 baseURL: provider.baseURL,
                 requiresTransform: provider.apiFormat != .anthropic,
                 label: model.label ?? provider.name,
-                supportsLongContext: hasLongContextSuffix(model.upstream)
+                supportsLongContext: ModelNameNormalizer.hasOneMMarker(model.upstream)
             )
         }
     }
@@ -285,7 +285,7 @@ public struct CcSwitchImporter: Sendable {
             baseURL: provider.baseURL,
             requiresTransform: provider.apiFormat != .openaiResponses && provider.apiFormat != .openaiChat,
             label: label,
-            supportsLongContext: supportsLongContext ?? hasLongContextSuffix(upstreamModel)
+            supportsLongContext: supportsLongContext ?? ModelNameNormalizer.hasOneMMarker(upstreamModel)
         )
     }
 
@@ -400,18 +400,6 @@ public struct CcSwitchImporter: Sendable {
             return nil
         }
         return number >= 1_000_000
-    }
-
-    private func hasLongContextSuffix(_ model: String) -> Bool {
-        model.range(of: #"\[\s*1m\s*\]"#, options: [.regularExpression, .caseInsensitive]) != nil
-    }
-
-    private func stripOneMSuffix(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
-            return trimmed
-        }
-        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func isUniGateProvider(_ provider: ImportedProvider) -> Bool {

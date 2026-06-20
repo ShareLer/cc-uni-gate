@@ -102,7 +102,7 @@ public enum ProxyResolver {
         }
 
         var outboundBody = json
-        outboundBody["model"] = stripOneMSuffix(candidate.upstreamModel)
+        outboundBody["model"] = ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel)
         if responseTransform == .openAIChatToCodexResponse {
             outboundBody = try CodexChatBridge.chatRequest(from: outboundBody)
         }
@@ -117,7 +117,7 @@ public enum ProxyResolver {
         return ResolvedRoute(
             candidate: candidate,
             providerName: provider.name,
-            outboundModel: stripOneMSuffix(candidate.upstreamModel),
+            outboundModel: ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel),
             upstreamURL: upstreamURL,
             headers: buildAuthHeaders(provider),
             body: outboundData,
@@ -169,13 +169,13 @@ public enum ProxyResolver {
             return exactKey
         }
 
-        let normalizedRequest = stripOneMSuffix(requestedModel)
+        let normalizedRequest = ModelNameNormalizer.stripOneMSuffix(requestedModel)
         let normalizedKey = ModelRouteKey(appType: appType, logicalModel: normalizedRequest)
         if routes.routes[normalizedKey.description] != nil {
             return normalizedKey
         }
 
-        guard appType == "claude" || appType == "claude-desktop" else {
+        guard ModelRouteVisibility.isClaudeLikeApp(appType) else {
             return exactKey
         }
 
@@ -194,20 +194,20 @@ public enum ProxyResolver {
 
         if let match = keys.first(where: {
             routes.routes[$0.description] != nil
-                && stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
+                && ModelNameNormalizer.stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
         }) {
             return match
         }
 
-        guard let role = claudeRoleKeyword(normalizedRequest) else {
+        guard let role = ClaudeRouteRole.role(in: normalizedRequest) else {
             return exactKey
         }
 
-        if let match = keys.first(where: { claudeRoleKeyword($0.logicalModel) == role && routes.routes[$0.description] != nil }) {
+        if let match = keys.first(where: { ClaudeRouteRole.role(in: $0.logicalModel) == role && routes.routes[$0.description] != nil }) {
             return match
         }
-        if role == "fable",
-           let opus = keys.first(where: { claudeRoleKeyword($0.logicalModel) == "opus" && routes.routes[$0.description] != nil }) {
+        if role == .fable,
+           let opus = keys.first(where: { ClaudeRouteRole.role(in: $0.logicalModel) == .opus && routes.routes[$0.description] != nil }) {
             return opus
         }
         return exactKey
@@ -226,7 +226,7 @@ public enum ProxyResolver {
             $0.appType == routeKey.appType
                 && $0.logicalModel == routeKey.logicalModel
                 && $0.providerRef == activeRoute.providerRef
-                && stripOneMSuffix($0.upstreamModel).caseInsensitiveCompare(requestedModel) == .orderedSame
+                && ModelNameNormalizer.stripOneMSuffix($0.upstreamModel).caseInsensitiveCompare(requestedModel) == .orderedSame
         }
     }
 
@@ -235,11 +235,11 @@ public enum ProxyResolver {
         routes: RouteState,
         catalog: ProviderCatalog
     ) -> ModelCandidate? {
-        let normalizedRequest = stripOneMSuffix(requestedModel)
+        let normalizedRequest = ModelNameNormalizer.stripOneMSuffix(requestedModel)
         return catalog.candidates
             .filter {
                 $0.appType == "claude-desktop"
-                    && stripOneMSuffix($0.upstreamModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
+                    && ModelNameNormalizer.stripOneMSuffix($0.upstreamModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
             }
             .sorted { lhs, rhs in
                 let lhsActive = routes.routes[lhs.routeKey.description]?.providerRef == lhs.providerRef
@@ -247,8 +247,8 @@ public enum ProxyResolver {
                 if lhsActive != rhsActive {
                     return lhsActive
                 }
-                let lhsRank = claudeRouteRoleRank(lhs.logicalModel)
-                let rhsRank = claudeRouteRoleRank(rhs.logicalModel)
+                let lhsRank = ClaudeRouteRole.rank(for: lhs.logicalModel)
+                let rhsRank = ClaudeRouteRole.rank(for: rhs.logicalModel)
                 if lhsRank != rhsRank {
                     return lhsRank < rhsRank
                 }
@@ -285,46 +285,6 @@ public enum ProxyResolver {
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func stripOneMSuffix(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
-            return trimmed
-        }
-        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func claudeRoleKeyword(_ model: String) -> String? {
-        let normalized = model.lowercased()
-        if normalized.contains("opus") {
-            return "opus"
-        }
-        if normalized.contains("haiku") {
-            return "haiku"
-        }
-        if normalized.contains("fable") {
-            return "fable"
-        }
-        if normalized.contains("sonnet") {
-            return "sonnet"
-        }
-        return nil
-    }
-
-    private static func claudeRouteRoleRank(_ model: String) -> Int {
-        switch claudeRoleKeyword(model) {
-        case "sonnet":
-            return 0
-        case "opus":
-            return 1
-        case "fable":
-            return 2
-        case "haiku":
-            return 3
-        default:
-            return 4
-        }
     }
 
     private static func buildUpstreamURL(

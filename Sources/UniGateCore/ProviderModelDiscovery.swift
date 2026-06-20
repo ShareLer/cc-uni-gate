@@ -130,7 +130,7 @@ public enum ProviderModelDiscovery {
             else {
                 return nil
             }
-            return ModelCandidate.stripOneMSuffix(candidate.upstreamModel)
+            return ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel)
         })
     }
 
