@@ -2,6 +2,57 @@ import AppKit
 import SwiftUI
 import UniGateCore
 
+private enum BrandColorPalette {
+    static func color(for preset: BrandColorPreset) -> Color {
+        switch preset {
+        case .ember:
+            return Color(red: 0xE8 / 255.0, green: 0x6D / 255.0, blue: 0x45 / 255.0)
+        case .blue:
+            return Color(red: 0x0A / 255.0, green: 0x84 / 255.0, blue: 0xFF / 255.0)
+        case .indigo:
+            return Color(red: 0x5E / 255.0, green: 0x5C / 255.0, blue: 0xE6 / 255.0)
+        case .violet:
+            return Color(red: 0xAF / 255.0, green: 0x52 / 255.0, blue: 0xDE / 255.0)
+        case .teal:
+            return Color(red: 0x00 / 255.0, green: 0xA7 / 255.0, blue: 0x93 / 255.0)
+        case .green:
+            return Color(red: 0x34 / 255.0, green: 0xA8 / 255.0, blue: 0x53 / 255.0)
+        case .rose:
+            return Color(red: 0xE9 / 255.0, green: 0x44 / 255.0, blue: 0x6A / 255.0)
+        }
+    }
+
+    static func label(for preset: BrandColorPreset) -> String {
+        switch preset {
+        case .ember:
+            return "暖橙"
+        case .blue:
+            return "蓝"
+        case .indigo:
+            return "靛蓝"
+        case .violet:
+            return "紫"
+        case .teal:
+            return "青绿"
+        case .green:
+            return "绿"
+        case .rose:
+            return "玫红"
+        }
+    }
+}
+
+private struct UGBrandColorKey: EnvironmentKey {
+    static let defaultValue = BrandColorPalette.color(for: .ember)
+}
+
+private extension EnvironmentValues {
+    var ugBrandColor: Color {
+        get { self[UGBrandColorKey.self] }
+        set { self[UGBrandColorKey.self] = newValue }
+    }
+}
+
 struct UniGatePopoverRootView: View {
     @ObservedObject var state: UniGateAppState
     @State private var expandedScrollRequestID = UUID()
@@ -20,7 +71,8 @@ struct UniGatePopoverRootView: View {
 
     var body: some View {
         routeSwitcher
-            .frame(width: 460, height: 620)
+            .frame(width: 420, height: 620)
+            .environment(\.ugBrandColor, brand)
         .background(.ultraThinMaterial)
         .overlay(alignment: .top) {
             if let toast = state.toast {
@@ -36,6 +88,10 @@ struct UniGatePopoverRootView: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    private var brand: Color {
+        BrandColorPalette.color(for: state.preferences.brandColor)
     }
 
     private var routeSwitcher: some View {
@@ -54,10 +110,10 @@ struct UniGatePopoverRootView: View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(UGPopoverStyle.brand.opacity(0.12))
+                    .fill(brand.opacity(0.12))
                 Image(systemName: "switch.2")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(UGPopoverStyle.brand)
+                    .foregroundStyle(brand)
             }
             .frame(width: 34, height: 34)
 
@@ -226,7 +282,7 @@ struct UniGatePopoverRootView: View {
                 let selected = state.currentAppType.flatMap { appTypes.firstIndex(of: $0) } ?? 0
                 if isActive {
                     Capsule()
-                        .fill(UGPopoverStyle.brand)
+                        .fill(brand)
                         .padding(2)
                         .frame(width: tabWidth)
                         .offset(x: tabWidth * CGFloat(selected))
@@ -279,7 +335,7 @@ struct UniGatePopoverRootView: View {
             }
             .foregroundStyle(selected ? .white : UGPopoverStyle.textSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(selected ? UGPopoverStyle.brand : UGPopoverStyle.tabFill, in: Capsule())
+            .background(selected ? brand : UGPopoverStyle.tabFill, in: Capsule())
             .overlay(Capsule().stroke(selected ? Color.clear : UGPopoverStyle.tabBorder, lineWidth: 1))
             .contentShape(Capsule())
         }
@@ -622,16 +678,16 @@ struct UniGatePopoverRootView: View {
                 Text("自定义模型")
                     .font(.system(size: 13, weight: .semibold))
             }
-            .foregroundStyle(UGPopoverStyle.brand)
+            .foregroundStyle(brand)
             .frame(maxWidth: .infinity, minHeight: 52)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(UGPopoverStyle.addEntryFill)
+                    .fill(UGPopoverStyle.brandSoftFill(brand))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(
-                        UGPopoverStyle.addEntryBorder,
+                        brand.opacity(0.44),
                         style: StrokeStyle(lineWidth: 1.2, dash: [6, 5], dashPhase: 0)
                     )
             )
@@ -649,6 +705,8 @@ struct UniGatePopoverRootView: View {
         let active = state.activeCandidate(for: key)
         let isExpanded = state.isExpanded(key)
         let isOperable = state.isRouteOperable(key)
+        let canSwitchProvider = isOperable && candidates.count > 1
+        let showsExpandedProviders = isExpanded && canSwitchProvider
         let customModel = state.customModel(for: key)
         let isConfirmingDelete = customModel?.id == pendingDeleteCustomModelID
         return VStack(alignment: .leading, spacing: 0) {
@@ -668,14 +726,18 @@ struct UniGatePopoverRootView: View {
                     Spacer(minLength: 8)
 
                     if isOperable {
-                        providerTag(active?.providerName ?? "未选择", isExpanded: isExpanded)
+                        providerTag(
+                            active?.providerName ?? "未选择",
+                            isExpanded: showsExpandedProviders,
+                            canSwitchProvider: canSwitchProvider
+                        )
                     } else {
                         disabledRouteTag(for: key)
                     }
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    guard isOperable else {
+                    guard canSwitchProvider else {
                         return
                     }
                     toggleExpandedRow(
@@ -693,7 +755,7 @@ struct UniGatePopoverRootView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .id(key.description)
 
-            if isExpanded && isOperable {
+            if showsExpandedProviders {
                 providerList(candidates: candidates, routeKey: key)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
@@ -712,8 +774,8 @@ struct UniGatePopoverRootView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(isExpanded ? UGPopoverStyle.cardFillStrong : UGPopoverStyle.cardFill)
-                .strokeBorder(isExpanded ? UGPopoverStyle.expandedBorder : disabledAwareBorder(isOperable), lineWidth: 1)
+                .fill(showsExpandedProviders ? UGPopoverStyle.cardFillStrong : UGPopoverStyle.cardFill)
+                .strokeBorder(showsExpandedProviders ? brand.opacity(0.42) : disabledAwareBorder(isOperable), lineWidth: 1)
                 .shadow(color: UGPopoverStyle.cardShadowColor, radius: 5, x: 0, y: 6)
         )
         .opacity(isOperable ? 1 : 0.72)
@@ -775,7 +837,7 @@ struct UniGatePopoverRootView: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(UGPopoverStyle.deleteConfirmBorder))
     }
 
-    private func providerTag(_ title: String, isExpanded: Bool) -> some View {
+    private func providerTag(_ title: String, isExpanded: Bool, canSwitchProvider: Bool) -> some View {
         let accent = providerAccentColor(for: title)
         return HStack(spacing: 7) {
             Text(title)
@@ -784,14 +846,17 @@ struct UniGatePopoverRootView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(accent.opacity(0.82))
-                .rotationEffect(.degrees(isExpanded ? 180 : 0))
+            if canSwitchProvider {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(accent.opacity(0.82))
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+            }
         }
         .padding(.horizontal, 9)
         .frame(width: providerTagWidth, height: 24, alignment: .leading)
         .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .help(canSwitchProvider ? "切换供应商" : "只有一个供应商，无需切换")
     }
 
     private func disabledRouteTag(for key: ModelRouteKey) -> some View {
@@ -819,7 +884,7 @@ struct UniGatePopoverRootView: View {
     private func providerAccentColor(for providerName: String) -> Color {
         let palette = UGPopoverStyle.providerAccentPalette
         guard !palette.isEmpty else {
-            return UGPopoverStyle.brand
+            return brand
         }
         let index = stableHash(providerName) % palette.count
         return palette[index]
@@ -862,7 +927,7 @@ struct UniGatePopoverRootView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(candidate.providerName)
                         .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                        .foregroundStyle(selected ? UGPopoverStyle.brand : .primary)
+                        .foregroundStyle(selected ? brand : .primary)
                         .lineLimit(1)
                     Text(providerDetail(candidate))
                         .font(.caption2)
@@ -875,14 +940,14 @@ struct UniGatePopoverRootView: View {
                 if selected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(UGPopoverStyle.brand)
+                        .foregroundStyle(brand)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? UGPopoverStyle.selectedProviderFill : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(selected ? UGPopoverStyle.brandSelectionFill(brand) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
@@ -922,7 +987,7 @@ struct UniGatePopoverRootView: View {
                     Text("reload")
                         .font(.system(size: 11, weight: .semibold))
                 }
-                .foregroundStyle(UGPopoverStyle.brand)
+                .foregroundStyle(UGPopoverStyle.neutralActionText)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
                 .contentShape(Rectangle())
@@ -977,7 +1042,7 @@ private struct DottedSpinner: View {
         ZStack {
             ForEach(0..<8, id: \.self) { index in
                 Circle()
-                    .fill(UGPopoverStyle.brand.opacity(0.28 + Double(index) * 0.07))
+                    .fill(UGPopoverStyle.neutralActionText.opacity(0.28 + Double(index) * 0.07))
                     .frame(width: 3, height: 3)
                     .offset(y: -5)
                     .rotationEffect(.degrees(Double(index) * 45 + phase))
@@ -1004,6 +1069,7 @@ private struct BubbleTail: Shape {
 }
 
 private struct InlineSettingsPanel: View {
+    @Environment(\.ugBrandColor) private var brand
     @ObservedObject var model: SettingsViewModel
     let loadError: String?
     @State private var applyTask: Task<Void, Never>?
@@ -1020,6 +1086,7 @@ private struct InlineSettingsPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    themeSettingsCard
                     generalSettingsCard
                     endpointCard
                 }
@@ -1063,6 +1130,19 @@ private struct InlineSettingsPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var themeSettingsCard: some View {
+        settingsCard {
+            HStack(spacing: 12) {
+                Text("主题色")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+                themeColorPicker
+            }
+        }
+    }
+
     private var generalSettingsCard: some View {
         settingsCard {
             VStack(spacing: 0) {
@@ -1089,7 +1169,7 @@ private struct InlineSettingsPanel: View {
                         Spacer()
                         Text("cc-switch")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(UGPopoverStyle.brand)
+                            .foregroundStyle(UGPopoverStyle.neutralActionText)
                     }
 
                     TextField(AppPreferences.defaultCcSwitchDBPath(), text: $model.ccSwitchDBPathText)
@@ -1193,12 +1273,49 @@ private struct InlineSettingsPanel: View {
             Label(title, systemImage: systemImage)
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(UGPopoverStyle.brand)
+                .foregroundStyle(UGPopoverStyle.neutralActionText)
                 .padding(.horizontal, 8)
                 .frame(height: 26)
-                .background(UGPopoverStyle.brand.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+                .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
         }
         .buttonStyle(.plain)
+    }
+
+    private var themeColorPicker: some View {
+        HStack(spacing: 6) {
+            ForEach(BrandColorPreset.allCases) { preset in
+                let selected = model.brandColor == preset
+                let color = BrandColorPalette.color(for: preset)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        model.applyBrandColor(preset)
+                    }
+                } label: {
+                    HStack(spacing: 0) {
+                        Capsule()
+                            .fill(color)
+                            .frame(width: selected ? 26 : 22, height: 14)
+                        if selected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(color)
+                                .frame(width: 12)
+                        }
+                    }
+                    .padding(.horizontal, selected ? 6 : 4)
+                    .frame(height: 24)
+                    .background(selected ? color.opacity(0.13) : UGPopoverStyle.tabFill, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(selected ? color.opacity(0.58) : UGPopoverStyle.inputFieldBorder, lineWidth: 1)
+                    )
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(BrandColorPalette.label(for: preset))
+            }
+        }
     }
 
     private func fieldFill(isFocused: Bool) -> Color {
@@ -1207,7 +1324,7 @@ private struct InlineSettingsPanel: View {
 
     private func fieldBorder(isFocused: Bool, cornerRadius: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: cornerRadius)
-            .stroke(isFocused ? UGPopoverStyle.brand.opacity(0.54) : UGPopoverStyle.inputFieldBorder, lineWidth: 1)
+            .stroke(isFocused ? brand.opacity(0.54) : UGPopoverStyle.inputFieldBorder, lineWidth: 1)
     }
 
     private func inlineFieldError(_ text: String) -> some View {
@@ -1255,6 +1372,7 @@ private struct InlineSettingsPanel: View {
 }
 
 private struct InlineCustomModelEditorView: View {
+    @Environment(\.ugBrandColor) private var brand
     let onSave: (CustomModelDefinition) -> Void
     let onCancel: () -> Void
 
@@ -1405,7 +1523,7 @@ private struct InlineCustomModelEditorView: View {
                         .frame(height: 26)
                         .background(
                             Capsule()
-                                .fill(selected ? UGPopoverStyle.brand : UGPopoverStyle.tabFill)
+                                .fill(selected ? brand : UGPopoverStyle.tabFill)
                         )
                         .overlay(
                             Capsule()
@@ -1460,7 +1578,7 @@ private struct InlineCustomModelEditorView: View {
             HStack(spacing: 10) {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(selected ? UGPopoverStyle.brand : UGPopoverStyle.textSecondary)
+                    .foregroundStyle(selected ? brand : UGPopoverStyle.textSecondary)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(targetTitle(candidate))
@@ -1478,17 +1596,17 @@ private struct InlineCustomModelEditorView: View {
                 if isDefault {
                     Text("默认")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(UGPopoverStyle.brand)
+                        .foregroundStyle(brand)
                         .padding(.horizontal, 7)
                         .frame(height: 20)
-                        .background(UGPopoverStyle.brand.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+                        .background(brand.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
                         .transition(.opacity)
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? UGPopoverStyle.selectedProviderFill : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(selected ? UGPopoverStyle.brandSelectionFill(brand) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
@@ -1513,7 +1631,7 @@ private struct InlineCustomModelEditorView: View {
                     .foregroundStyle(canSave ? .white : UGPopoverStyle.textSecondary)
                     .padding(.horizontal, 14)
                     .frame(height: 30)
-                    .background(canSave ? UGPopoverStyle.brand : UGPopoverStyle.tabFill, in: RoundedRectangle(cornerRadius: 7))
+                    .background(canSave ? brand : UGPopoverStyle.tabFill, in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
             .disabled(!canSave)
@@ -1595,24 +1713,22 @@ private struct InlineCustomModelEditorView: View {
 }
 
 private enum UGPopoverStyle {
-    static let brand = Color(red: 0xE8 / 255.0, green: 0x6D / 255.0, blue: 0x45 / 255.0)
     static let cardFill = adaptive(light: Color.white.opacity(0.68), dark: Color.black.opacity(0.21))
     static let cardFillStrong = adaptive(light: Color.white.opacity(0.82), dark: Color.black.opacity(0.28))
     static let cardBorder = adaptive(light: Color.black.opacity(0.11), dark: Color.white.opacity(0.20))
-    static let addEntryFill = adaptive(light: brand.opacity(0.055), dark: brand.opacity(0.10))
-    static let addEntryBorder = adaptive(light: brand.opacity(0.42), dark: brand.opacity(0.50))
     static let disabledBorder = adaptive(light: Color.black.opacity(0.07), dark: Color.white.opacity(0.12))
     static let disabledTagFill = adaptive(light: Color.black.opacity(0.055), dark: Color.white.opacity(0.075))
     static let destructive = adaptive(light: Color.red.opacity(0.82), dark: Color.red.opacity(0.76))
     static let deleteConfirmFill = adaptive(light: Color.red.opacity(0.055), dark: Color.red.opacity(0.11))
     static let deleteConfirmBorder = adaptive(light: Color.red.opacity(0.18), dark: Color.red.opacity(0.24))
-    static let expandedBorder = adaptive(light: brand.opacity(0.38), dark: brand.opacity(0.45))
     static let expandedPanelFill = adaptive(light: Color.black.opacity(0.045), dark: Color.white.opacity(0.075))
     static let expandedPanelBorder = adaptive(light: Color.black.opacity(0.055), dark: Color.white.opacity(0.10))
     static let inputFieldFill = adaptive(light: Color.black.opacity(0.035), dark: Color.white.opacity(0.065))
     static let inputFieldFocusedFill = adaptive(light: Color.white.opacity(0.42), dark: Color.white.opacity(0.085))
     static let inputFieldBorder = adaptive(light: Color.black.opacity(0.11), dark: Color.white.opacity(0.16))
-    static let selectedProviderFill = adaptive(light: brand.opacity(0.13), dark: brand.opacity(0.22))
+    static let neutralActionText = adaptive(light: Color.black.opacity(0.72), dark: Color.white.opacity(0.72))
+    static let neutralActionFill = adaptive(light: Color.black.opacity(0.045), dark: Color.white.opacity(0.075))
+    static let neutralActionBorder = adaptive(light: Color.black.opacity(0.10), dark: Color.white.opacity(0.14))
     static let tabFill = adaptive(light: Color.white.opacity(0.36), dark: Color.black.opacity(0.21))
     static let tabBorder = adaptive(light: Color.black.opacity(0.08), dark: Color.white.opacity(0.20))
     static let issueBubbleFill = adaptive(light: Color.orange.opacity(0.10), dark: Color.orange.opacity(0.16))
@@ -1634,5 +1750,13 @@ private enum UGPopoverStyle {
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             return NSColor(isDark ? dark : light)
         }))
+    }
+
+    static func brandSoftFill(_ brand: Color) -> Color {
+        brand.opacity(0.08)
+    }
+
+    static func brandSelectionFill(_ brand: Color) -> Color {
+        brand.opacity(0.14)
     }
 }

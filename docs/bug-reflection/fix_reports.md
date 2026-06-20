@@ -102,3 +102,21 @@ DB 路径应用后，应用层会在 `publishError` 中把错误写入 `UniGateA
 
 ## 经验教训
 设置页的即时生效需要即时反馈。由某个设置项触发的错误应展示在该设置项附近，而不是只在依赖该设置结果的其他页面展示。
+
+# Fix Report - Upstream Model Hidden When Same As Logical Model
+
+## Bug 描述
+Codex 中 `gpt-5.5` 这类模型明明有当前上游模型，但主 UI 模型卡片副标题显示成 `Codex`，没有显示 `上游模型：gpt-5.5`。
+
+## 根因
+`modelDetailText` 为了减少重复信息，在 `upstream == logicalModel` 时直接退回显示 app 名称。这个规则把“没有上游信息”和“上游模型刚好同名”混在了一起，导致有效的当前上游模型被隐藏。
+
+## 尝试记录
+- 尝试 1：检查 `modelDetailText`。结果：发现相同名称保护分支会返回 `ProviderDisplay.appTypeLabel`。
+- 尝试 2：检查 `upstreamDisplayName`。结果：当前 active candidate 能返回 `gpt-5.5`，数据本身没有丢失。
+
+## 最终方案
+只要存在 active candidate，就始终显示当前上游模型；只有没有 active candidate 时才退回 app 名称。设置页的模型详情也同步取消同名隐藏规则。
+
+## 经验教训
+UI 省略重复信息要谨慎。对路由工具来说，当前上游模型是状态信息，即使文本等于逻辑模型，也比 app 名称更有诊断价值。

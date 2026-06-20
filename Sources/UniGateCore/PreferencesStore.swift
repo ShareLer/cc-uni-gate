@@ -1,21 +1,36 @@
 import Foundation
 
+public enum BrandColorPreset: String, CaseIterable, Codable, Sendable, Identifiable {
+    case ember
+    case blue
+    case indigo
+    case violet
+    case teal
+    case green
+    case rose
+
+    public var id: String { rawValue }
+}
+
 public struct AppPreferences: Codable, Sendable {
     public var visibleModels: Set<String>?
     public var protocolOverrides: [String: ApiFormat]
     public var port: UInt16
     public var ccSwitchDBPath: String?
+    public var brandColor: BrandColorPreset
 
     public init(
         visibleModels: Set<String>? = nil,
         protocolOverrides: [String: ApiFormat] = [:],
         port: UInt16 = 17888,
-        ccSwitchDBPath: String? = nil
+        ccSwitchDBPath: String? = nil,
+        brandColor: BrandColorPreset = .ember
     ) {
         self.visibleModels = visibleModels
         self.protocolOverrides = protocolOverrides
         self.port = port
         self.ccSwitchDBPath = ccSwitchDBPath
+        self.brandColor = brandColor
     }
 
     enum CodingKeys: String, CodingKey {
@@ -23,6 +38,7 @@ public struct AppPreferences: Codable, Sendable {
         case protocolOverrides
         case port
         case ccSwitchDBPath
+        case brandColor
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,6 +47,8 @@ public struct AppPreferences: Codable, Sendable {
         self.protocolOverrides = try container.decodeIfPresent([String: ApiFormat].self, forKey: .protocolOverrides) ?? [:]
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 17888
         self.ccSwitchDBPath = try container.decodeIfPresent(String.self, forKey: .ccSwitchDBPath)
+        let brandColorValue = try container.decodeIfPresent(String.self, forKey: .brandColor)
+        self.brandColor = brandColorValue.flatMap(BrandColorPreset.init(rawValue:)) ?? .ember
     }
 
     public func visibleModelList(allModels: [String]) -> [String] {

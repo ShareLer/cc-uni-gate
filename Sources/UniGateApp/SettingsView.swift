@@ -57,6 +57,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var protocolOverrides: [String: ApiFormat]
     @Published var portText: String
     @Published var ccSwitchDBPathText: String
+    @Published var brandColor: BrandColorPreset
     @Published var selectedModelAppType: String?
     @Published var selectedProviderAppType: String?
     @Published var modelSearch = ""
@@ -91,6 +92,7 @@ final class SettingsViewModel: ObservableObject {
         self.protocolOverrides = preferences.protocolOverrides
         self.portText = "\(preferences.normalizedPort)"
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
+        self.brandColor = preferences.brandColor
         self.selectedRouteKeys = Self.visibleRouteKeys(
             preferences: preferences,
             routeKeys: routeKeys,
@@ -122,6 +124,7 @@ final class SettingsViewModel: ObservableObject {
         self.protocolOverrides = preferences.protocolOverrides
         self.portText = "\(preferences.normalizedPort)"
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
+        self.brandColor = preferences.brandColor
         self.selectedRouteKeys = Self.visibleRouteKeys(
             preferences: preferences,
             routeKeys: routeKeys,
@@ -152,7 +155,8 @@ final class SettingsViewModel: ObservableObject {
             visibleModels: visibleModels,
             protocolOverrides: protocolOverrides,
             port: port,
-            ccSwitchDBPath: ccSwitchDBPathPreferenceValue()
+            ccSwitchDBPath: ccSwitchDBPathPreferenceValue(),
+            brandColor: brandColor
         ), customModels)
         onClose?()
     }
@@ -177,13 +181,28 @@ final class SettingsViewModel: ObservableObject {
             visibleModels: preferences.visibleModels,
             protocolOverrides: protocolOverrides,
             port: port,
-            ccSwitchDBPath: ccSwitchDBPathPreferenceValue()
+            ccSwitchDBPath: ccSwitchDBPathPreferenceValue(),
+            brandColor: brandColor
         )
         guard hasGeneralSettingsChange(nextPreferences) else {
             return true
         }
         onApply(nextPreferences, customModels)
         return true
+    }
+
+    func applyBrandColor(_ preset: BrandColorPreset) {
+        brandColor = preset
+        guard preferences.brandColor != preset else {
+            return
+        }
+        onApply(AppPreferences(
+            visibleModels: preferences.visibleModels,
+            protocolOverrides: preferences.protocolOverrides,
+            port: preferences.normalizedPort,
+            ccSwitchDBPath: preferences.ccSwitchDBPath,
+            brandColor: preset
+        ), customModels)
     }
 
     private static func visibleRouteKeys(
@@ -412,7 +431,7 @@ final class SettingsViewModel: ObservableObject {
         }
         let appLabel = ProviderDisplay.appTypeLabel(routeKey.appType)
         let upstreams = upstreamNames(for: routeKey)
-        guard !upstreams.isEmpty, upstreams != [routeKey.logicalModel] else {
+        guard !upstreams.isEmpty else {
             return appLabel
         }
         return "\(appLabel) · 上游模型：\(upstreams.joined(separator: "、"))"
@@ -459,6 +478,7 @@ final class SettingsViewModel: ObservableObject {
     private func hasGeneralSettingsChange(_ nextPreferences: AppPreferences) -> Bool {
         preferences.normalizedPort != nextPreferences.normalizedPort
             || normalizedPath(preferences.ccSwitchDBPath) != normalizedPath(nextPreferences.ccSwitchDBPath)
+            || preferences.brandColor != nextPreferences.brandColor
     }
 
     private func normalizedPath(_ path: String?) -> String {

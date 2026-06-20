@@ -21,12 +21,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.animates = false
+        popover.animates = true
         let controller = NSHostingController(rootView: AnyView(UniGatePopoverRootView(state: state)))
         if #available(macOS 13.0, *) {
             controller.sizingOptions = [.preferredContentSize]
         } else {
-            controller.preferredContentSize = NSSize(width: 460, height: 620)
+            controller.preferredContentSize = NSSize(width: 420, height: 620)
         }
         popover.contentViewController = controller
         popover.delegate = self

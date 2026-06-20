@@ -71,6 +71,7 @@ struct PreferencesStoreTests {
         #expect(loaded.port == 17888)
         #expect(loaded.ccSwitchDBPath == nil)
         #expect(loaded.resolvedCcSwitchDBPath == AppPreferences.defaultCcSwitchDBPath())
+        #expect(loaded.brandColor == .ember)
     }
 
     @Test
@@ -110,5 +111,35 @@ struct PreferencesStoreTests {
 
         #expect(loaded.ccSwitchDBPath == "~/.cc-switch/custom.db")
         #expect(loaded.resolvedCcSwitchDBPath.hasSuffix("/.cc-switch/custom.db"))
+    }
+
+    @Test
+    func persistsBrandColor() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        let store = PreferencesStore(fileURL: tmp)
+        try store.save(AppPreferences(brandColor: .teal))
+
+        let loaded = try store.load()
+
+        #expect(loaded.brandColor == .teal)
+    }
+
+    @Test
+    func unknownBrandColorFallsBackToDefault() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        try FileManager.default.createDirectory(
+            at: tmp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"brandColor":"unknown"}"#.utf8).write(to: tmp)
+        let store = PreferencesStore(fileURL: tmp)
+
+        let loaded = try store.load()
+
+        #expect(loaded.brandColor == .ember)
     }
 }

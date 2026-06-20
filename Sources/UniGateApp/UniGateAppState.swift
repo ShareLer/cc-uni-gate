@@ -79,7 +79,18 @@ final class UniGateAppState: ObservableObject {
 
     func routeKeysForCurrentApp() -> [ModelRouteKey] {
         let appType = currentAppType
-        return displayRouteKeys.filter { appType == nil || $0.appType == appType }
+        let keys = displayRouteKeys.filter { appType == nil || $0.appType == appType }
+        return keys
+            .enumerated()
+            .sorted { lhs, rhs in
+                let lhsRank = routeInteractivityRank(lhs.element)
+                let rhsRank = routeInteractivityRank(rhs.element)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+                return lhs.offset < rhs.offset
+            }
+            .map { $0.element }
     }
 
     var appTypes: [String] {
@@ -201,9 +212,6 @@ final class UniGateAppState: ObservableObject {
             return ProviderDisplay.appTypeLabel(routeKey.appType)
         }
         let upstream = upstreamDisplayName(active)
-        guard upstream != routeKey.logicalModel else {
-            return ProviderDisplay.appTypeLabel(routeKey.appType)
-        }
         return "上游模型：\(upstream)"
     }
 
@@ -390,6 +398,13 @@ final class UniGateAppState: ObservableObject {
             return true
         }
         return uniGateModelScope.contains(routeKey)
+    }
+
+    private func routeInteractivityRank(_ routeKey: ModelRouteKey) -> Int {
+        guard isRouteOperable(routeKey) else {
+            return 2
+        }
+        return candidates(for: routeKey).count > 1 ? 0 : 1
     }
 
     private func upstreamDisplayName(_ candidate: ModelCandidate) -> String {
