@@ -68,6 +68,7 @@ struct UniGatePopoverRootView: View {
     private let collapsedRowAnimation = Animation.easeInOut(duration: 0.34)
     private let panelTransitionAnimation = Animation.easeInOut(duration: 0.28)
     private let providerTagWidth: CGFloat = 132
+    private let rowActionSlotWidth: CGFloat = 22
 
     var body: some View {
         routeSwitcher
@@ -413,7 +414,7 @@ struct UniGatePopoverRootView: View {
 
     private var customModelPanel: some View {
         InlineCustomModelEditorView(
-            candidates: state.customModelBaseCandidates(),
+            candidates: state.customModelBaseCandidates(preserving: editingCustomModel),
             existing: editingCustomModel,
             initialAppType: state.currentAppType,
             onSave: { definition in
@@ -453,17 +454,17 @@ struct UniGatePopoverRootView: View {
     }
 
     private var modelList: some View {
-        let keys = state.routeKeysForCurrentApp()
+        let groups = state.routeGroupsForCurrentApp()
         return GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 8) {
-                        if keys.isEmpty {
+                        if groups.isEmpty {
                             emptyState
                         } else {
-                            ForEach(keys, id: \.description) { key in
+                            ForEach(groups) { group in
                                 modelRow(
-                                    key,
+                                    group,
                                     proxy: proxy
                                 )
                             }
@@ -477,7 +478,7 @@ struct UniGatePopoverRootView: View {
                     guard let description else {
                         expandedScrollRequestID = UUID()
                         if let allowanceDescription = expandedTopScrollAllowanceDescription,
-                           keys.contains(where: { $0.description == allowanceDescription }) {
+                           groups.contains(where: { $0.id == allowanceDescription }) {
                             withAnimation(collapsedRowAnimation) {
                                 expandedTopScrollAllowanceDescription = nil
                                 proxy.scrollTo(allowanceDescription, anchor: .bottom)
@@ -490,7 +491,7 @@ struct UniGatePopoverRootView: View {
                     scheduleExpandedRowScroll(
                         proxy: proxy,
                         description: description,
-                        keys: keys,
+                        groups: groups,
                         viewportHeight: geometry.size.height
                     )
                 }
@@ -501,7 +502,7 @@ struct UniGatePopoverRootView: View {
                     scheduleExpandedRowScroll(
                         proxy: proxy,
                         description: description,
-                        keys: keys,
+                        groups: groups,
                         viewportHeight: height
                     )
                 }
@@ -514,12 +515,12 @@ struct UniGatePopoverRootView: View {
     private func scheduleExpandedRowScroll(
         proxy: ScrollViewProxy,
         description: String,
-        keys: [ModelRouteKey],
+        groups: [ModelRouteGroup],
         viewportHeight: CGFloat
     ) {
         guard let target = scrollTarget(
             for: description,
-            in: keys,
+            in: groups,
             viewportHeight: viewportHeight
         ) else {
             return
@@ -576,21 +577,21 @@ struct UniGatePopoverRootView: View {
 
     private func scrollTarget(
         for description: String,
-        in keys: [ModelRouteKey],
+        in groups: [ModelRouteGroup],
         viewportHeight: CGFloat
     ) -> (id: String, anchor: UnitPoint)? {
-        guard let key = keys.first(where: { $0.description == description }) else {
+        guard let group = groups.first(where: { $0.id == description }) else {
             return nil
         }
-        let expandedHeight = estimatedExpandedRowHeight(for: key)
+        let expandedHeight = estimatedExpandedRowHeight(for: group)
         if expandedHeight < viewportHeight - 12 {
-            return (expandedBottomID(for: key), .bottom)
+            return (expandedBottomID(for: group), .bottom)
         }
-        return (key.description, .top)
+        return (group.id, .top)
     }
 
-    private func estimatedExpandedRowHeight(for key: ModelRouteKey) -> CGFloat {
-        let providerCount = CGFloat(state.candidates(for: key).count)
+    private func estimatedExpandedRowHeight(for group: ModelRouteGroup) -> CGFloat {
+        let providerCount = CGFloat(state.candidates(for: group).count)
         let modelHeaderHeight: CGFloat = 56
         let providerRowHeight: CGFloat = 45
         let providerRowSpacing: CGFloat = 2
@@ -607,15 +608,15 @@ struct UniGatePopoverRootView: View {
             + safetyMargin
     }
 
-    private func expandedBottomID(for key: ModelRouteKey) -> String {
-        "\(key.description)::expanded-bottom"
+    private func expandedBottomID(for group: ModelRouteGroup) -> String {
+        "\(group.id)::expanded-bottom"
     }
 
     private func bottomPaddingForExpandedRow(viewportHeight: CGFloat) -> CGFloat {
         guard
             let description = expandedTopScrollAllowanceDescription,
-            let key = state.routeKeysForCurrentApp().first(where: { $0.description == description }),
-            estimatedExpandedRowHeight(for: key) >= viewportHeight - 12
+            let group = state.routeGroupsForCurrentApp().first(where: { $0.id == description }),
+            estimatedExpandedRowHeight(for: group) >= viewportHeight - 12
         else {
             return 10
         }
@@ -627,28 +628,28 @@ struct UniGatePopoverRootView: View {
     }
 
     private func toggleExpandedRow(
-        _ key: ModelRouteKey,
+        _ group: ModelRouteGroup,
         isExpanded: Bool,
         proxy: ScrollViewProxy
     ) {
         if isExpanded {
             expandedScrollRequestID = UUID()
-            if expandedTopScrollAllowanceDescription == key.description {
+            if expandedTopScrollAllowanceDescription == group.id {
                 withAnimation(collapsedRowAnimation) {
-                    state.toggleExpanded(key)
+                    state.toggleExpanded(group)
                     expandedTopScrollAllowanceDescription = nil
-                    proxy.scrollTo(key.description, anchor: .bottom)
+                    proxy.scrollTo(group.id, anchor: .bottom)
                 }
             } else {
                 withAnimation(collapsedRowAnimation) {
-                    state.toggleExpanded(key)
+                    state.toggleExpanded(group)
                 }
             }
             return
         }
 
         withAnimation(expandedRowAnimation) {
-            state.toggleExpanded(key)
+            state.toggleExpanded(group)
         }
     }
 
@@ -698,13 +699,14 @@ struct UniGatePopoverRootView: View {
     }
 
     private func modelRow(
-        _ key: ModelRouteKey,
+        _ group: ModelRouteGroup,
         proxy: ScrollViewProxy
     ) -> some View {
-        let candidates = state.candidates(for: key)
-        let active = state.activeCandidate(for: key)
-        let isExpanded = state.isExpanded(key)
-        let isOperable = state.isRouteOperable(key)
+        let key = group.routeKey
+        let candidates = state.candidates(for: group)
+        let active = state.activeCandidate(for: group)
+        let isExpanded = state.isExpanded(group)
+        let isOperable = state.isRouteOperable(group)
         let canSwitchProvider = isOperable && candidates.count > 1
         let showsExpandedProviders = isExpanded && canSwitchProvider
         let customModel = state.customModel(for: key)
@@ -713,11 +715,11 @@ struct UniGatePopoverRootView: View {
             HStack(alignment: .center, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(key.logicalModel)
+                        Text(state.modelTitleText(for: group))
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(isOperable ? .primary : UGPopoverStyle.textDisabled)
                             .lineLimit(1)
-                        Text(state.modelDetailText(for: key))
+                        Text(state.modelDetailText(for: group))
                             .font(.caption)
                             .foregroundStyle(UGPopoverStyle.textSecondary)
                             .lineLimit(1)
@@ -741,7 +743,7 @@ struct UniGatePopoverRootView: View {
                         return
                     }
                     toggleExpandedRow(
-                        key,
+                        group,
                         isExpanded: isExpanded,
                         proxy: proxy
                     )
@@ -749,20 +751,25 @@ struct UniGatePopoverRootView: View {
 
                 if let customModel {
                     customModelMenu(customModel)
+                        .frame(width: rowActionSlotWidth, height: 24)
+                } else {
+                    Color.clear
+                        .frame(width: rowActionSlotWidth, height: 24)
+                        .accessibilityHidden(true)
                 }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .id(key.description)
+            .id(group.id)
 
             if showsExpandedProviders {
-                providerList(candidates: candidates, routeKey: key)
+                providerList(candidates: candidates, routeGroup: group)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
                     .transition(.opacity)
                 Color.clear
                     .frame(height: 1)
-                    .id(expandedBottomID(for: key))
+                    .id(expandedBottomID(for: group))
             }
 
             if let customModel, isConfirmingDelete {
@@ -795,7 +802,7 @@ struct UniGatePopoverRootView: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(UGPopoverStyle.textSecondary)
-                .frame(width: 24, height: 24)
+                .frame(width: 18, height: 22)
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
@@ -898,10 +905,10 @@ struct UniGatePopoverRootView: View {
         return value
     }
 
-    private func providerList(candidates: [ModelCandidate], routeKey: ModelRouteKey) -> some View {
+    private func providerList(candidates: [ModelCandidate], routeGroup: ModelRouteGroup) -> some View {
         VStack(spacing: 6) {
             VStack(spacing: 2) {
-                providerRows(candidates: candidates, routeKey: routeKey)
+                providerRows(candidates: candidates, routeGroup: routeGroup)
             }
             .padding(4)
         }
@@ -910,17 +917,17 @@ struct UniGatePopoverRootView: View {
     }
 
     @ViewBuilder
-    private func providerRows(candidates: [ModelCandidate], routeKey: ModelRouteKey) -> some View {
+    private func providerRows(candidates: [ModelCandidate], routeGroup: ModelRouteGroup) -> some View {
         ForEach(candidates) { candidate in
-            providerOptionRow(candidate, routeKey: routeKey)
+            providerOptionRow(candidate, routeGroup: routeGroup)
         }
     }
 
-    private func providerOptionRow(_ candidate: ModelCandidate, routeKey: ModelRouteKey) -> some View {
-        let selected = state.isActive(candidate, for: routeKey)
+    private func providerOptionRow(_ candidate: ModelCandidate, routeGroup: ModelRouteGroup) -> some View {
+        let selected = state.isActive(candidate, for: routeGroup)
         return Button {
             withAnimation(.spring(response: 0.20, dampingFraction: 0.90)) {
-                state.switchProvider(routeKey: routeKey, providerRef: candidate.providerRef)
+                state.switchProvider(routeGroup: routeGroup, providerRef: candidate.providerRef)
             }
         } label: {
             HStack(spacing: 10) {
@@ -955,8 +962,14 @@ struct UniGatePopoverRootView: View {
 
     private func providerDetail(_ candidate: ModelCandidate) -> String {
         var parts: [String] = []
-        if candidate.upstreamModel != candidate.logicalModel {
-            parts.append(candidate.upstreamModel)
+        if candidate.appType == "claude-desktop" {
+            if candidate.displayModelName != candidate.upstreamModelDisplayName {
+                parts.append("显示：\(candidate.displayModelName)")
+            }
+            parts.append("请求：\(candidate.upstreamModelDisplayName)")
+            parts.append("路由：\(candidate.logicalModel)")
+        } else if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
+            parts.append(candidate.upstreamModelDisplayName)
         }
         parts.append(candidate.requiresTransform ? "需要转换" : candidate.apiFormat.rawValue)
         return parts.joined(separator: " · ")
@@ -1212,7 +1225,19 @@ private struct InlineSettingsPanel: View {
             endpointRow(title: "Claude Code", path: "/claude-code", canImport: true)
             Divider()
                 .padding(.vertical, 8)
-            endpointRow(title: "Claude Desktop", path: "/claude-desktop", canImport: false)
+            VStack(alignment: .leading, spacing: 7) {
+                endpointRow(title: "Claude Desktop", path: "/claude-desktop", canImport: false)
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .frame(width: 14)
+                    Text("在 cc-switch 的 Claude Desktop 供应商里开启模型映射/本地路由，并配置菜单显示名和实际请求模型。UniGate 会读取这份映射；否则 Claude Desktop 只能看到 claude-* 路由名。")
+                        .font(.caption2)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
@@ -1394,8 +1419,18 @@ private struct InlineCustomModelEditorView: View {
         onCancel: @escaping () -> Void
     ) {
         let sortedCandidates = candidates.sorted {
-            [$0.appType, $0.logicalModel, $0.providerName].joined(separator: "\u{0}")
-                .localizedStandardCompare([$1.appType, $1.logicalModel, $1.providerName].joined(separator: "\u{0}")) == .orderedAscending
+            [
+                ProviderDisplay.appTypeLabel($0.appType),
+                $0.displayModelName,
+                $0.upstreamModelDisplayName,
+                $0.providerName
+            ].joined(separator: "\u{0}")
+                .localizedStandardCompare([
+                    ProviderDisplay.appTypeLabel($1.appType),
+                    $1.displayModelName,
+                    $1.upstreamModelDisplayName,
+                    $1.providerName
+                ].joined(separator: "\u{0}")) == .orderedAscending
         }
         let sortedAppTypes = Array(Set(sortedCandidates.map(\.appType))).sorted {
             ProviderDisplay.appTypeLabel($0)
@@ -1405,18 +1440,18 @@ private struct InlineCustomModelEditorView: View {
             ProviderDisplay.appTypeLabel($0)
                 .localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
         }
-        let targetIDs = Set(existing?.targets.map(Self.targetID) ?? [])
+        let targetIDs = Set(existing?.targets.map(CustomModelState.targetID) ?? [])
         let initial = existing?.appType
             ?? initialAppType.flatMap { appTypesWithExisting.contains($0) ? $0 : nil }
             ?? appTypesWithExisting.first
             ?? ""
-        let initialTargetID = existing?.selectedTarget.map(Self.targetID) ?? targetIDs.sorted().first ?? ""
+        let initialTargetID = existing?.selectedTarget.map(CustomModelState.targetID) ?? targetIDs.sorted().first ?? ""
 
         self.existing = existing
         self.candidates = sortedCandidates
         self.appTypes = appTypesWithExisting
         self.existingTargetsByKey = Dictionary(
-            uniqueKeysWithValues: (existing?.targets ?? []).map { (Self.targetID($0), $0) }
+            uniqueKeysWithValues: (existing?.targets ?? []).map { (CustomModelState.targetID(for: $0), $0) }
         )
         self.onSave = onSave
         self.onCancel = onCancel
@@ -1690,19 +1725,17 @@ private struct InlineCustomModelEditorView: View {
     }
 
     private func targetID(_ candidate: ModelCandidate) -> String {
-        "\(candidate.routeKey.description)|\(candidate.providerRef.description)"
-    }
-
-    private static func targetID(_ target: CustomModelTarget) -> String {
-        "\(target.routeKey.description)|\(target.providerRef.description)"
+        CustomModelState.targetID(for: candidate)
     }
 
     private func targetTitle(_ candidate: ModelCandidate) -> String {
-        "\(candidate.logicalModel) · \(candidate.providerName)"
+        "\(candidate.displayModelName) · \(candidate.providerName)"
     }
 
     private func targetDetail(_ candidate: ModelCandidate) -> String {
-        var parts = [candidate.upstreamModel]
+        var parts = candidate.appType == "claude-desktop"
+            ? ["请求：\(candidate.upstreamModelDisplayName)", "路由：\(candidate.logicalModel)"]
+            : [candidate.upstreamModelDisplayName]
         if candidate.requiresTransform {
             parts.append("需要转换")
         } else {

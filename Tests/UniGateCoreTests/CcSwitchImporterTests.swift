@@ -188,6 +188,60 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func importsClaudeDesktopRoutesWithDisplayAndUpstreamModels() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "desktop",
+                appType: "claude-desktop",
+                name: "DeepSeek Desktop",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.deepseek.example",
+                    "ANTHROPIC_AUTH_TOKEN": "key-1"
+                  }
+                }
+                """,
+                meta: """
+                {
+                  "apiFormat": "anthropic",
+                  "claudeDesktopMode": "proxy",
+                  "claudeDesktopModelRoutes": {
+                    "claude-sonnet-4-6": {
+                      "model": "deepseek-v4-flash",
+                      "labelOverride": "DeepSeek V4 Flash",
+                      "supports1m": true
+                    },
+                    "claude-opus-4-8": {
+                      "model": "deepseek-v4-pro",
+                      "labelOverride": "DeepSeek V4 Pro",
+                      "supports1m": true
+                    }
+                  }
+                }
+                """
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let sonnet = try #require(catalog.candidates.first(where: { $0.logicalModel == "claude-sonnet-4-6" }))
+        let opus = try #require(catalog.candidates.first(where: { $0.logicalModel == "claude-opus-4-8" }))
+
+        #expect(catalog.routeKeys.map(\.description) == [
+            "claude-desktop:claude-opus-4-8",
+            "claude-desktop:claude-sonnet-4-6"
+        ])
+        #expect(sonnet.upstreamModel == "deepseek-v4-flash")
+        #expect(sonnet.displayModelName == "DeepSeek V4 Flash")
+        #expect(sonnet.supportsLongContext)
+        #expect(opus.upstreamModel == "deepseek-v4-pro")
+        #expect(opus.displayModelName == "DeepSeek V4 Pro")
+    }
+
+    @Test
     func importsClaudeRoleModelAsLogicalModelAndModelNameAsLabel() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)

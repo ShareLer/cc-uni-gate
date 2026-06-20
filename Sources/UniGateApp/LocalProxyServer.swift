@@ -394,6 +394,7 @@ final class LocalProxyServer: @unchecked Sendable {
         let candidates = snapshot.catalog.candidates.map { candidate in
             [
                 "logicalModel": candidate.logicalModel,
+                "displayModelName": candidate.displayModelName,
                 "routeKey": candidate.routeKey.description,
                 "providerRef": candidate.providerRef.description,
                 "providerName": candidate.providerName,

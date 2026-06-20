@@ -253,6 +253,24 @@ public struct ModelCandidate: Identifiable, Sendable {
         ModelRouteKey(appType: appType, logicalModel: logicalModel)
     }
 
+    public var upstreamModelDisplayName: String {
+        Self.stripOneMSuffix(upstreamModel)
+    }
+
+    public var displayModelName: String {
+        guard appType == "claude-desktop" else {
+            return logicalModel
+        }
+        if let label = Self.trimmed(label), label != providerName {
+            return label
+        }
+        let upstream = upstreamModelDisplayName
+        if upstream != Self.stripOneMSuffix(logicalModel) {
+            return upstream
+        }
+        return logicalModel
+    }
+
     public init(
         logicalModel: String,
         providerRef: ProviderRef,
@@ -306,6 +324,22 @@ public struct ModelCandidate: Identifiable, Sendable {
             return apiFormat != .anthropic
         }
         return requiresTransform
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        guard let value else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    public static func stripOneMSuffix(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
+            return trimmed
+        }
+        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

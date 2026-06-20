@@ -31,7 +31,7 @@ final class UniGateAppState: ObservableObject {
     @Published var loadError: String?
     @Published var toast: String?
 
-    var onSwitchProvider: ((ModelRouteKey, ProviderRef) -> Void)?
+    var onSwitchProvider: (([ModelRouteKey], ProviderRef) -> Void)?
     var onReload: (() -> Void)?
     var onOpenAppFolder: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -76,10 +76,10 @@ final class UniGateAppState: ObservableObject {
         forwardedRequestCounts = counts
     }
 
-    func routeKeysForCurrentApp() -> [ModelRouteKey] {
+    func routeGroupsForCurrentApp() -> [ModelRouteGroup] {
         let appType = currentAppType
-        let keys = displayRouteKeys.filter { appType == nil || $0.appType == appType }
-        return keys
+        let groups = displayRouteGroups.filter { appType == nil || $0.routeKey.appType == appType }
+        return groups
             .enumerated()
             .sorted { lhs, rhs in
                 let lhsRank = routeInteractivityRank(lhs.element)
@@ -93,7 +93,7 @@ final class UniGateAppState: ObservableObject {
     }
 
     var appTypes: [String] {
-        let routeAppTypes = Array(Set(displayRouteKeys.map(\.appType))).sorted {
+        let routeAppTypes = Array(Set(displayRouteGroups.map(\.routeKey.appType))).sorted {
             ProviderDisplay.appTypeLabel($0)
                 .localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
         }
@@ -127,18 +127,27 @@ final class UniGateAppState: ObservableObject {
     }
 
     var displayRouteKeys: [ModelRouteKey] {
-        let visible = visibleRouteKeys
-        let customKeys = customModels.models
-            .map { ModelRouteKey(appType: $0.appType, logicalModel: $0.name) }
-        return visible + customKeys
+        displayRouteGroups.map(\.routeKey)
+    }
+
+    var displayRouteGroups: [ModelRouteGroup] {
+        let visibleGroups = ModelRouteGrouping.groups(
+            routeKeys: visibleRouteKeys,
+            candidates: catalog.candidates
+        )
+        let customGroups = customModels.models.map {
+            let routeKey = ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
+            return ModelRouteGroup(routeKey: routeKey, routeKeys: [routeKey])
+        }
+        return visibleGroups + customGroups
     }
 
     var modelCountText: String {
         guard let appType = currentAppType else {
-            return "\(displayRouteKeys.count) 个模型"
+            return "\(displayRouteGroups.count) 个模型"
         }
-        let appKeys = displayRouteKeys.filter { $0.appType == appType }
-        return "\(appKeys.count) 个模型"
+        let appGroups = displayRouteGroups.filter { $0.routeKey.appType == appType }
+        return "\(appGroups.count) 个模型"
     }
 
     var providerCountText: String {
@@ -158,6 +167,23 @@ final class UniGateAppState: ObservableObject {
         catalog.candidates(for: routeKey)
     }
 
+    func candidates(for routeGroup: ModelRouteGroup) -> [ModelCandidate] {
+        let candidates = routeGroup.routeKeys.flatMap { catalog.candidates(for: $0) }
+        let isCustomModel = customModel(for: routeGroup.routeKey) != nil
+        return ModelRouteGrouping.displayCandidates(
+            candidates,
+            activeProviderRef: activeProviderRef(for: routeGroup),
+            restrictToActiveDisplayIdentity: !isCustomModel
+        )
+            .sorted { lhs, rhs in
+                let providerCompare = lhs.providerName.localizedStandardCompare(rhs.providerName)
+                if providerCompare != .orderedSame {
+                    return providerCompare == .orderedAscending
+                }
+                return lhs.displayModelName.localizedStandardCompare(rhs.displayModelName) == .orderedAscending
+            }
+    }
+
     func activeCandidate(for routeKey: ModelRouteKey) -> ModelCandidate? {
         guard let providerRef = routes.routes[routeKey.description]?.providerRef else {
             return nil
@@ -165,26 +191,33 @@ final class UniGateAppState: ObservableObject {
         return candidates(for: routeKey).first { $0.providerRef == providerRef }
     }
 
-    func isActive(_ candidate: ModelCandidate, for routeKey: ModelRouteKey) -> Bool {
-        routes.routes[routeKey.description]?.providerRef == candidate.providerRef
+    func activeCandidate(for routeGroup: ModelRouteGroup) -> ModelCandidate? {
+        guard let providerRef = activeProviderRef(for: routeGroup) else {
+            return nil
+        }
+        return candidates(for: routeGroup).first { $0.providerRef == providerRef }
     }
 
-    func isExpanded(_ routeKey: ModelRouteKey) -> Bool {
-        expandedRouteKeyDescription == routeKey.description
+    func isActive(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
+        activeProviderRef(for: routeGroup) == candidate.providerRef
     }
 
-    func toggleExpanded(_ routeKey: ModelRouteKey) {
-        if isExpanded(routeKey) {
+    func isExpanded(_ routeGroup: ModelRouteGroup) -> Bool {
+        expandedRouteKeyDescription == routeGroup.id
+    }
+
+    func toggleExpanded(_ routeGroup: ModelRouteGroup) {
+        if isExpanded(routeGroup) {
             expandedRouteKeyDescription = nil
         } else {
-            expandedRouteKeyDescription = routeKey.description
+            expandedRouteKeyDescription = routeGroup.id
         }
     }
 
     func providerTitle(_ candidate: ModelCandidate) -> String {
         var parts = [candidate.providerName]
-        let displayUpstreamModel = stripOneMSuffix(candidate.upstreamModel)
-        let displayLogicalModel = stripOneMSuffix(candidate.logicalModel)
+        let displayUpstreamModel = candidate.upstreamModelDisplayName
+        let displayLogicalModel = ModelCandidate.stripOneMSuffix(candidate.logicalModel)
         if displayUpstreamModel != displayLogicalModel {
             parts.append(displayUpstreamModel)
         }
@@ -196,7 +229,21 @@ final class UniGateAppState: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
-    func modelDetailText(for routeKey: ModelRouteKey) -> String {
+    func modelTitleText(for routeGroup: ModelRouteGroup) -> String {
+        let routeKey = routeGroup.routeKey
+        guard customModelAvailability(for: routeKey) == nil else {
+            return routeKey.logicalModel
+        }
+        guard routeKey.appType == "claude-desktop",
+              let candidate = activeCandidate(for: routeGroup) ?? candidates(for: routeGroup).first
+        else {
+            return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
+        }
+        return candidate.displayModelName
+    }
+
+    func modelDetailText(for routeGroup: ModelRouteGroup) -> String {
+        let routeKey = routeGroup.routeKey
         if let availability = customModelAvailability(for: routeKey) {
             switch availability {
             case .configured:
@@ -207,11 +254,17 @@ final class UniGateAppState: ObservableObject {
                 return "自定义模型目标失效"
             }
         }
-        guard let active = activeCandidate(for: routeKey) else {
+        guard let active = activeCandidate(for: routeGroup) else {
             return ProviderDisplay.appTypeLabel(routeKey.appType)
         }
-        let upstream = upstreamDisplayName(active)
-        return "上游模型：\(upstream)"
+        if routeKey.appType == "claude-desktop" {
+            return "请求模型：\(active.upstreamModelDisplayName) · 路由：\(routeAliasSummary(for: routeGroup))"
+        }
+        var parts = ["上游模型：\(upstreamDisplayName(active))"]
+        if routeGroup.routeKeys.count > 1 {
+            parts.append("\(routeGroup.routeKeys.count) 个路由")
+        }
+        return parts.joined(separator: " · ")
     }
 
     func customModelAvailability(for routeKey: ModelRouteKey) -> CustomModelAvailability? {
@@ -229,22 +282,16 @@ final class UniGateAppState: ObservableObject {
         return .configured
     }
 
-    func isRouteOperable(_ routeKey: ModelRouteKey) -> Bool {
-        customModelAvailability(for: routeKey).map { $0 == .configured } ?? true
+    func isRouteOperable(_ routeGroup: ModelRouteGroup) -> Bool {
+        customModelAvailability(for: routeGroup.routeKey).map { $0 == .configured } ?? true
     }
 
-    func switchProvider(routeKey: ModelRouteKey, providerRef: ProviderRef) {
-        onSwitchProvider?(routeKey, providerRef)
+    func switchProvider(routeGroup: ModelRouteGroup, providerRef: ProviderRef) {
+        onSwitchProvider?(routeGroup.routeKeys, providerRef)
     }
 
-    func customModelBaseCandidates() -> [ModelCandidate] {
-        catalog.candidates.filter { candidate in
-            candidate.providerRef == candidate.upstreamProviderRef
-                &&
-            !customModels.models.contains {
-                $0.appType == candidate.appType && $0.name == candidate.logicalModel
-            }
-        }
+    func customModelBaseCandidates(preserving definition: CustomModelDefinition? = nil) -> [ModelCandidate] {
+        customModels.baseCandidates(from: catalog, preserving: definition?.targets ?? [])
     }
 
     func customModel(for routeKey: ModelRouteKey) -> CustomModelDefinition? {
@@ -387,28 +434,56 @@ final class UniGateAppState: ObservableObject {
         return uniGateModelScope.contains(routeKey)
     }
 
-    private func routeInteractivityRank(_ routeKey: ModelRouteKey) -> Int {
-        guard isRouteOperable(routeKey) else {
+    private func activeProviderRef(for routeGroup: ModelRouteGroup) -> ProviderRef? {
+        if let providerRef = routes.routes[routeGroup.routeKey.description]?.providerRef {
+            return providerRef
+        }
+        return routeGroup.routeKeys.compactMap {
+            routes.routes[$0.description]
+        }
+        .sorted { lhs, rhs in
+            lhs.updatedAt > rhs.updatedAt
+        }
+        .first?.providerRef
+    }
+
+    private func routeInteractivityRank(_ routeGroup: ModelRouteGroup) -> Int {
+        guard isRouteOperable(routeGroup) else {
             return 2
         }
-        return candidates(for: routeKey).count > 1 ? 0 : 1
+        return candidates(for: routeGroup).count > 1 ? 0 : 1
     }
 
     private func upstreamDisplayName(_ candidate: ModelCandidate) -> String {
-        if candidate.upstreamModel != candidate.logicalModel {
-            return candidate.upstreamModel
+        if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
+            return candidate.upstreamModelDisplayName
         }
         if let label = candidate.label, label != candidate.providerName {
-            return label
+            return ModelCandidate.stripOneMSuffix(label)
         }
-        return candidate.upstreamModel
+        return candidate.upstreamModelDisplayName
     }
 
-    private func stripOneMSuffix(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let range = trimmed.range(of: #"\[\s*1m\s*\]\s*$"#, options: [.regularExpression, .caseInsensitive]) else {
-            return trimmed
+    private func routeAliasSummary(for routeGroup: ModelRouteGroup) -> String {
+        routeGroup.routeKeys.map { routeKey in
+            guard routeKey.appType == "claude-desktop" else {
+                return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
+            }
+            let normalized = routeKey.logicalModel.lowercased()
+            if normalized.contains("sonnet") {
+                return "Sonnet"
+            }
+            if normalized.contains("opus") {
+                return "Opus"
+            }
+            if normalized.contains("fable") {
+                return "Fable"
+            }
+            if normalized.contains("haiku") {
+                return "Haiku"
+            }
+            return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
         }
-        return trimmed[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        .joined(separator: " / ")
     }
 }

@@ -56,6 +56,37 @@ struct RouteStoreTests {
     }
 
     @Test
+    func switchesGroupedModelProvidersTogether() throws {
+        let provider1 = ProviderRef(appType: "claude-desktop", id: "p1")
+        let provider2 = ProviderRef(appType: "claude-desktop", id: "p2")
+        let sonnet = ModelRouteKey(appType: "claude-desktop", logicalModel: "claude-sonnet-4-6")
+        let haiku = ModelRouteKey(appType: "claude-desktop", logicalModel: "claude-haiku-4-5")
+        let candidates = [
+            candidate(routeKey: sonnet, providerRef: provider1, providerName: "Provider 1"),
+            candidate(routeKey: haiku, providerRef: provider1, providerName: "Provider 1"),
+            candidate(routeKey: sonnet, providerRef: provider2, providerName: "Provider 2"),
+            candidate(routeKey: haiku, providerRef: provider2, providerName: "Provider 2")
+        ]
+        let catalog = ProviderCatalog(providers: [], candidates: candidates)
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        let initial = RouteStore.defaultState(candidates: candidates)
+
+        let switched = try store.switchRoutes(
+            initial,
+            catalog: catalog,
+            routeKeys: [sonnet, haiku],
+            providerRef: provider2,
+            now: Date(timeIntervalSince1970: 1)
+        )
+
+        #expect(switched.routes[sonnet.description]?.providerRef == provider2)
+        #expect(switched.routes[haiku.description]?.providerRef == provider2)
+    }
+
+    @Test
     func keepsSameModelSeparateAcrossApps() {
         let candidates = [
             ModelCandidate(
@@ -90,6 +121,26 @@ struct RouteStoreTests {
 
         #expect(state.routes["codex:gpt-5.5"]?.providerRef == ProviderRef(appType: "codex", id: "p1"))
         #expect(state.routes["claude:gpt-5.5"]?.providerRef == ProviderRef(appType: "claude", id: "p2"))
+    }
+
+    private func candidate(
+        routeKey: ModelRouteKey,
+        providerRef: ProviderRef,
+        providerName: String
+    ) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: providerRef,
+            providerName: providerName,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "deepseek-v4-flash",
+            baseURL: "https://api.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
     }
 
     @Test

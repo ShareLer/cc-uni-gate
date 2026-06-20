@@ -72,6 +72,37 @@ public final class RouteStore: @unchecked Sendable {
         return next
     }
 
+    public func switchRoutes(
+        _ state: RouteState,
+        catalog: ProviderCatalog,
+        routeKeys: [ModelRouteKey],
+        providerRef: ProviderRef,
+        now: Date = Date()
+    ) throws -> RouteState {
+        var next = state
+        for routeKey in routeKeys {
+            let exists = catalog.candidates.contains {
+                $0.appType == routeKey.appType
+                    && $0.logicalModel == routeKey.logicalModel
+                    && $0.providerRef == providerRef
+            }
+            guard exists else {
+                throw RouteStoreError.invalidCandidate(
+                    routeKey: routeKey.description,
+                    providerRef: providerRef.description
+                )
+            }
+            next.routes[routeKey.description] = ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: providerRef,
+                updatedAt: now
+            )
+        }
+        try save(next)
+        return next
+    }
+
     public static func defaultState(candidates: [ModelCandidate]) -> RouteState {
         var grouped: [String: [ModelCandidate]] = [:]
         for candidate in candidates {

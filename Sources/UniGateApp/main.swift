@@ -76,13 +76,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func switchProvider(routeKey: ModelRouteKey, providerRef: ProviderRef) {
+    private func switchProvider(routeKeys: [ModelRouteKey], providerRef: ProviderRef) {
         do {
-            routes = try routeStore.switchRoute(
+            routes = try routeStore.switchRoutes(
                 routes,
                 catalog: catalog,
-                appType: routeKey.appType,
-                logicalModel: routeKey.logicalModel,
+                routeKeys: routeKeys,
                 providerRef: providerRef
             )
             publishState()
@@ -209,8 +208,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureAppStateActions() {
-        appState.onSwitchProvider = { [weak self] routeKey, providerRef in
-            self?.switchProvider(routeKey: routeKey, providerRef: providerRef)
+        appState.onSwitchProvider = { [weak self] routeKeys, providerRef in
+            self?.switchProvider(routeKeys: routeKeys, providerRef: providerRef)
         }
         appState.onReload = { [weak self] in
             self?.reloadAction()

@@ -48,6 +48,31 @@ public struct CustomModelState: Codable, Sendable {
         self.models = models
     }
 
+    public static func targetID(for candidate: ModelCandidate) -> String {
+        "\(candidate.routeKey.description)|\(candidate.providerRef.description)"
+    }
+
+    public static func targetID(for target: CustomModelTarget) -> String {
+        "\(target.routeKey.description)|\(target.providerRef.description)"
+    }
+
+    public func baseCandidates(
+        from catalog: ProviderCatalog,
+        preserving targets: [CustomModelTarget] = []
+    ) -> [ModelCandidate] {
+        let customRouteKeys = Set(models.map {
+            ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
+        })
+        let baseCandidates = catalog.candidates.filter { candidate in
+            candidate.providerRef == candidate.upstreamProviderRef
+                && !customRouteKeys.contains(candidate.routeKey)
+        }
+        return Self.deduplicatedTargetCandidates(
+            baseCandidates,
+            preservingTargetIDs: Set(targets.map { Self.targetID(for: $0) })
+        )
+    }
+
     public func expandedCandidates(from catalog: ProviderCatalog) -> [ModelCandidate] {
         models.flatMap { definition in
             let preferredTargetID = definition.selectedTarget?.id
@@ -87,6 +112,75 @@ public struct CustomModelState: Codable, Sendable {
                 )
             }
         }
+    }
+
+    public static func deduplicatedTargetCandidates(
+        _ candidates: [ModelCandidate],
+        preservingTargetIDs: Set<String> = []
+    ) -> [ModelCandidate] {
+        var orderedKeys: [ModelCandidateTargetIdentity] = []
+        var candidatesByKey: [ModelCandidateTargetIdentity: ModelCandidate] = [:]
+
+        for candidate in candidates {
+            let key = ModelCandidateTargetIdentity(candidate: candidate)
+            if let existing = candidatesByKey[key] {
+                if shouldPrefer(
+                    candidate,
+                    over: existing,
+                    preservingTargetIDs: preservingTargetIDs
+                ) {
+                    candidatesByKey[key] = candidate
+                }
+            } else {
+                orderedKeys.append(key)
+                candidatesByKey[key] = candidate
+            }
+        }
+
+        return orderedKeys.compactMap { candidatesByKey[$0] }
+    }
+
+    private static func shouldPrefer(
+        _ candidate: ModelCandidate,
+        over existing: ModelCandidate,
+        preservingTargetIDs: Set<String>
+    ) -> Bool {
+        let candidateIsPreserved = preservingTargetIDs.contains(targetID(for: candidate))
+        let existingIsPreserved = preservingTargetIDs.contains(targetID(for: existing))
+        if candidateIsPreserved != existingIsPreserved {
+            return candidateIsPreserved
+        }
+        if candidate.supportsLongContext != existing.supportsLongContext {
+            return candidate.supportsLongContext
+        }
+
+        let candidateRank = claudeRouteRoleRank(candidate)
+        let existingRank = claudeRouteRoleRank(existing)
+        if candidateRank != existingRank {
+            return candidateRank < existingRank
+        }
+
+        return candidate.logicalModel.localizedStandardCompare(existing.logicalModel) == .orderedAscending
+    }
+
+    private static func claudeRouteRoleRank(_ candidate: ModelCandidate) -> Int {
+        guard candidate.appType == "claude" || candidate.appType == "claude-desktop" else {
+            return 99
+        }
+        let normalized = candidate.logicalModel.lowercased()
+        if normalized.contains("sonnet") {
+            return 0
+        }
+        if normalized.contains("opus") {
+            return 1
+        }
+        if normalized.contains("fable") {
+            return 2
+        }
+        if normalized.contains("haiku") {
+            return 3
+        }
+        return 4
     }
 }
 
