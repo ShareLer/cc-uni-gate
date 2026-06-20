@@ -92,6 +92,32 @@ struct CcSwitchImporterTests {
             )
             try insertProvider(
                 db,
+                id: "unigate-desktop",
+                appType: "claude-desktop",
+                name: "UniGate",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "http://127.0.0.1:17888/claude-desktop",
+                    "ANTHROPIC_AUTH_TOKEN": "key-1"
+                  }
+                }
+                """,
+                meta: """
+                {
+                  "apiFormat": "anthropic",
+                  "claudeDesktopMode": "proxy",
+                  "claudeDesktopModelRoutes": {
+                    "claude-sonnet-4-6": {"model": "deepseek-v4-pro", "labelOverride": "deepseek-v4-pro", "supports1m": true},
+                    "claude-opus-4-8": {"model": "auto", "labelOverride": "auto", "supports1m": true},
+                    "claude-fable-5": {"model": "union-model", "labelOverride": "union-model", "supports1m": true},
+                    "claude-haiku-4-5": {"model": "deepseek-v4-flash", "labelOverride": "deepseek-v4-flash", "supports1m": true}
+                  }
+                }
+                """
+            )
+            try insertProvider(
+                db,
                 id: "deepseek",
                 appType: "codex",
                 name: "DeepSeek",
@@ -123,9 +149,13 @@ struct CcSwitchImporterTests {
         let scope = try CcSwitchImporter(dbPath: dbURL.path).loadUniGateModelScope()
         #expect(scope.hasModels(for: "codex"))
         #expect(scope.hasModels(for: "claude"))
+        #expect(scope.hasModels(for: "claude-desktop"))
         #expect(!scope.hasModels(for: "gemini"))
         #expect(scope.contains(ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")))
         #expect(scope.contains(ModelRouteKey(appType: "claude", logicalModel: "deepseek-v4-flash")))
+        #expect(scope.contains(ModelRouteKey(appType: "claude-desktop", logicalModel: "union-model")))
+        #expect(scope.contains(desktopCandidate(upstreamModel: "deepseek-v4-pro[1M]")))
+        #expect(!scope.contains(desktopCandidate(upstreamModel: "gpt-5.5")))
         #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "deepseek-v4-pro")))
     }
 
@@ -239,6 +269,37 @@ struct CcSwitchImporterTests {
         #expect(sonnet.supportsLongContext)
         #expect(opus.upstreamModel == "deepseek-v4-pro")
         #expect(opus.displayModelName == "DeepSeek V4 Pro")
+    }
+
+    @Test
+    func ignoresClaudeDesktopEnvModelsWithoutRoutes() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "desktop",
+                appType: "claude-desktop",
+                name: "DeepSeek Desktop",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.deepseek.example",
+                    "ANTHROPIC_AUTH_TOKEN": "key-1",
+                    "ANTHROPIC_MODEL": "deepseek-v4-flash",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic","claudeDesktopMode":"proxy"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+
+        #expect(catalog.providers.map(\.name) == ["DeepSeek Desktop"])
+        #expect(catalog.candidates.isEmpty)
+        #expect(catalog.routeKeys.isEmpty)
     }
 
     @Test
@@ -414,6 +475,22 @@ struct CcSwitchImporterTests {
                 ) values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [id, appType, name, settings, nil, sortIndex, meta, 0]
+        )
+    }
+
+    private func desktopCandidate(upstreamModel: String) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: "claude-sonnet-4-6",
+            providerRef: ProviderRef(appType: "claude-desktop", id: "desktop"),
+            providerName: "Desktop",
+            appType: "claude-desktop",
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: upstreamModel,
+            baseURL: "https://desktop.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
         )
     }
 }

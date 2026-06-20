@@ -343,6 +343,129 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesClaudeDesktopRequestByConfiguredUpstreamModel() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "claude-desktop",
+            name: "Desktop Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://desktop.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("desktop-token")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "claude-sonnet-4-6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "deepseek-v4-pro[1M]",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: "DeepSeek V4 Pro",
+            supportsLongContext: true
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude-desktop",
+            path: "/claude-desktop/v1/messages",
+            body: Data(#"{"model":"deepseek-v4-pro","messages":[]}"#.utf8)
+        )
+
+        #expect(resolved.outboundModel == "deepseek-v4-pro")
+        let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
+        #expect(outbound?["model"] as? String == "deepseek-v4-pro")
+    }
+
+    @Test
+    func resolvesClaudeDesktopUpstreamModelWhenActiveRoutePointsElsewhere() throws {
+        let dcc = ImportedProvider(
+            id: "dcc",
+            appType: "claude-desktop",
+            name: "DCC",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://dcc.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("dcc-token")])],
+            meta: [:]
+        )
+        let deepseek = ImportedProvider(
+            id: "deepseek",
+            appType: "claude-desktop",
+            name: "DeepSeek",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://deepseek.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("deepseek-token")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: "claude-desktop", logicalModel: "claude-opus-4-8")
+        let stale = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: dcc.ref,
+            providerName: dcc.name,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "auto-max",
+            baseURL: dcc.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let target = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: deepseek.ref,
+            providerName: deepseek.name,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .anthropic,
+            upstreamModel: "deepseek-v4-flash",
+            baseURL: deepseek.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: true
+        )
+        let catalog = ProviderCatalog(providers: [dcc, deepseek], candidates: [stale, target])
+        let routes = RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: dcc.ref,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude-desktop",
+            path: "/claude-desktop/v1/messages",
+            body: Data(#"{"model":"deepseek-v4-flash","messages":[]}"#.utf8)
+        )
+
+        #expect(resolved.providerName == "DeepSeek")
+        #expect(resolved.outboundModel == "deepseek-v4-flash")
+    }
+
+    @Test
     func mapsClaudeRoleRequestToConfiguredRouteAndStripsOneMSuffix() throws {
         let provider = ImportedProvider(
             id: "p1",

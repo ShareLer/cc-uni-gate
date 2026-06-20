@@ -43,7 +43,7 @@ public struct CcSwitchImporter: Sendable {
                 sql: """
                 select id, app_type, name, settings_config, category, sort_index, meta, is_current
                 from providers
-                where app_type in ('claude', 'codex')
+                where app_type in ('claude', 'claude-desktop', 'codex')
                 order by app_type, coalesce(sort_index, 999999), name, id
                 """
             )
@@ -118,6 +118,8 @@ public struct CcSwitchImporter: Sendable {
             return parsed.model.map { [$0] } ?? []
         case "claude":
             return extractClaudeConfiguredModels(provider)
+        case "claude-desktop":
+            return extractClaudeDesktopConfiguredModels(provider)
         default:
             return []
         }
@@ -145,6 +147,18 @@ public struct CcSwitchImporter: Sendable {
         ]
         return Set(fields.compactMap { field in
             JSONValueParser.string(provider.settings, ["env", field])
+        })
+    }
+
+    private func extractClaudeDesktopConfiguredModels(_ provider: ImportedProvider) -> Set<String> {
+        guard let routes = JSONValueParser.object(provider.meta, ["claudeDesktopModelRoutes"]) else {
+            return []
+        }
+        return Set(routes.compactMap { logicalModel, value in
+            guard case let .object(route) = value else {
+                return nil
+            }
+            return string(route["model"]) ?? logicalModel
         })
     }
 
@@ -229,7 +243,7 @@ public struct CcSwitchImporter: Sendable {
 
     private func extractClaudeDesktopCandidates(_ provider: ImportedProvider) -> [ModelCandidate] {
         guard let routes = JSONValueParser.object(provider.meta, ["claudeDesktopModelRoutes"]) else {
-            return extractClaudeCandidates(provider, protocolKind: .anthropicMessages)
+            return []
         }
 
         return routes.keys.sorted().compactMap { logicalModel in

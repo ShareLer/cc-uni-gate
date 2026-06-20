@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var forwardedRequestCounts: [String: Int] = [:]
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
+    private let dbWatcher = CcSwitchDatabaseWatcher()
     private let logger = FileLogger()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -36,11 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         healthCheckTask?.cancel()
+        dbWatcher.stop()
         currentProxyServerID = nil
         proxyServer?.stop()
     }
 
-    private func reloadCatalog() {
+    private func reloadCatalog(recordEventMessage: String? = nil) {
         do {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
@@ -48,10 +50,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             routes = try routeStore.load(catalog: catalog)
             catalogLoadError = nil
+            if let recordEventMessage {
+                recordEvent(.info, recordEventMessage)
+            }
             publishState()
         } catch {
+            if let recordEventMessage {
+                recordEvent(.error, "\(recordEventMessage)失败：\(error.localizedDescription)")
+            }
             publishError(error)
         }
+        syncCcSwitchDBWatcher()
     }
 
     private func startProxyServer() {
@@ -92,6 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func reloadAction() {
         reloadCatalog()
+    }
+
+    private func reloadFromCcSwitchDBChange() {
+        reloadCatalog(recordEventMessage: "检测到 cc-switch DB 变化，已自动重新加载")
     }
 
     private func saveSettings(_ preferences: AppPreferences, customModels: CustomModelState) {
@@ -155,6 +168,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func currentImporter() -> CcSwitchImporter {
         CcSwitchImporter(dbPath: defaultCcSwitchDBPath())
+    }
+
+    private func syncCcSwitchDBWatcher() {
+        let dbPath = defaultCcSwitchDBPath()
+        dbWatcher.start(dbPath: dbPath) { [weak self] in
+            Task { @MainActor in
+                self?.reloadFromCcSwitchDBChange()
+            }
+        }
     }
 
     private func defaultRouteStoreURL() -> URL {
@@ -314,6 +336,7 @@ extension AppDelegate: LocalProxyRuntime {
         routes = try routeStore.load(catalog: catalog)
         recordEvent(.info, "已重新加载 cc-switch DB")
         publishState()
+        syncCcSwitchDBWatcher()
         return proxySnapshot()
     }
 

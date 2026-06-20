@@ -63,14 +63,22 @@ public enum ProxyResolver {
             catalog: catalog
         )
 
-        guard
-            let route = routes.routes[routeKey.description],
-            let candidate = catalog.candidates.first(where: {
+        let candidate: ModelCandidate
+        if let route = routes.routes[routeKey.description],
+           let activeCandidate = catalog.candidates.first(where: {
                 $0.appType == routeKey.appType
                     && $0.logicalModel == routeKey.logicalModel
                     && $0.providerRef == route.providerRef
-            })
-        else {
+           }) {
+            candidate = activeCandidate
+        } else if routeAppType == "claude-desktop",
+                  let upstreamCandidate = claudeDesktopCandidateForUpstreamModel(
+                    requestedModel: requestedModel,
+                    routes: routes,
+                    catalog: catalog
+                  ) {
+            candidate = upstreamCandidate
+        } else {
             throw ProxyResolverError.noRoute(routeKey: routeKey.description)
         }
 
@@ -172,6 +180,18 @@ public enum ProxyResolver {
         }
 
         let keys = catalog.routeKeys(for: appType)
+        if appType == "claude-desktop",
+           let match = keys.first(where: {
+               upstreamModelMatches(
+                   routeKey: $0,
+                   requestedModel: normalizedRequest,
+                   routes: routes,
+                   catalog: catalog
+               )
+           }) {
+            return match
+        }
+
         if let match = keys.first(where: {
             routes.routes[$0.description] != nil
                 && stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
@@ -191,6 +211,50 @@ public enum ProxyResolver {
             return opus
         }
         return exactKey
+    }
+
+    private static func upstreamModelMatches(
+        routeKey: ModelRouteKey,
+        requestedModel: String,
+        routes: RouteState,
+        catalog: ProviderCatalog
+    ) -> Bool {
+        guard let activeRoute = routes.routes[routeKey.description] else {
+            return false
+        }
+        return catalog.candidates.contains {
+            $0.appType == routeKey.appType
+                && $0.logicalModel == routeKey.logicalModel
+                && $0.providerRef == activeRoute.providerRef
+                && stripOneMSuffix($0.upstreamModel).caseInsensitiveCompare(requestedModel) == .orderedSame
+        }
+    }
+
+    private static func claudeDesktopCandidateForUpstreamModel(
+        requestedModel: String,
+        routes: RouteState,
+        catalog: ProviderCatalog
+    ) -> ModelCandidate? {
+        let normalizedRequest = stripOneMSuffix(requestedModel)
+        return catalog.candidates
+            .filter {
+                $0.appType == "claude-desktop"
+                    && stripOneMSuffix($0.upstreamModel).caseInsensitiveCompare(normalizedRequest) == .orderedSame
+            }
+            .sorted { lhs, rhs in
+                let lhsActive = routes.routes[lhs.routeKey.description]?.providerRef == lhs.providerRef
+                let rhsActive = routes.routes[rhs.routeKey.description]?.providerRef == rhs.providerRef
+                if lhsActive != rhsActive {
+                    return lhsActive
+                }
+                let lhsRank = claudeRouteRoleRank(lhs.logicalModel)
+                let rhsRank = claudeRouteRoleRank(rhs.logicalModel)
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+                return lhs.providerName.localizedStandardCompare(rhs.providerName) == .orderedAscending
+            }
+            .first
     }
 
     private static func parseJSONBody(_ body: Data) throws -> [String: Any] {
@@ -246,6 +310,21 @@ public enum ProxyResolver {
             return "sonnet"
         }
         return nil
+    }
+
+    private static func claudeRouteRoleRank(_ model: String) -> Int {
+        switch claudeRoleKeyword(model) {
+        case "sonnet":
+            return 0
+        case "opus":
+            return 1
+        case "fable":
+            return 2
+        case "haiku":
+            return 3
+        default:
+            return 4
+        }
     }
 
     private static func buildUpstreamURL(

@@ -1226,19 +1226,12 @@ private struct InlineSettingsPanel: View {
             endpointRow(title: "Claude Code", path: "/claude-code", canImport: true)
             Divider()
                 .padding(.vertical, 8)
-            VStack(alignment: .leading, spacing: 7) {
-                endpointRow(title: "Claude Desktop", path: "/claude-desktop", canImport: false)
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                        .frame(width: 14)
-                    Text("在 cc-switch 的 Claude Desktop 供应商里开启模型映射/本地路由，并配置菜单显示名和实际请求模型。UniGate 会读取这份映射；否则 Claude Desktop 只能看到 claude-* 路由名。")
-                        .font(.caption2)
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+            endpointRow(
+                title: "Claude Desktop",
+                path: "/claude-desktop",
+                canImport: false,
+                warningBadge: "需开启模型映射"
+            )
         }
     }
 
@@ -1261,11 +1254,21 @@ private struct InlineSettingsPanel: View {
         }
     }
 
-    private func endpointRow(title: String, path: String, canImport: Bool) -> some View {
+    private func endpointRow(
+        title: String,
+        path: String,
+        canImport: Bool,
+        warningBadge: String? = nil
+    ) -> some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
+                HStack(alignment: .center, spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                    if let warningBadge {
+                        warningBadgeLabel(warningBadge)
+                    }
+                }
                 Text(model.baseURL(path: path))
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(UGPopoverStyle.textSecondary)
@@ -1288,6 +1291,16 @@ private struct InlineSettingsPanel: View {
             .disabled(model.generalSettingsValidationText != nil)
             .opacity(model.generalSettingsValidationText == nil ? 1 : 0.45)
         }
+    }
+
+    private func warningBadgeLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.orange.opacity(0.28)))
     }
 
     private func compactAction(

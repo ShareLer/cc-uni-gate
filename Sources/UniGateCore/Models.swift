@@ -429,11 +429,28 @@ public struct UniGateModelScope: Sendable {
         return models.contains(Self.normalizedModel(routeKey.logicalModel))
     }
 
+    public func contains(_ candidate: ModelCandidate) -> Bool {
+        guard let models = normalizedModelsByApp[candidate.appType] else {
+            return false
+        }
+        if candidate.appType == "claude-desktop" {
+            return models.contains(Self.normalizedModel(candidate.upstreamModel))
+        }
+        return models.contains(Self.normalizedModel(candidate.logicalModel))
+    }
+
     public func hasModels(for appType: String) -> Bool {
         guard let models = normalizedModelsByApp[appType] else {
             return false
         }
         return !models.isEmpty
+    }
+
+    public func models(for appType: String) -> [String] {
+        guard let models = normalizedModelsByApp[appType] else {
+            return []
+        }
+        return models.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
     private static func normalizedModel(_ model: String) -> String {

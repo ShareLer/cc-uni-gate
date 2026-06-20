@@ -22,4 +22,4 @@ task_plan.md
 *.log
 tmp/
 temp/
-doc/
+docs/
