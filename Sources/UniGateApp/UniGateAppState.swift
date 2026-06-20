@@ -66,7 +66,6 @@ final class UniGateAppState: ObservableObject {
     func updateProxyStatus(_ status: ProxyStatus, port: UInt16) {
         proxyStatus = status
         proxyPort = port
-        settingsViewModel?.proxyStatus = status
     }
 
     func updateRecentEvents(_ events: [ProxyEvent]) {
@@ -322,16 +321,10 @@ final class UniGateAppState: ObservableObject {
             return settingsViewModel
         }
         let settingsViewModel = SettingsViewModel(
-            providers: catalog.providers,
             candidates: catalog.candidates,
-            routeKeys: catalog.routeKeys,
             customModels: customModels,
             uniGateModelScope: uniGateModelScope,
-            proxyStatus: proxyStatus,
             preferences: preferences,
-            onSave: { [weak self] preferences, customModels in
-                self?.onSaveSettings?(preferences, customModels)
-            },
             onApply: { [weak self] preferences, customModels in
                 if let onApplySettings = self?.onApplySettings {
                     onApplySettings(preferences, customModels)
@@ -340,9 +333,6 @@ final class UniGateAppState: ObservableObject {
                 }
             }
         )
-        settingsViewModel.onClose = { [weak self] in
-            self?.closeSettings()
-        }
         self.settingsViewModel = settingsViewModel
         return settingsViewModel
     }
@@ -376,12 +366,9 @@ final class UniGateAppState: ObservableObject {
 
     private func updateSettingsViewModel() {
         settingsViewModel?.update(
-            providers: catalog.providers,
             candidates: catalog.candidates,
-            routeKeys: catalog.routeKeys,
             customModels: customModels,
             uniGateModelScope: uniGateModelScope,
-            proxyStatus: proxyStatus,
             preferences: preferences
         )
     }
