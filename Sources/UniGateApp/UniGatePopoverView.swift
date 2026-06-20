@@ -68,7 +68,8 @@ struct UniGatePopoverRootView: View {
     private let collapsedRowAnimation = Animation.easeInOut(duration: 0.34)
     private let panelTransitionAnimation = Animation.easeInOut(duration: 0.28)
     private let providerTagWidth: CGFloat = 132
-    private let rowActionSlotWidth: CGFloat = 22
+    private let rowActionSlotWidth: CGFloat = 18
+    private let selectorSideControlWidth: CGFloat = 86
 
     var body: some View {
         routeSwitcher
@@ -130,6 +131,7 @@ struct UniGatePopoverRootView: View {
 
             Spacer(minLength: 8)
             headerStatusReadout
+                .frame(width: selectorSideControlWidth, alignment: .center)
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -262,7 +264,7 @@ struct UniGatePopoverRootView: View {
             appSelector
                 .frame(maxWidth: .infinity)
             settingsSelectorButton
-                .frame(width: 86, height: 44)
+                .frame(width: selectorSideControlWidth, height: 44)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -679,17 +681,17 @@ struct UniGatePopoverRootView: View {
                 Text("自定义模型")
                     .font(.system(size: 13, weight: .semibold))
             }
-            .foregroundStyle(brand)
+            .foregroundStyle(UGPopoverStyle.neutralActionText)
             .frame(maxWidth: .infinity, minHeight: 52)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(UGPopoverStyle.brandSoftFill(brand))
+                    .fill(UGPopoverStyle.neutralActionFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(
-                        brand.opacity(0.44),
-                        style: StrokeStyle(lineWidth: 1.2, dash: [6, 5], dashPhase: 0)
+                        UGPopoverStyle.neutralActionBorder,
+                        style: StrokeStyle(lineWidth: 1, dash: [5, 5], dashPhase: 0)
                     )
             )
             .contentShape(RoundedRectangle(cornerRadius: 10))
@@ -802,12 +804,11 @@ struct UniGatePopoverRootView: View {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(UGPopoverStyle.textSecondary)
-                .frame(width: 18, height: 22)
+                .frame(width: rowActionSlotWidth, height: 24)
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
-        .fixedSize()
         .help("自定义模型操作")
     }
 
@@ -1464,11 +1465,7 @@ private struct InlineCustomModelEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            ScrollView {
-                form
-                    .padding(.trailing, 4)
-            }
-            footer
+            formPanel
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onChange(of: appType) { _, _ in
@@ -1488,6 +1485,26 @@ private struct InlineCustomModelEditorView: View {
                 .foregroundStyle(UGPopoverStyle.textSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var formPanel: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                form
+                    .padding(12)
+                    .padding(.trailing, 4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Divider()
+
+            footer
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.inputFieldBorder))
     }
 
     private var form: some View {
@@ -1580,9 +1597,7 @@ private struct InlineCustomModelEditorView: View {
                 }
             }
         }
-        .padding(6)
-        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
+        .padding(.vertical, 2)
     }
 
     private var emptyTargetState: some View {
