@@ -96,6 +96,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func saveSettings(_ preferences: AppPreferences, customModels: CustomModelState) {
+        persistSettings(preferences, customModels: customModels, closeAfterSave: true)
+    }
+
+    private func applySettings(_ preferences: AppPreferences, customModels: CustomModelState) {
+        persistSettings(preferences, customModels: customModels, closeAfterSave: false)
+    }
+
+    private func persistSettings(
+        _ preferences: AppPreferences,
+        customModels: CustomModelState,
+        closeAfterSave: Bool
+    ) {
         do {
             let previousPort = currentProxyPort()
             self.preferences = preferences
@@ -106,8 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if currentProxyPort() != previousPort {
                 startProxyServer()
             }
-            appState.closeSettings()
-            appState.showToast("已保存")
+            if closeAfterSave {
+                appState.closeSettings()
+                appState.showToast("已保存")
+            }
         } catch {
             showError(error)
         }
@@ -209,6 +223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appState.onSaveSettings = { [weak self] preferences, customModels in
             self?.saveSettings(preferences, customModels: customModels)
+        }
+        appState.onApplySettings = { [weak self] preferences, customModels in
+            self?.applySettings(preferences, customModels: customModels)
         }
     }
 

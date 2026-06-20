@@ -36,6 +36,7 @@ final class UniGateAppState: ObservableObject {
     var onOpenAppFolder: (() -> Void)?
     var onQuit: (() -> Void)?
     var onSaveSettings: ((AppPreferences, CustomModelState) -> Void)?
+    var onApplySettings: ((AppPreferences, CustomModelState) -> Void)?
 
     private var toastToken = UUID()
     private var settingsViewModel: SettingsViewModel?
@@ -322,6 +323,13 @@ final class UniGateAppState: ObservableObject {
             preferences: preferences,
             onSave: { [weak self] preferences, customModels in
                 self?.onSaveSettings?(preferences, customModels)
+            },
+            onApply: { [weak self] preferences, customModels in
+                if let onApplySettings = self?.onApplySettings {
+                    onApplySettings(preferences, customModels)
+                } else {
+                    self?.onSaveSettings?(preferences, customModels)
+                }
             }
         )
         settingsViewModel.onClose = { [weak self] in

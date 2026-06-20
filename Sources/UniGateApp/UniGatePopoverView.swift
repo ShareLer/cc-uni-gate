@@ -19,16 +19,8 @@ struct UniGatePopoverRootView: View {
     private let providerTagWidth: CGFloat = 132
 
     var body: some View {
-        Group {
-            switch state.screen {
-            case .routes:
-                routeSwitcher
-                    .frame(width: 460, height: 620)
-            case .settings:
-                settingsView
-                    .frame(width: 900, height: 680)
-            }
-        }
+        routeSwitcher
+            .frame(width: 460, height: 620)
         .background(.ultraThinMaterial)
         .overlay(alignment: .top) {
             if let toast = state.toast {
@@ -50,34 +42,11 @@ struct UniGatePopoverRootView: View {
         VStack(spacing: 0) {
             header
             statusDetailBubble
-            appSelector
+            selectorRow
             Divider()
             content
             Divider()
             footer
-        }
-    }
-
-    private var settingsView: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Button {
-                    state.closeSettings()
-                } label: {
-                    Label("返回模型", systemImage: "chevron.left")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .background(.ultraThinMaterial)
-
-            Divider()
-
-            SettingsRootView(model: state.settingsModel())
         }
     }
 
@@ -231,8 +200,21 @@ struct UniGatePopoverRootView: View {
         }
     }
 
+    private var selectorRow: some View {
+        HStack(spacing: 10) {
+            appSelector
+                .frame(maxWidth: .infinity)
+            settingsSelectorButton
+                .frame(width: 86, height: 44)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .padding(.bottom, 8)
+    }
+
     private var appSelector: some View {
-        ZStack {
+        let isActive = state.screen == .routes
+        return ZStack {
             Capsule()
                 .fill(UGPopoverStyle.tabFill)
                 .overlay(Capsule().stroke(UGPopoverStyle.tabBorder, lineWidth: 1))
@@ -242,12 +224,15 @@ struct UniGatePopoverRootView: View {
                 let count = max(CGFloat(appTypes.count), 1)
                 let tabWidth = geo.size.width / count
                 let selected = state.currentAppType.flatMap { appTypes.firstIndex(of: $0) } ?? 0
-                Capsule()
-                    .fill(UGPopoverStyle.brand)
-                    .padding(2)
-                    .frame(width: tabWidth)
-                    .offset(x: tabWidth * CGFloat(selected))
-                    .animation(.easeInOut(duration: 0.15), value: state.currentAppType)
+                if isActive {
+                    Capsule()
+                        .fill(UGPopoverStyle.brand)
+                        .padding(2)
+                        .frame(width: tabWidth)
+                        .offset(x: tabWidth * CGFloat(selected))
+                        .animation(.easeInOut(duration: 0.15), value: state.currentAppType)
+                        .transition(.opacity)
+                }
             }
 
             HStack(spacing: 0) {
@@ -262,23 +247,63 @@ struct UniGatePopoverRootView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
-                    .foregroundStyle(state.currentAppType == appType ? .white : UGPopoverStyle.textSecondary)
+                    .foregroundStyle(isActive && state.currentAppType == appType ? .white : UGPopoverStyle.textSecondary)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         withAnimation(.easeInOut(duration: 0.15)) {
+                            state.closeSettings()
                             state.selectApp(appType)
                         }
                     }
                 }
             }
         }
-        .frame(width: 320, height: 44)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
-        .padding(.bottom, 8)
+        .frame(height: 44)
+    }
+
+    private var settingsSelectorButton: some View {
+        let selected = state.screen == .settings
+        return Button {
+            pendingDeleteCustomModelID = nil
+            editingCustomModel = nil
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isAddingCustomModel = false
+                state.openSettings()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("设置")
+                    .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(selected ? .white : UGPopoverStyle.textSecondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(selected ? UGPopoverStyle.brand : UGPopoverStyle.tabFill, in: Capsule())
+            .overlay(Capsule().stroke(selected ? Color.clear : UGPopoverStyle.tabBorder, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("设置")
     }
 
     private var content: some View {
+        ZStack(alignment: .topLeading) {
+            switch state.screen {
+            case .routes:
+                routeContent
+                    .transition(.opacity)
+            case .settings:
+                inlineSettingsPanel
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .animation(.easeInOut(duration: 0.15), value: state.screen)
+    }
+
+    private var routeContent: some View {
         ZStack(alignment: .topLeading) {
             if isAddingCustomModel {
                 customModelPanel
@@ -298,6 +323,12 @@ struct UniGatePopoverRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
         .animation(panelTransitionAnimation, value: isAddingCustomModel)
+    }
+
+    private var inlineSettingsPanel: some View {
+        InlineSettingsPanel(model: state.settingsModel(), loadError: state.loadError)
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var modelListPanel: some View {
@@ -911,15 +942,6 @@ struct UniGatePopoverRootView: View {
             .help("打开应用文件夹")
 
             Button {
-                state.openSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12, weight: .medium))
-            }
-            .buttonStyle(.plain)
-            .help("设置")
-
-            Button {
                 state.quit()
             } label: {
                 Image(systemName: "power")
@@ -978,6 +1000,257 @@ private struct BubbleTail: Shape {
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
         path.closeSubpath()
         return path
+    }
+}
+
+private struct InlineSettingsPanel: View {
+    @ObservedObject var model: SettingsViewModel
+    let loadError: String?
+    @State private var applyTask: Task<Void, Never>?
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case port
+        case databasePath
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    generalSettingsCard
+                    endpointCard
+                }
+                .padding(.trailing, 4)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay(alignment: .top) {
+            if let toast = model.toast {
+                Text(toast)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(UGPopoverStyle.cardFillStrong, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
+                    .shadow(color: UGPopoverStyle.cardShadowColor, radius: 12, x: 0, y: 7)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: model.portText) { _, _ in
+            scheduleApply()
+        }
+        .onChange(of: model.ccSwitchDBPathText) { _, _ in
+            scheduleApply()
+        }
+        .onDisappear {
+            applyTask?.cancel()
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("设置")
+                .font(.system(size: 16, weight: .semibold))
+            Text("本地代理与 cc-switch 接入")
+                .font(.caption)
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var generalSettingsCard: some View {
+        settingsCard {
+            VStack(spacing: 0) {
+                settingRow(title: "代理端口", detail: "127.0.0.1") {
+                    TextField("17888", text: $model.portText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .padding(.horizontal, 8)
+                        .frame(width: 92, height: 28)
+                        .focused($focusedField, equals: .port)
+                        .background(fieldFill(isFocused: focusedField == .port), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(fieldBorder(isFocused: focusedField == .port, cornerRadius: 6))
+                        .onSubmit(applyNow)
+                }
+
+                Divider()
+                    .padding(.vertical, 10)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("数据库文件路径")
+                            .font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        Text("cc-switch")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(UGPopoverStyle.brand)
+                    }
+
+                    TextField(AppPreferences.defaultCcSwitchDBPath(), text: $model.ccSwitchDBPathText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .padding(.horizontal, 9)
+                        .frame(height: 30)
+                        .focused($focusedField, equals: .databasePath)
+                        .background(fieldFill(isFocused: focusedField == .databasePath), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(fieldBorder(isFocused: focusedField == .databasePath, cornerRadius: 6))
+                        .onSubmit(applyNow)
+
+                    if let loadError {
+                        inlineFieldError(loadError)
+                            .padding(.top, 7)
+                    }
+                }
+
+                if let validationText = model.generalSettingsValidationText {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(validationText)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 10)
+                }
+            }
+        }
+    }
+
+    private var endpointCard: some View {
+        settingsCard(spacing: 0) {
+            endpointRow(title: "Codex", path: "/codex", canImport: true)
+            Divider()
+                .padding(.vertical, 8)
+            endpointRow(title: "Claude Code", path: "/claude-code", canImport: true)
+            Divider()
+                .padding(.vertical, 8)
+            endpointRow(title: "Claude Desktop", path: "/claude-desktop", canImport: false)
+        }
+    }
+
+    private func settingRow<Control: View>(
+        title: String,
+        detail: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            }
+
+            Spacer(minLength: 8)
+            control()
+        }
+    }
+
+    private func endpointRow(title: String, path: String, canImport: Bool) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(model.baseURL(path: path))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 6) {
+                if canImport {
+                    compactAction("导入", systemImage: "square.and.arrow.down") {
+                        model.importToCcSwitch(path: path)
+                    }
+                }
+                compactAction("复制", systemImage: "doc.on.doc") {
+                    model.copyBaseURL(path: path)
+                }
+            }
+            .disabled(model.generalSettingsValidationText != nil)
+            .opacity(model.generalSettingsValidationText == nil ? 1 : 0.45)
+        }
+    }
+
+    private func compactAction(
+        _ title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(UGPopoverStyle.brand)
+                .padding(.horizontal, 8)
+                .frame(height: 26)
+                .background(UGPopoverStyle.brand.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func fieldFill(isFocused: Bool) -> Color {
+        isFocused ? UGPopoverStyle.inputFieldFocusedFill : UGPopoverStyle.inputFieldFill
+    }
+
+    private func fieldBorder(isFocused: Bool, cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .stroke(isFocused ? UGPopoverStyle.brand.opacity(0.54) : UGPopoverStyle.inputFieldBorder, lineWidth: 1)
+    }
+
+    private func inlineFieldError(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.top, 1)
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(.orange)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsCard<Content: View>(
+        spacing: CGFloat = 12,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            content()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
+        .shadow(color: UGPopoverStyle.cardShadowColor, radius: 5, x: 0, y: 6)
+    }
+
+    private func scheduleApply() {
+        applyTask?.cancel()
+        applyTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+            _ = model.applyGeneralSettings()
+        }
+    }
+
+    private func applyNow() {
+        applyTask?.cancel()
+        _ = model.applyGeneralSettings()
     }
 }
 
@@ -1336,6 +1609,9 @@ private enum UGPopoverStyle {
     static let expandedBorder = adaptive(light: brand.opacity(0.38), dark: brand.opacity(0.45))
     static let expandedPanelFill = adaptive(light: Color.black.opacity(0.045), dark: Color.white.opacity(0.075))
     static let expandedPanelBorder = adaptive(light: Color.black.opacity(0.055), dark: Color.white.opacity(0.10))
+    static let inputFieldFill = adaptive(light: Color.black.opacity(0.035), dark: Color.white.opacity(0.065))
+    static let inputFieldFocusedFill = adaptive(light: Color.white.opacity(0.42), dark: Color.white.opacity(0.085))
+    static let inputFieldBorder = adaptive(light: Color.black.opacity(0.11), dark: Color.white.opacity(0.16))
     static let selectedProviderFill = adaptive(light: brand.opacity(0.13), dark: brand.opacity(0.22))
     static let tabFill = adaptive(light: Color.white.opacity(0.36), dark: Color.black.opacity(0.21))
     static let tabBorder = adaptive(light: Color.black.opacity(0.08), dark: Color.white.opacity(0.20))

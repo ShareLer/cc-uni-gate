@@ -84,3 +84,21 @@ Popover 顶部状态只显示 `运行中`、`供应商异常` 等短标题，异
 
 ## 经验教训
 只读状态信息不应依赖 hover 才可理解。短标题适合状态栏图标或菜单栏摘要，popover 主界面需要把定位问题所需的上下文直接展示出来。
+
+# Fix Report - Settings DB Path Error Visibility
+
+## Bug 描述
+在主 UI 的设置页输入错误的 cc-switch 数据库路径后，路径加载错误没有显示在当前设置页面，只能切回模型列表后看到错误 banner。
+
+## 根因
+DB 路径应用后，应用层会在 `publishError` 中把错误写入 `UniGateAppState.loadError`。模型列表读取并展示了这个状态，但内嵌设置页只接收 `SettingsViewModel`，没有接收或展示 `loadError`，导致错误反馈跨页面丢失。
+
+## 尝试记录
+- 尝试 1：检查保存和重载链路。结果：错误已被捕获并进入 `state.loadError`，不是加载失败未上报。
+- 尝试 2：检查设置页参数。结果：`InlineSettingsPanel` 没有 `loadError` 输入，也没有对应错误视图，根因确认。
+
+## 最终方案
+把 `state.loadError` 传入 `InlineSettingsPanel`，并在数据库路径输入框下方显示同一条 inline warning，让用户在当前编辑上下文中看到路径加载失败原因。
+
+## 经验教训
+设置页的即时生效需要即时反馈。由某个设置项触发的错误应展示在该设置项附近，而不是只在依赖该设置结果的其他页面展示。

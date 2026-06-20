@@ -67,6 +67,7 @@ final class SettingsViewModel: ObservableObject {
     var onClose: (() -> Void)?
 
     private let onSave: (AppPreferences, CustomModelState) -> Void
+    private let onApply: (AppPreferences, CustomModelState) -> Void
     private var toastToken = UUID()
 
     init(
@@ -77,7 +78,8 @@ final class SettingsViewModel: ObservableObject {
         uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         preferences: AppPreferences,
-        onSave: @escaping (AppPreferences, CustomModelState) -> Void
+        onSave: @escaping (AppPreferences, CustomModelState) -> Void,
+        onApply: ((AppPreferences, CustomModelState) -> Void)? = nil
     ) {
         self.providers = providers
         self.candidates = candidates
@@ -96,6 +98,7 @@ final class SettingsViewModel: ObservableObject {
             uniGateModelScope: uniGateModelScope
         )
         self.onSave = onSave
+        self.onApply = onApply ?? onSave
         self.selectedModelAppType = nil
         self.selectedProviderAppType = nil
     }
@@ -145,14 +148,42 @@ final class SettingsViewModel: ObservableObject {
         let saveRouteKeys = Set(modelRouteKeys().filter(isModelSelectable))
         let visible = selectedRouteKeys.intersection(saveRouteKeys)
         let visibleModels = visible == saveRouteKeys ? nil : Set(visible.map(\.description))
-        let ccSwitchDBPath = ccSwitchDBPathText.trimmingCharacters(in: .whitespacesAndNewlines)
         onSave(AppPreferences(
             visibleModels: visibleModels,
             protocolOverrides: protocolOverrides,
             port: port,
-            ccSwitchDBPath: ccSwitchDBPath.isEmpty ? nil : ccSwitchDBPath
+            ccSwitchDBPath: ccSwitchDBPathPreferenceValue()
         ), customModels)
         onClose?()
+    }
+
+    var generalSettingsValidationText: String? {
+        let trimmedPort = portText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let port = UInt16(trimmedPort), port > 0 else {
+            return "端口必须是 1-65535"
+        }
+        return nil
+    }
+
+    func applyGeneralSettings() -> Bool {
+        guard generalSettingsValidationText == nil,
+              let port = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)),
+              port > 0
+        else {
+            return false
+        }
+
+        let nextPreferences = AppPreferences(
+            visibleModels: preferences.visibleModels,
+            protocolOverrides: protocolOverrides,
+            port: port,
+            ccSwitchDBPath: ccSwitchDBPathPreferenceValue()
+        )
+        guard hasGeneralSettingsChange(nextPreferences) else {
+            return true
+        }
+        onApply(nextPreferences, customModels)
+        return true
     }
 
     private static func visibleRouteKeys(
@@ -423,6 +454,23 @@ final class SettingsViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    private func hasGeneralSettingsChange(_ nextPreferences: AppPreferences) -> Bool {
+        preferences.normalizedPort != nextPreferences.normalizedPort
+            || normalizedPath(preferences.ccSwitchDBPath) != normalizedPath(nextPreferences.ccSwitchDBPath)
+    }
+
+    private func normalizedPath(_ path: String?) -> String {
+        (path ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func ccSwitchDBPathPreferenceValue() -> String? {
+        let path = ccSwitchDBPathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, path != AppPreferences.defaultCcSwitchDBPath() else {
+            return nil
+        }
+        return path
     }
 
     private func sortedAppTypes() -> [String] {
