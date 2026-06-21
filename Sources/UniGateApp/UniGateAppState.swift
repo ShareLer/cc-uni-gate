@@ -7,6 +7,7 @@ import UniGateCore
 final class UniGateAppState: ObservableObject {
     enum Screen {
         case routes
+        case modelDiscovery
         case settings
     }
 
@@ -40,6 +41,11 @@ final class UniGateAppState: ObservableObject {
     var onQuit: (() -> Void)?
     var onSaveSettings: ((AppPreferences, CustomModelState) -> Void)?
     var onApplySettings: ((AppPreferences, CustomModelState) -> Void)?
+    var onRefreshModelDiscovery: ((String?) -> Void)?
+    var onCopyDiagnostics: (() -> Void)?
+    var onExportConfiguration: (() -> Void)?
+    var onImportConfiguration: (() -> Void)?
+    var onResetConfiguration: (() -> Void)?
 
     private var toastToken = UUID()
     private var settingsViewModel: SettingsViewModel?
@@ -368,6 +374,11 @@ final class UniGateAppState: ObservableObject {
         onReload?()
     }
 
+    func openModelDiscovery() {
+        screen = .modelDiscovery
+        expandedRouteKeyDescription = nil
+    }
+
     func openSettings() {
         screen = .settings
         updateSettingsViewModel()
@@ -400,6 +411,26 @@ final class UniGateAppState: ObservableObject {
 
     func openAppFolder() {
         onOpenAppFolder?()
+    }
+
+    func refreshModelDiscovery() {
+        onRefreshModelDiscovery?(currentAppType)
+    }
+
+    func copyDiagnostics() {
+        onCopyDiagnostics?()
+    }
+
+    func exportConfiguration() {
+        onExportConfiguration?()
+    }
+
+    func importConfiguration() {
+        onImportConfiguration?()
+    }
+
+    func resetConfiguration() {
+        onResetConfiguration?()
     }
 
     func quit() {

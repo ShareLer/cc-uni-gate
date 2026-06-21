@@ -352,6 +352,9 @@ struct UniGatePopoverRootView: View {
             case .routes:
                 routeContent
                     .transition(.opacity)
+            case .modelDiscovery:
+                modelDiscoveryPanel
+                    .transition(.opacity)
             case .settings:
                 inlineSettingsPanel
                     .transition(.opacity)
@@ -385,7 +388,11 @@ struct UniGatePopoverRootView: View {
     }
 
     private var inlineSettingsPanel: some View {
-        InlineSettingsPanel(model: state.settingsModel(), loadError: state.loadError)
+        InlineSettingsPanel(
+            state: state,
+            model: state.settingsModel(),
+            loadError: state.loadError
+        )
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -399,6 +406,10 @@ struct UniGatePopoverRootView: View {
                     .font(.caption)
                     .foregroundStyle(UGPopoverStyle.textSecondary)
                 Spacer()
+                compactIconButton(systemImage: "list.bullet.rectangle") {
+                    state.openModelDiscovery()
+                }
+                .help("模型探测结果")
             }
 
             if let loadError = state.loadError {
@@ -412,6 +423,106 @@ struct UniGatePopoverRootView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var modelDiscoveryPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("模型探测结果")
+                    .font(.system(size: 16, weight: .semibold))
+                Text(state.currentAppType.map(ProviderDisplay.appTypeLabel) ?? "全部应用")
+                    .font(.caption)
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                Spacer()
+                compactIconButton(systemImage: "arrow.clockwise") {
+                    state.refreshModelDiscovery()
+                }
+                .help("刷新模型探测")
+                compactIconButton(systemImage: "xmark") {
+                    state.closeSettings()
+                }
+                .help("返回模型列表")
+            }
+
+            if state.currentDiscoveryResults.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                    Text("暂无探测结果")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("点击右上角刷新当前应用供应商的模型接口。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(state.currentDiscoveryResults) { result in
+                            discoveryResultRow(result)
+                        }
+                    }
+                    .padding(2)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func discoveryResultRow(_ result: ProviderModelDiscoveryResult) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(result.providerName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text(resultStatusText(result))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(result.errorMessage == nil ? Color.green : Color.orange)
+                Spacer()
+                Text(shortDateTime(result.updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            }
+
+            if let error = result.errorMessage {
+                Text(error)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(result.modelIDs.prefix(8).joined(separator: ", "))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .lineLimit(3)
+            }
+
+            if let sourceURL = result.sourceURL {
+                Text(sourceURL)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
+    }
+
+    private func resultStatusText(_ result: ProviderModelDiscoveryResult) -> String {
+        if result.errorMessage != nil {
+            return "失败"
+        }
+        return "\(result.modelIDs.count) 个模型"
+    }
+
+    private func shortDateTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 
     private var customModelPanel: some View {
@@ -961,6 +1072,18 @@ struct UniGatePopoverRootView: View {
         .buttonStyle(.plain)
     }
 
+    private func compactIconButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(UGPopoverStyle.neutralActionText)
+                .frame(width: 26, height: 24)
+                .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func providerDetail(_ candidate: ModelCandidate) -> String {
         var parts: [String] = []
         if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
@@ -1078,6 +1201,7 @@ private struct BubbleTail: Shape {
 
 private struct InlineSettingsPanel: View {
     @Environment(\.ugBrandColor) private var brand
+    @ObservedObject var state: UniGateAppState
     @ObservedObject var model: SettingsViewModel
     let loadError: String?
     @State private var applyTask: Task<Void, Never>?
@@ -1094,8 +1218,10 @@ private struct InlineSettingsPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    healthCheckCard
                     generalSettingsCard
                     endpointCard
+                    diagnosticsCard
                     themeSettingsCard
                 }
                 .padding(.trailing, 4)
@@ -1122,6 +1248,9 @@ private struct InlineSettingsPanel: View {
         .onChange(of: model.bubbleNotificationsEnabled) { _, _ in
             _ = model.applyGeneralSettings(commitDatabasePath: false)
         }
+        .onChange(of: model.launchAtLoginEnabled) { _, _ in
+            _ = model.applyGeneralSettings(commitDatabasePath: false)
+        }
         .onChange(of: focusedField) { oldValue, newValue in
             if oldValue == .databasePath, newValue != .databasePath {
                 applyNow()
@@ -1141,6 +1270,83 @@ private struct InlineSettingsPanel: View {
                 .foregroundStyle(UGPopoverStyle.textSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var healthCheckCard: some View {
+        let report = state.healthReport
+        return settingsCard(spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: healthIcon(report.worstSeverity))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(healthColor(report.worstSeverity))
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("配置健康检查")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(report.summaryTitle)
+                        .font(.caption2)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                }
+                Spacer()
+                Text("\(report.blockingItems.count) 项")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            }
+
+            let items = report.blockingItems.prefix(4)
+            if items.isEmpty {
+                Text("关键配置没有发现阻塞问题。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            } else {
+                VStack(spacing: 7) {
+                    ForEach(Array(items), id: \.id) { item in
+                        healthItemRow(item)
+                    }
+                }
+            }
+        }
+    }
+
+    private var diagnosticsCard: some View {
+        settingsCard(spacing: 10) {
+            HStack(spacing: 8) {
+                Text("诊断与配置")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                compactAction("复制诊断", systemImage: "doc.on.doc") {
+                    state.copyDiagnostics()
+                }
+            }
+
+            requestMetricsSummary
+
+            HStack(spacing: 8) {
+                compactAction("导出", systemImage: "square.and.arrow.up") {
+                    state.exportConfiguration()
+                }
+                compactAction("恢复", systemImage: "arrow.down.doc") {
+                    state.importConfiguration()
+                }
+                compactAction("重置", systemImage: "trash") {
+                    state.resetConfiguration()
+                }
+            }
+        }
+    }
+
+    private var requestMetricsSummary: some View {
+        let records = state.currentRequestMetrics.map(\.1)
+        let total = records.reduce(0) { $0 + $1.totalCount }
+        let failures = records.reduce(0) { $0 + $1.failureCount }
+        let avg = records
+            .compactMap(\.averageLatencyMilliseconds)
+            .reduce(0, +) / Double(max(records.compactMap(\.averageLatencyMilliseconds).count, 1))
+        return HStack(spacing: 10) {
+            metricPill(title: "请求", value: "\(total)")
+            metricPill(title: "失败", value: "\(failures)")
+            metricPill(title: "平均", value: total == 0 ? "-" : "\(Int(avg))ms")
+        }
     }
 
     private var themeSettingsCard: some View {
@@ -1170,6 +1376,15 @@ private struct InlineSettingsPanel: View {
                         .background(fieldFill(isFocused: focusedField == .port), in: RoundedRectangle(cornerRadius: 6))
                         .overlay(fieldBorder(isFocused: focusedField == .port, cornerRadius: 6))
                         .onSubmit(applyNow)
+                }
+
+                Divider()
+                    .padding(.vertical, 10)
+
+                settingRow(title: "启动时自动运行", detail: "登录 macOS 后启动 Uni Gate") {
+                    Toggle("", isOn: $model.launchAtLoginEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
                 }
 
                 Divider()
@@ -1309,6 +1524,67 @@ private struct InlineSettingsPanel: View {
             .frame(height: 18)
             .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.orange.opacity(0.28)))
+    }
+
+    private func healthItemRow(_ item: ConfigurationHealthItem) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(healthColor(item.severity))
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Text(item.detail)
+                    .font(.caption2)
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func metricPill(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.inputFieldBorder))
+    }
+
+    private func healthIcon(_ severity: ConfigurationHealthSeverity) -> String {
+        switch severity {
+        case .ok:
+            return "checkmark.circle.fill"
+        case .info:
+            return "info.circle.fill"
+        case .warning:
+            return "exclamationmark.triangle.fill"
+        case .error:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private func healthColor(_ severity: ConfigurationHealthSeverity) -> Color {
+        switch severity {
+        case .ok:
+            return .green
+        case .info:
+            return .blue
+        case .warning:
+            return .orange
+        case .error:
+            return .red
+        }
     }
 
     private func compactAction(

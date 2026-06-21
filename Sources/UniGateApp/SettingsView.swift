@@ -11,6 +11,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var ccSwitchDBPathText: String
     @Published var brandColor: BrandColorPreset
     @Published var bubbleNotificationsEnabled: Bool
+    @Published var launchAtLoginEnabled: Bool
     @Published var toast: String?
 
     private var uniGateModelScope: UniGateModelScope
@@ -32,6 +33,7 @@ final class SettingsViewModel: ObservableObject {
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
         self.brandColor = preferences.brandColor
         self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
+        self.launchAtLoginEnabled = preferences.launchAtLoginEnabled
         self.onApply = onApply
     }
 
@@ -49,6 +51,7 @@ final class SettingsViewModel: ObservableObject {
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
         self.brandColor = preferences.brandColor
         self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
+        self.launchAtLoginEnabled = preferences.launchAtLoginEnabled
     }
 
     var generalSettingsValidationText: String? {
@@ -141,7 +144,8 @@ final class SettingsViewModel: ObservableObject {
                 ? ccSwitchDBPathPreferenceValue()
                 : preferences.ccSwitchDBPath,
             brandColor: brandColor,
-            bubbleNotificationsEnabled: bubbleNotificationsEnabled
+            bubbleNotificationsEnabled: bubbleNotificationsEnabled,
+            launchAtLoginEnabled: launchAtLoginEnabled
         )
     }
 
@@ -169,6 +173,7 @@ final class SettingsViewModel: ObservableObject {
             || normalizedPath(preferences.ccSwitchDBPath) != normalizedPath(nextPreferences.ccSwitchDBPath)
             || preferences.brandColor != nextPreferences.brandColor
             || preferences.bubbleNotificationsEnabled != nextPreferences.bubbleNotificationsEnabled
+            || preferences.launchAtLoginEnabled != nextPreferences.launchAtLoginEnabled
     }
 
     private func normalizedPath(_ path: String?) -> String {

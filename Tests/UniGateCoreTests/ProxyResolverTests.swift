@@ -41,6 +41,58 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func scopedProxyCatalogRejectsCodexModelOutsideUniGateScope() throws {
+        let dasu = ImportedProvider(
+            id: "dasu",
+            appType: "codex",
+            name: "dasu-gpt-plus-0.077",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://dasuapi.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("dasu-key")])],
+            meta: [:]
+        )
+        let free = ImportedProvider(
+            id: "gpt-free",
+            appType: "codex",
+            name: "gpt-free",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://free.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("free-key")])],
+            meta: [:]
+        )
+        let rawCatalog = ProviderCatalog(providers: [dasu, free], candidates: [
+            candidate(provider: dasu, logicalModel: "gpt-5.4"),
+            candidate(provider: free, logicalModel: "gpt-5.5")
+        ])
+        let scopedCatalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            customModels: CustomModelState()
+        )
+        let routes = RouteStore.defaultState(candidates: scopedCatalog.candidates)
+
+        #expect(scopedCatalog.routeKeys.map { $0.description } == ["codex:gpt-5.5"])
+        #expect(routes.routes["codex:gpt-5.4"] == nil)
+        #expect(throws: ProxyResolverError.self) {
+            try ProxyResolver.resolveRoute(
+                catalog: scopedCatalog,
+                routes: routes,
+                protocolKind: .codexResponses,
+                appType: "codex",
+                path: "/codex/responses",
+                body: Data(#"{"model":"gpt-5.4","input":"hello"}"#.utf8)
+            )
+        }
+    }
+
+    @Test
     func resolvesCcSwitchStyleCodexRootPath() throws {
         let provider = ImportedProvider(
             id: "p1",
@@ -808,15 +860,19 @@ struct ProxyResolverTests {
         #expect(provider.displayName == "Dasu-gpt · Claude Desktop")
     }
 
-    private func candidate(provider: ImportedProvider, requiresTransform: Bool) -> ModelCandidate {
+    private func candidate(
+        provider: ImportedProvider,
+        logicalModel: String = "gpt-5.5",
+        requiresTransform: Bool = false
+    ) -> ModelCandidate {
         ModelCandidate(
-            logicalModel: "gpt-5.5",
+            logicalModel: logicalModel,
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
             clientProtocol: .codexResponses,
             apiFormat: provider.apiFormat,
-            upstreamModel: "gpt-5.5",
+            upstreamModel: logicalModel,
             baseURL: provider.baseURL,
             requiresTransform: requiresTransform,
             label: nil,

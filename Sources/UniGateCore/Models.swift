@@ -382,6 +382,24 @@ public struct ProviderCatalog: Sendable {
         }
         return ProviderCatalog(providers: providers, candidates: candidates)
     }
+
+    public func scopedForProxy(
+        uniGateModelScope: UniGateModelScope,
+        customModels: CustomModelState
+    ) -> ProviderCatalog {
+        let baseCandidates = candidates.filter { candidate in
+            candidate.providerRef == candidate.upstreamProviderRef
+                && ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
+        }
+        let baseCatalog = ProviderCatalog(providers: providers, candidates: baseCandidates)
+        let customCandidates = customModels.expandedCandidates(from: self).filter {
+            uniGateModelScope.contains($0.routeKey)
+        }
+        return ProviderCatalog(
+            providers: providers,
+            candidates: baseCatalog.candidates + customCandidates
+        )
+    }
 }
 
 public struct UniGateModelScope: Sendable {

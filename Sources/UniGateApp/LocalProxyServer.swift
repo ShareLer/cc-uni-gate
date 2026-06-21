@@ -9,6 +9,13 @@ protocol LocalProxyRuntime: AnyObject {
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
     func recordProxyEvent(level: ProxyEvent.Level, message: String)
     func recordForwardedRequest(appType: String)
+    func recordRequestMetric(
+        key: RequestMetricKey,
+        statusCode: Int?,
+        latencyMilliseconds: Double,
+        errorMessage: String?,
+        providerFailure: Bool
+    )
     func proxyProviderDidSucceed()
     func proxyProviderDidFail(_ message: String)
     func proxyProviderDidFail(appType: String, message: String)
@@ -204,10 +211,12 @@ final class LocalProxyServer: @unchecked Sendable {
     }
 
     private func proxy(_ request: HTTPRequest, on connection: NWConnection) async {
+        let startedAt = Date()
         var requestAppType: String?
         var providerFailureAppType: String?
         var providerFailureContext: String?
         var resolvedContext: String?
+        var metricKey: RequestMetricKey?
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
             guard let route = proxyRoute(for: request.path) else {
@@ -226,6 +235,7 @@ final class LocalProxyServer: @unchecked Sendable {
             providerFailureAppType = resolved.candidate.appType
             providerFailureContext = resolved.providerName
             resolvedContext = Self.resolvedContext(for: resolved)
+            metricKey = Self.metricKey(for: resolved)
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
             }
@@ -246,8 +256,9 @@ final class LocalProxyServer: @unchecked Sendable {
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 502
             let headers = forwardResponseHeaders(http)
+            let providerFailure = Self.isProviderFailureStatus(status)
             await MainActor.run {
-                if Self.isProviderFailureStatus(status) {
+                if providerFailure {
                     runtime.proxyProviderDidFail(
                         appType: resolved.candidate.appType,
                         message: "\(providerFailureContext ?? resolved.providerName) 返回 HTTP \(status)"
@@ -270,7 +281,25 @@ final class LocalProxyServer: @unchecked Sendable {
                     resolved: resolved,
                     on: connection
                 )
+                await MainActor.run {
+                    runtime.recordRequestMetric(
+                        key: Self.metricKey(for: resolved),
+                        statusCode: status,
+                        latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                        errorMessage: providerFailure ? "HTTP \(status)" : nil,
+                        providerFailure: providerFailure
+                    )
+                }
                 return
+            }
+            await MainActor.run {
+                runtime.recordRequestMetric(
+                    key: Self.metricKey(for: resolved),
+                    statusCode: status,
+                    latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                    errorMessage: providerFailure ? "HTTP \(status)" : nil,
+                    providerFailure: providerFailure
+                )
             }
             let head = HTTPResponseHead(
                 status: status,
@@ -291,17 +320,30 @@ final class LocalProxyServer: @unchecked Sendable {
             }
             connection.cancel()
         } catch let error as ProxyResolverError {
+            let model = Self.requestedModel(in: request.body) ?? "<missing>"
             await MainActor.run {
                 runtime.recordProxyEvent(
                     level: .error,
                     message: Self.issueMessage(
                         appType: requestAppType,
                         group: "代理异常",
-                        detail: "\(request.path) model=\(Self.requestedModel(in: request.body) ?? "<missing>") failed: \(error.localizedDescription)"
+                        detail: "\(request.path) model=\(model) failed: \(error.localizedDescription)"
                     )
                 )
+                if let metricKey {
+                    runtime.recordRequestMetric(
+                        key: metricKey,
+                        statusCode: Self.statusCode(for: error),
+                        latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                        errorMessage: error.localizedDescription,
+                        providerFailure: false
+                    )
+                }
             }
-            send(.json(status: 400, body: ["error": error.localizedDescription]), on: connection)
+            send(
+                Self.proxyResolverErrorResponse(error),
+                on: connection
+            )
         } catch {
             await MainActor.run {
                 if let providerFailureAppType, let providerFailureContext {
@@ -326,9 +368,31 @@ final class LocalProxyServer: @unchecked Sendable {
                         )
                     )
                 }
+                if let metricKey {
+                    runtime.recordRequestMetric(
+                        key: metricKey,
+                        statusCode: 502,
+                        latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                        errorMessage: error.localizedDescription,
+                        providerFailure: providerFailureContext != nil
+                    )
+                }
             }
             send(.json(status: 502, body: ["error": error.localizedDescription]), on: connection)
         }
+    }
+
+    private static func metricKey(for resolved: ResolvedRoute) -> RequestMetricKey {
+        RequestMetricKey(
+            appType: resolved.routeKey.appType,
+            routeKey: resolved.routeKey.description,
+            providerRef: resolved.candidate.providerRef.description,
+            providerName: resolved.providerName
+        )
+    }
+
+    private static func elapsedMilliseconds(since startedAt: Date) -> Double {
+        max(Date().timeIntervalSince(startedAt) * 1000, 0)
     }
 
     private static func resolvedContext(for resolved: ResolvedRoute) -> String {
@@ -357,6 +421,62 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private static func isProviderFailureStatus(_ status: Int) -> Bool {
         status == 408 || status == 409 || status == 425 || status == 429 || status >= 500
+    }
+
+    private static func proxyResolverErrorResponse(
+        _ error: ProxyResolverError
+    ) -> HTTPResponse {
+        .json(status: statusCode(for: error), body: [
+            "error": [
+                "message": error.localizedDescription,
+                "type": errorType(for: error),
+                "code": errorCode(for: error),
+                "param": "model"
+            ]
+        ])
+    }
+
+    private static func statusCode(for error: ProxyResolverError) -> Int {
+        switch error {
+        case .noRoute:
+            return 404
+        case .invalidJSONBody, .missingModel, .transformRequired, .streamingTransformUnsupported, .invalidUpstreamURL:
+            return 400
+        case .missingProvider, .missingBaseURL:
+            return 502
+        }
+    }
+
+    private static func errorType(for error: ProxyResolverError) -> String {
+        switch error {
+        case .noRoute:
+            return "invalid_request_error"
+        case .missingProvider, .missingBaseURL:
+            return "proxy_error"
+        default:
+            return "invalid_request_error"
+        }
+    }
+
+    private static func errorCode(for error: ProxyResolverError) -> String {
+        switch error {
+        case .noRoute:
+            return "model_not_found"
+        case .missingModel:
+            return "missing_model"
+        case .invalidJSONBody:
+            return "invalid_json"
+        case .transformRequired:
+            return "unsupported_protocol"
+        case .streamingTransformUnsupported:
+            return "unsupported_streaming_transform"
+        case .missingProvider:
+            return "missing_provider"
+        case .missingBaseURL:
+            return "missing_base_url"
+        case .invalidUpstreamURL:
+            return "invalid_upstream_url"
+        }
     }
 
     private static func issueMessage(appType: String?, group: String, detail: String) -> String {

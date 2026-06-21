@@ -2,6 +2,7 @@ import UniGateCore
 import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -9,13 +10,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appState = UniGateAppState()
     private let statusItemController = StatusItemController()
     private var catalog: ProviderCatalog = ProviderCatalog(providers: [], candidates: [])
+    private var integrationSnapshot: CcSwitchIntegrationSnapshot?
     private var uniGateModelScope = UniGateModelScope()
     private var routes = RouteState()
     private var preferences = AppPreferences()
     private var customModels = CustomModelState()
+    private var requestMetrics = RequestMetricsState()
+    private var discoveryState = ProviderModelDiscoveryState()
     private lazy var routeStore = RouteStore(fileURL: defaultRouteStoreURL())
     private lazy var preferencesStore = PreferencesStore(fileURL: defaultPreferencesStoreURL())
     private lazy var customModelStore = CustomModelStore()
+    private lazy var discoveryStore = ProviderModelDiscoveryStore()
+    private let backupStore = ConfigurationBackupStore()
     private var proxyServer: LocalProxyServer?
     private var proxyStatus: ProxyStatus = .starting
     private var catalogLoadError: String?
@@ -48,11 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             customModels = try customModelStore.load()
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
-            routes = try routeStore.load(catalog: catalog)
+            integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+            discoveryState = try discoveryStore.load()
+            routes = try routeStore.load(catalog: proxyCatalog())
             catalogLoadError = nil
             if let recordEventMessage {
                 recordEvent(.info, recordEventMessage)
             }
+            syncLaunchAtLoginPreference()
             publishState()
         } catch {
             if let recordEventMessage {
@@ -96,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             routes = try routeStore.switchRoutes(
                 routes,
-                catalog: catalog,
+                catalog: proxyCatalog(),
                 routeKeys: routeKeys,
                 providerRef: providerRef
             )
@@ -133,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.customModels = customModels
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
+            syncLaunchAtLoginPreference()
             reloadCatalog()
             if currentProxyPort() != previousPort {
                 startProxyServer()
@@ -152,6 +162,211 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             withIntermediateDirectories: true
         )
         NSWorkspace.shared.open(AppPaths.applicationSupportDirectory())
+    }
+
+    private func copyDiagnostics() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(appState.diagnosticsText, forType: .string)
+        appState.showToast("诊断信息已复制")
+    }
+
+    private func exportConfiguration() {
+        let panel = NSSavePanel()
+        panel.title = "导出 Uni Gate 配置"
+        panel.nameFieldStringValue = ConfigurationBackupStore.defaultExportURL().lastPathComponent
+        panel.allowedContentTypes = [.json]
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Downloads", isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            let backup = UniGateConfigurationBackup(
+                preferences: preferences,
+                routes: routes,
+                customModels: customModels
+            )
+            try backupStore.save(backup, to: url)
+            appState.showToast("配置已导出")
+        } catch {
+            showError("配置导出失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func importConfiguration() {
+        let previousPort = currentProxyPort()
+        let panel = NSOpenPanel()
+        panel.title = "恢复 Uni Gate 配置"
+        panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+        guard confirmDestructiveAction(
+            title: "恢复配置？",
+            message: "这会覆盖 Uni Gate 当前的本地设置、模型路由和自定义模型。cc-switch 数据库不会被修改。"
+        ) else {
+            return
+        }
+
+        do {
+            let backup = try backupStore.load(from: url)
+            preferences = backup.preferences
+            routes = backup.routes
+            customModels = backup.customModels
+            try preferencesStore.save(preferences)
+            try customModelStore.save(customModels)
+            try routeStore.save(routes)
+            syncLaunchAtLoginPreference()
+            reloadCatalog(recordEventMessage: "已恢复 Uni Gate 配置")
+            if currentProxyPort() != previousPort {
+                startProxyServer()
+            }
+            appState.showToast("配置已恢复")
+        } catch {
+            showError("配置恢复失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func resetConfiguration() {
+        guard confirmDestructiveAction(
+            title: "重置 Uni Gate 配置？",
+            message: "这会清空本地偏好、自定义模型和路由选择，并重新从 cc-switch 生成默认路由。"
+        ) else {
+            return
+        }
+
+        do {
+            preferences = AppPreferences()
+            customModels = CustomModelState()
+            try preferencesStore.save(preferences)
+            try customModelStore.save(customModels)
+            catalog = try loadExpandedCatalog()
+            uniGateModelScope = try currentImporter().loadUniGateModelScope()
+            integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+            routes = RouteStore.defaultState(candidates: proxyCatalog().candidates)
+            try routeStore.save(routes)
+            syncLaunchAtLoginPreference()
+            publishState()
+            startProxyServer()
+            appState.showToast("配置已重置")
+        } catch {
+            showError("配置重置失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func confirmDestructiveAction(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "继续")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func syncLaunchAtLoginPreference() {
+        guard let message = LaunchAtLoginController.sync(enabled: preferences.launchAtLoginEnabled) else {
+            return
+        }
+        recordEvent(.error, formattedIssueMessage(
+            appName: "Uni Gate",
+            group: "启动项异常",
+            detail: message
+        ))
+    }
+
+    private func refreshModelDiscovery(appType: String?) {
+        let providers = catalog.providers.filter { provider in
+            appType == nil || provider.appType == appType
+        }
+        guard !providers.isEmpty else {
+            appState.showToast("没有可探测的供应商")
+            return
+        }
+
+        appState.showToast("正在刷新模型探测")
+        Task { [providers] in
+            var nextState = discoveryState
+            for provider in providers {
+                let result = await discoverModels(for: provider)
+                nextState.upsert(result)
+                discoveryState = nextState
+                appState.updateDiscoveryState(nextState)
+            }
+            do {
+                try discoveryStore.save(nextState)
+                recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
+                appState.showToast("模型探测已刷新")
+            } catch {
+                showError("模型探测结果保存失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func discoverModels(for provider: ImportedProvider) async -> ProviderModelDiscoveryResult {
+        let now = Date()
+        guard let plan = ProviderModelDiscovery.fetchPlan(for: provider) else {
+            return ProviderModelDiscoveryResult(
+                providerRef: provider.ref,
+                appType: provider.appType,
+                providerName: provider.name,
+                modelIDs: [],
+                errorMessage: "缺少模型接口地址或鉴权信息",
+                sourceURL: provider.baseURL,
+                updatedAt: now
+            )
+        }
+
+        var lastFailure: String?
+        for url in plan.urls {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 15
+            for (key, value) in plan.headers {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            if let userAgent = plan.userAgent {
+                request.setValue(userAgent, forHTTPHeaderField: "user-agent")
+            }
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if (200..<300).contains(status) {
+                    let ids = ProviderModelDiscovery.modelIDs(from: data)
+                    return ProviderModelDiscoveryResult(
+                        providerRef: provider.ref,
+                        appType: provider.appType,
+                        providerName: provider.name,
+                        modelIDs: ids,
+                        errorMessage: ids.isEmpty ? "接口返回成功，但未解析到模型" : nil,
+                        sourceURL: url.absoluteString,
+                        updatedAt: now
+                    )
+                }
+                lastFailure = "HTTP \(status)"
+                if status == 404 || status == 405 {
+                    continue
+                }
+                break
+            } catch {
+                lastFailure = error.localizedDescription
+                break
+            }
+        }
+
+        return ProviderModelDiscoveryResult(
+            providerRef: provider.ref,
+            appType: provider.appType,
+            providerName: provider.name,
+            modelIDs: [],
+            errorMessage: lastFailure ?? "所有模型接口均不可用",
+            sourceURL: plan.urls.first?.absoluteString,
+            updatedAt: now
+        )
     }
 
     private func quit() {
@@ -275,6 +490,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.onApplySettings = { [weak self] preferences, customModels in
             self?.applySettings(preferences, customModels: customModels)
         }
+        appState.onRefreshModelDiscovery = { [weak self] appType in
+            self?.refreshModelDiscovery(appType: appType)
+        }
+        appState.onCopyDiagnostics = { [weak self] in
+            self?.copyDiagnostics()
+        }
+        appState.onExportConfiguration = { [weak self] in
+            self?.exportConfiguration()
+        }
+        appState.onImportConfiguration = { [weak self] in
+            self?.importConfiguration()
+        }
+        appState.onResetConfiguration = { [weak self] in
+            self?.resetConfiguration()
+        }
     }
 
     private func publishState() {
@@ -286,10 +516,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             uniGateModelScope: uniGateModelScope,
             proxyStatus: proxyStatus,
             proxyPort: currentProxyPort(),
+            integrationSnapshot: integrationSnapshot,
             loadError: catalogLoadError
         )
         appState.updateRecentEvents(recentEvents)
         appState.updateForwardedRequestCounts(forwardedRequestCounts)
+        appState.updateRequestMetrics(requestMetrics)
+        appState.updateDiscoveryState(discoveryState)
     }
 
     private func publishError(_ error: Error, notify: Bool = true) {
@@ -364,7 +597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: LocalProxyRuntime {
     func proxySnapshot() -> ProxyRuntimeSnapshot {
-        ProxyRuntimeSnapshot(catalog: catalog, routes: routes)
+        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes)
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
@@ -372,7 +605,7 @@ extension AppDelegate: LocalProxyRuntime {
         customModels = try customModelStore.load()
         catalog = try loadExpandedCatalog()
         uniGateModelScope = try currentImporter().loadUniGateModelScope()
-        routes = try routeStore.load(catalog: catalog)
+        routes = try routeStore.load(catalog: proxyCatalog())
         recordEvent(.info, "已重新加载 cc-switch DB")
         publishState()
         syncCcSwitchDBWatcher()
@@ -382,7 +615,7 @@ extension AppDelegate: LocalProxyRuntime {
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot {
         routes = try routeStore.switchRoute(
             routes,
-            catalog: catalog,
+            catalog: proxyCatalog(),
             appType: routeKey.appType,
             logicalModel: routeKey.logicalModel,
             providerRef: providerRef
@@ -392,6 +625,13 @@ extension AppDelegate: LocalProxyRuntime {
         return proxySnapshot()
     }
 
+    private func proxyCatalog() -> ProviderCatalog {
+        catalog.scopedForProxy(
+            uniGateModelScope: uniGateModelScope,
+            customModels: customModels
+        )
+    }
+
     func recordProxyEvent(level: ProxyEvent.Level, message: String) {
         recordEvent(level, message)
     }
@@ -399,6 +639,23 @@ extension AppDelegate: LocalProxyRuntime {
     func recordForwardedRequest(appType: String) {
         forwardedRequestCounts[appType, default: 0] += 1
         appState.updateForwardedRequestCounts(forwardedRequestCounts)
+    }
+
+    func recordRequestMetric(
+        key: RequestMetricKey,
+        statusCode: Int?,
+        latencyMilliseconds: Double,
+        errorMessage: String?,
+        providerFailure: Bool
+    ) {
+        requestMetrics.record(
+            key: key,
+            statusCode: statusCode,
+            latencyMilliseconds: latencyMilliseconds,
+            errorMessage: errorMessage,
+            providerFailure: providerFailure
+        )
+        appState.updateRequestMetrics(requestMetrics)
     }
 
     func proxyProviderDidSucceed() {
