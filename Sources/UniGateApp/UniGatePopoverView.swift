@@ -852,7 +852,7 @@ struct UniGatePopoverRootView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(accent)
                 .lineLimit(1)
-                .truncationMode(.tail)
+                .truncationMode(.middle)
             Spacer(minLength: 0)
             if canSwitchProvider {
                 Image(systemName: "chevron.down")
@@ -890,7 +890,7 @@ struct UniGatePopoverRootView: View {
     }
 
     private func providerAccentColor(for providerName: String) -> Color {
-        let palette = UGPopoverStyle.providerAccentPalette
+        let palette = UGPopoverStyle.providerAccentPalette(for: state.preferences.brandColor)
         guard !palette.isEmpty else {
             return brand
         }
@@ -1799,20 +1799,80 @@ private enum UGPopoverStyle {
     static let textSecondary = adaptive(light: Color.secondary, dark: Color.white.opacity(0.55))
     static let textDisabled = adaptive(light: Color.black.opacity(0.42), dark: Color.white.opacity(0.34))
     static let cardShadowColor = adaptive(light: Color.black.opacity(0.14), dark: Color.black.opacity(0.10))
-    static let providerAccentPalette = [
-        Color(red: 0.24, green: 0.48, blue: 0.86),
-        Color(red: 0.17, green: 0.55, blue: 0.42),
-        Color(red: 0.74, green: 0.38, blue: 0.18),
-        Color(red: 0.51, green: 0.40, blue: 0.78),
-        Color(red: 0.66, green: 0.30, blue: 0.47),
-        Color(red: 0.18, green: 0.55, blue: 0.66)
-    ]
 
     static func adaptive(light: Color, dark: Color) -> Color {
         Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             return NSColor(isDark ? dark : light)
         }))
+    }
+
+    static func providerAccentPalette(for preset: BrandColorPreset) -> [Color] {
+        switch preset {
+        case .ember:
+            return [
+                Color(red: 0.72, green: 0.33, blue: 0.18),
+                Color(red: 0.56, green: 0.43, blue: 0.18),
+                Color(red: 0.34, green: 0.55, blue: 0.38),
+                Color(red: 0.27, green: 0.48, blue: 0.58),
+                Color(red: 0.58, green: 0.35, blue: 0.56),
+                Color(red: 0.68, green: 0.28, blue: 0.35)
+            ]
+        case .blue:
+            return [
+                Color(red: 0.18, green: 0.46, blue: 0.86),
+                Color(red: 0.08, green: 0.56, blue: 0.70),
+                Color(red: 0.22, green: 0.54, blue: 0.43),
+                Color(red: 0.40, green: 0.42, blue: 0.74),
+                Color(red: 0.58, green: 0.35, blue: 0.70),
+                Color(red: 0.68, green: 0.34, blue: 0.45)
+            ]
+        case .indigo:
+            return [
+                Color(red: 0.36, green: 0.34, blue: 0.80),
+                Color(red: 0.26, green: 0.45, blue: 0.78),
+                Color(red: 0.17, green: 0.54, blue: 0.63),
+                Color(red: 0.36, green: 0.52, blue: 0.36),
+                Color(red: 0.63, green: 0.36, blue: 0.66),
+                Color(red: 0.70, green: 0.35, blue: 0.43)
+            ]
+        case .violet:
+            return [
+                Color(red: 0.60, green: 0.30, blue: 0.76),
+                Color(red: 0.42, green: 0.39, blue: 0.82),
+                Color(red: 0.22, green: 0.50, blue: 0.70),
+                Color(red: 0.25, green: 0.55, blue: 0.45),
+                Color(red: 0.72, green: 0.32, blue: 0.48),
+                Color(red: 0.66, green: 0.42, blue: 0.22)
+            ]
+        case .teal:
+            return [
+                Color(red: 0.00, green: 0.54, blue: 0.48),
+                Color(red: 0.20, green: 0.56, blue: 0.36),
+                Color(red: 0.24, green: 0.49, blue: 0.76),
+                Color(red: 0.42, green: 0.40, blue: 0.76),
+                Color(red: 0.66, green: 0.33, blue: 0.54),
+                Color(red: 0.67, green: 0.40, blue: 0.22)
+            ]
+        case .green:
+            return [
+                Color(red: 0.22, green: 0.56, blue: 0.28),
+                Color(red: 0.00, green: 0.54, blue: 0.48),
+                Color(red: 0.24, green: 0.48, blue: 0.76),
+                Color(red: 0.54, green: 0.40, blue: 0.74),
+                Color(red: 0.70, green: 0.36, blue: 0.46),
+                Color(red: 0.64, green: 0.44, blue: 0.18)
+            ]
+        case .rose:
+            return [
+                Color(red: 0.78, green: 0.25, blue: 0.39),
+                Color(red: 0.67, green: 0.34, blue: 0.70),
+                Color(red: 0.40, green: 0.43, blue: 0.80),
+                Color(red: 0.18, green: 0.53, blue: 0.62),
+                Color(red: 0.27, green: 0.54, blue: 0.35),
+                Color(red: 0.68, green: 0.42, blue: 0.20)
+            ]
+        }
     }
 
     static func brandSoftFill(_ brand: Color) -> Color {
