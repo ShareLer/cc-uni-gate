@@ -8,17 +8,10 @@ Uni Gate 是一个 macOS 菜单栏应用，用来接管 `cc-switch` 的本地路
 
 ## 示例截图
 
-<img src="assets/images/UniGate-1.png" alt="Uni Gate 示例截图 1" width="360">
-
-<img src="assets/images/UniGate-2.png" alt="Uni Gate 示例截图 2" width="360">
-
-<img src="assets/images/UniGate-4.png" alt="Uni Gate 示例截图 4" width="360">
-
-<img src="assets/images/UniGate-5.png" alt="Uni Gate 示例截图 5" width="360">
-
-<img src="assets/images/UniGate-6.png" alt="Uni Gate 示例截图 6" width="360">
-
-<img src="assets/images/UniGate-7.png" alt="Uni Gate 示例截图 7" width="360">
+| | | |
+|---|---|---|
+| <img src="assets/images/UniGate-1.png" alt="Uni Gate 示例截图 1" width="260"> | <img src="assets/images/UniGate-2.png" alt="Uni Gate 示例截图 2" width="260"> | <img src="assets/images/UniGate-4.png" alt="Uni Gate 示例截图 3" width="260"> |
+| <img src="assets/images/UniGate-5.png" alt="Uni Gate 示例截图 4" width="260"> | <img src="assets/images/UniGate-6.png" alt="Uni Gate 示例截图 5" width="260"> | <img src="assets/images/UniGate-7.png" alt="Uni Gate 示例截图 6" width="260"> |
 
 ## 核心功能
 
