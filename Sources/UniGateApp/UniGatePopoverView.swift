@@ -963,13 +963,7 @@ struct UniGatePopoverRootView: View {
 
     private func providerDetail(_ candidate: ModelCandidate) -> String {
         var parts: [String] = []
-        if candidate.appType == "claude-desktop" {
-            if candidate.displayModelName != candidate.upstreamModelDisplayName {
-                parts.append("显示：\(candidate.displayModelName)")
-            }
-            parts.append("请求：\(candidate.upstreamModelDisplayName)")
-            parts.append("路由：\(candidate.logicalModel)")
-        } else if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
+        if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
             parts.append(candidate.upstreamModelDisplayName)
         }
         parts.append(candidate.requiresTransform ? "需要转换" : candidate.apiFormat.rawValue)
@@ -1456,18 +1450,21 @@ private struct InlineCustomModelEditorView: View {
             ProviderDisplay.appTypeLabel($0)
                 .localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
         }
-        let targetIDs = Set(existing?.targets.map(CustomModelState.targetID) ?? [])
+        let existingTargets = existing?.targets ?? []
+        let targetIDs = Set(existingTargets.map(CustomModelState.targetID))
         let initial = existing?.appType
             ?? initialAppType.flatMap { appTypesWithExisting.contains($0) ? $0 : nil }
             ?? appTypesWithExisting.first
             ?? ""
-        let initialTargetID = existing?.selectedTarget.map(CustomModelState.targetID) ?? targetIDs.sorted().first ?? ""
+        let initialTargetID = existing?.selectedTarget.map(CustomModelState.targetID)
+            ?? targetIDs.sorted().first
+            ?? ""
 
         self.existing = existing
         self.candidates = sortedCandidates
         self.appTypes = appTypesWithExisting
         self.existingTargetsByKey = Dictionary(
-            uniqueKeysWithValues: (existing?.targets ?? []).map { (CustomModelState.targetID(for: $0), $0) }
+            uniqueKeysWithValues: existingTargets.map { (CustomModelState.targetID(for: $0), $0) }
         )
         self.onSave = onSave
         self.onCancel = onCancel
@@ -1738,8 +1735,13 @@ private struct InlineCustomModelEditorView: View {
             return
         }
 
-        let targets = selectedCandidates.map {
-            existingTargetsByKey[targetID($0)] ?? CustomModelTarget(routeKey: $0.routeKey, providerRef: $0.providerRef)
+        let targets = selectedCandidates.map { candidate in
+            let existing = existingTargetsByKey[targetID(candidate)]
+            return CustomModelTarget(
+                id: existing?.id ?? UUID(),
+                routeKey: candidate.routeKey,
+                providerRef: candidate.providerRef
+            )
         }
         let selectedTargetID = zip(selectedCandidates, targets).first {
             targetID($0.0) == currentTargetID
@@ -1763,9 +1765,7 @@ private struct InlineCustomModelEditorView: View {
     }
 
     private func targetDetail(_ candidate: ModelCandidate) -> String {
-        var parts = candidate.appType == "claude-desktop"
-            ? ["请求：\(candidate.upstreamModelDisplayName)", "路由：\(candidate.logicalModel)"]
-            : [candidate.upstreamModelDisplayName]
+        var parts = [candidate.upstreamModelDisplayName]
         if candidate.requiresTransform {
             parts.append("需要转换")
         } else {

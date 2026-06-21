@@ -111,21 +111,32 @@ public enum ModelRouteVisibility {
         customModels: CustomModelState,
         uniGateModelScope: UniGateModelScope
     ) -> [ModelRouteKey] {
-        let candidateModels = Set(
-            candidates
-                .filter { $0.appType == "claude-desktop" }
-                .map(\.upstreamModelDisplayName)
-                .map(ModelNameNormalizer.normalized)
-        )
         let customModelNames = Set(
             customModels.models
                 .filter { $0.appType == "claude-desktop" }
                 .map(\.name)
                 .map(ModelNameNormalizer.normalized)
         )
-        return uniGateModelScope.models(for: "claude-desktop")
-            .filter { candidateModels.contains(ModelNameNormalizer.normalized($0)) }
-            .filter { !customModelNames.contains(ModelNameNormalizer.normalized($0)) }
-            .map { ModelRouteKey(appType: "claude-desktop", logicalModel: $0) }
+        return candidates
+            .filter { $0.appType == "claude-desktop" }
+            .filter { uniGateModelScope.contains($0) }
+            .map(\.routeKey)
+            .filter { !customModelNames.contains(ModelNameNormalizer.normalized($0.logicalModel)) }
+            .uniqueRouteKeys()
+            .sorted { lhs, rhs in
+                lhs.logicalModel.localizedStandardCompare(rhs.logicalModel) == .orderedAscending
+            }
+    }
+}
+
+private extension Array where Element == ModelRouteKey {
+    func uniqueRouteKeys() -> [ModelRouteKey] {
+        var seen = Set<ModelRouteKey>()
+        var result: [ModelRouteKey] = []
+        for routeKey in self where !seen.contains(routeKey) {
+            seen.insert(routeKey)
+            result.append(routeKey)
+        }
+        return result
     }
 }

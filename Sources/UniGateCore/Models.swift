@@ -251,16 +251,6 @@ public struct ModelCandidate: Identifiable, Sendable {
     }
 
     public var displayModelName: String {
-        guard appType == "claude-desktop" else {
-            return logicalModel
-        }
-        if let label = Self.trimmed(label), label != providerName {
-            return label
-        }
-        let upstream = upstreamModelDisplayName
-        if upstream != Self.stripOneMSuffix(logicalModel) {
-            return upstream
-        }
         return logicalModel
     }
 
@@ -317,14 +307,6 @@ public struct ModelCandidate: Identifiable, Sendable {
             return apiFormat != .anthropic
         }
         return requiresTransform
-    }
-
-    private static func trimmed(_ value: String?) -> String? {
-        guard let value else {
-            return nil
-        }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
     }
 
     public static func stripOneMSuffix(_ model: String) -> String {

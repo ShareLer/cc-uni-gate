@@ -147,45 +147,8 @@ public final class RouteStore: @unchecked Sendable {
                 continue
             }
 
-            if let match = normalizedClaudeMatch(routeKey: routeKey, route: route, catalog: catalog) {
-                merged.routes[match.routeKey.description] = ActiveRoute(
-                    appType: match.appType,
-                    logicalModel: match.logicalModel,
-                    providerRef: route.providerRef,
-                    updatedAt: route.updatedAt
-                )
-                continue
-            }
-
-            let legacyMatches = catalog.candidates.filter {
-                $0.logicalModel == rawKey && $0.providerRef == route.providerRef
-            }
-            for match in legacyMatches {
-                merged.routes[match.routeKey.description] = ActiveRoute(
-                    appType: match.appType,
-                    logicalModel: match.logicalModel,
-                    providerRef: route.providerRef,
-                    updatedAt: route.updatedAt
-                )
-            }
         }
         return merged
-    }
-
-    private func normalizedClaudeMatch(
-        routeKey: ModelRouteKey,
-        route: ActiveRoute,
-        catalog: ProviderCatalog
-    ) -> ModelCandidate? {
-        guard ModelRouteVisibility.isClaudeLikeApp(routeKey.appType) else {
-            return nil
-        }
-        let normalizedModel = ModelNameNormalizer.stripOneMSuffix(routeKey.logicalModel)
-        return catalog.candidates.first {
-            $0.appType == routeKey.appType
-                && $0.providerRef == route.providerRef
-                && ModelNameNormalizer.stripOneMSuffix($0.logicalModel).caseInsensitiveCompare(normalizedModel) == .orderedSame
-        }
     }
 }
 

@@ -246,23 +246,63 @@ public struct CcSwitchImporter: Sendable {
             return []
         }
 
-        return routes.keys.sorted().compactMap { logicalModel in
-            guard case let .object(route)? = routes[logicalModel] else {
+        struct DesktopRouteCandidate {
+            var logicalModel: String
+            var upstreamModel: String
+            var label: String?
+            var supportsLongContext: Bool
+        }
+
+        var order: [String] = []
+        var candidatesByModel: [String: DesktopRouteCandidate] = [:]
+
+        for routeID in routes.keys.sorted() {
+            guard case let .object(route)? = routes[routeID] else {
+                continue
+            }
+            guard let upstreamModel = string(route["model"]) else {
+                continue
+            }
+            let logicalModel = ModelNameNormalizer.stripOneMSuffix(upstreamModel)
+            let key = ModelNameNormalizer.normalized(logicalModel)
+            let label = string(route["labelOverride"]) ?? provider.name
+            let supportsLongContext = (bool(route["supports1m"]) ?? false)
+                || ModelNameNormalizer.hasOneMMarker(upstreamModel)
+
+            if var existing = candidatesByModel[key] {
+                if supportsLongContext && !existing.supportsLongContext {
+                    existing.upstreamModel = upstreamModel
+                    existing.label = label
+                }
+                existing.supportsLongContext = existing.supportsLongContext || supportsLongContext
+                candidatesByModel[key] = existing
+            } else {
+                order.append(key)
+                candidatesByModel[key] = DesktopRouteCandidate(
+                    logicalModel: logicalModel,
+                    upstreamModel: upstreamModel,
+                    label: label,
+                    supportsLongContext: supportsLongContext
+                )
+            }
+        }
+
+        return order.compactMap { key in
+            guard let candidate = candidatesByModel[key] else {
                 return nil
             }
-            let upstreamModel = string(route["model"]) ?? logicalModel
             return ModelCandidate(
-                logicalModel: logicalModel,
+                logicalModel: candidate.logicalModel,
                 providerRef: provider.ref,
                 providerName: provider.name,
                 appType: provider.appType,
                 clientProtocol: .anthropicMessages,
                 apiFormat: provider.apiFormat,
-                upstreamModel: upstreamModel,
+                upstreamModel: candidate.upstreamModel,
                 baseURL: provider.baseURL,
                 requiresTransform: provider.apiFormat != .anthropic,
-                label: string(route["labelOverride"]) ?? provider.name,
-                supportsLongContext: bool(route["supports1m"]) ?? false
+                label: candidate.label,
+                supportsLongContext: candidate.supportsLongContext
             )
         }
     }

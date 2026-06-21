@@ -88,7 +88,7 @@ struct ProviderModelDiscoveryTests {
             meta: [:]
         )
         let baseCandidate = ModelCandidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: "deepseek-v4-pro",
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
@@ -110,7 +110,7 @@ struct ProviderModelDiscoveryTests {
             upstreamModel: "deepseek-v4-pro[1M]",
             baseURL: provider.baseURL,
             requiresTransform: false,
-            label: "自定义：claude-sonnet-4-6",
+            label: "deepseek-v4-pro",
             supportsLongContext: true,
             upstreamProviderRef: provider.ref
         )

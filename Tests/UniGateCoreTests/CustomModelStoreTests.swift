@@ -154,8 +154,8 @@ struct CustomModelStoreTests {
             settings: ["auth": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
             meta: [:]
         )
-        let sonnetFlash = ModelCandidate(
-            logicalModel: "claude-sonnet-4-6",
+        let flash = ModelCandidate(
+            logicalModel: "deepseek-v4-flash",
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
@@ -167,34 +167,8 @@ struct CustomModelStoreTests {
             label: "DeepSeek V4 Flash",
             supportsLongContext: true
         )
-        let haikuFlash = ModelCandidate(
-            logicalModel: "claude-haiku-4-5",
-            providerRef: provider.ref,
-            providerName: provider.name,
-            appType: provider.appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
-            upstreamModel: "deepseek-v4-flash",
-            baseURL: provider.baseURL,
-            requiresTransform: false,
-            label: "DeepSeek V4 Flash",
-            supportsLongContext: false
-        )
-        let opusPro = ModelCandidate(
-            logicalModel: "claude-opus-4-8",
-            providerRef: provider.ref,
-            providerName: provider.name,
-            appType: provider.appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
-            upstreamModel: "deepseek-v4-pro",
-            baseURL: provider.baseURL,
-            requiresTransform: false,
-            label: "DeepSeek V4 Pro",
-            supportsLongContext: true
-        )
-        let fablePro = ModelCandidate(
-            logicalModel: "claude-fable-5",
+        let pro = ModelCandidate(
+            logicalModel: "deepseek-v4-pro",
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
@@ -208,61 +182,12 @@ struct CustomModelStoreTests {
         )
         let catalog = ProviderCatalog(
             providers: [provider],
-            candidates: [haikuFlash, sonnetFlash, fablePro, opusPro]
+            candidates: [flash, pro]
         )
 
         let baseCandidates = CustomModelState().baseCandidates(from: catalog)
 
         #expect(baseCandidates.map(\.upstreamModel) == ["deepseek-v4-flash", "deepseek-v4-pro"])
-        #expect(baseCandidates.map(\.logicalModel) == ["claude-sonnet-4-6", "claude-opus-4-8"])
-    }
-
-    @Test
-    func baseCandidatesPreserveExistingDuplicateClaudeDesktopTarget() throws {
-        let provider = ImportedProvider(
-            id: "desktop",
-            appType: "claude-desktop",
-            name: "DeepSeek Desktop",
-            category: nil,
-            sortIndex: 1,
-            isCurrent: false,
-            apiFormat: .anthropic,
-            baseURL: "https://api.deepseek.example",
-            hasSecret: true,
-            settings: ["auth": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
-            meta: [:]
-        )
-        let sonnet = ModelCandidate(
-            logicalModel: "claude-sonnet-4-6",
-            providerRef: provider.ref,
-            providerName: provider.name,
-            appType: provider.appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
-            upstreamModel: "deepseek-v4-flash",
-            baseURL: provider.baseURL,
-            requiresTransform: false,
-            label: "DeepSeek V4 Flash",
-            supportsLongContext: true
-        )
-        let haiku = ModelCandidate(
-            logicalModel: "claude-haiku-4-5",
-            providerRef: provider.ref,
-            providerName: provider.name,
-            appType: provider.appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
-            upstreamModel: "deepseek-v4-flash",
-            baseURL: provider.baseURL,
-            requiresTransform: false,
-            label: "DeepSeek V4 Flash",
-            supportsLongContext: false
-        )
-        let preservedTarget = CustomModelTarget(routeKey: haiku.routeKey, providerRef: provider.ref)
-        let catalog = ProviderCatalog(providers: [provider], candidates: [sonnet, haiku])
-
-        let baseCandidates = CustomModelState().baseCandidates(from: catalog, preserving: [preservedTarget])
-
-        #expect(baseCandidates.map(\.logicalModel) == ["claude-haiku-4-5"])
+        #expect(baseCandidates.map(\.logicalModel) == ["deepseek-v4-flash", "deepseek-v4-pro"])
     }
 }

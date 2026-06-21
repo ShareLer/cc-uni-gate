@@ -8,17 +8,17 @@ struct ModelRouteGroupingTests {
         let providerRef = ProviderRef(appType: "claude-desktop", id: "deepseek")
         let candidates = [
             candidate(
-                logicalModel: "claude-haiku-4-5",
+                logicalModel: "deepseek-v4-flash",
                 upstreamModel: "deepseek-v4-flash",
                 providerRef: providerRef
             ),
             candidate(
-                logicalModel: "claude-sonnet-4-6",
+                logicalModel: "deepseek-v4-flash-fast",
                 upstreamModel: "deepseek-v4-flash",
                 providerRef: providerRef
             ),
             candidate(
-                logicalModel: "claude-opus-4-8",
+                logicalModel: "deepseek-v4-pro",
                 upstreamModel: "deepseek-v4-pro",
                 providerRef: providerRef
             )
@@ -28,12 +28,12 @@ struct ModelRouteGroupingTests {
         let groups = ModelRouteGrouping.groups(routeKeys: routeKeys, candidates: candidates)
 
         #expect(groups.count == 2)
-        #expect(groups[0].routeKey.logicalModel == "claude-sonnet-4-6")
+        #expect(groups[0].routeKey.logicalModel == "deepseek-v4-flash")
         #expect(Set(groups[0].routeKeys.map(\.logicalModel)) == [
-            "claude-haiku-4-5",
-            "claude-sonnet-4-6"
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-fast"
         ])
-        #expect(groups[1].routeKey.logicalModel == "claude-opus-4-8")
+        #expect(groups[1].routeKey.logicalModel == "deepseek-v4-pro")
     }
 
     @Test
@@ -71,17 +71,17 @@ struct ModelRouteGroupingTests {
         let provider1 = ProviderRef(appType: "claude-desktop", id: "p1")
         let provider2 = ProviderRef(appType: "claude-desktop", id: "p2")
         let first = candidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: "auto",
             upstreamModel: "auto[1M]",
             providerRef: provider1
         )
         let second = candidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: "auto",
             upstreamModel: "auto",
             providerRef: provider2
         )
         let other = candidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: "auto",
             upstreamModel: "claude-opus-4-7",
             providerRef: provider2
         )
@@ -97,17 +97,17 @@ struct ModelRouteGroupingTests {
         let opusProvider = ProviderRef(appType: "claude-desktop", id: "opus")
         let candidates = [
             candidate(
-                logicalModel: "claude-sonnet-4-6",
+                logicalModel: "auto",
                 upstreamModel: "auto",
                 providerRef: autoProvider1
             ),
             candidate(
-                logicalModel: "claude-sonnet-4-6",
+                logicalModel: "auto",
                 upstreamModel: "auto[1M]",
                 providerRef: autoProvider2
             ),
             candidate(
-                logicalModel: "claude-sonnet-4-6",
+                logicalModel: "auto",
                 upstreamModel: "claude-opus-4-7",
                 providerRef: opusProvider
             )

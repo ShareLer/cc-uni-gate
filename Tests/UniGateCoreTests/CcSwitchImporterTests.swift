@@ -257,18 +257,20 @@ struct CcSwitchImporterTests {
         }
 
         let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
-        let sonnet = try #require(catalog.candidates.first(where: { $0.logicalModel == "claude-sonnet-4-6" }))
-        let opus = try #require(catalog.candidates.first(where: { $0.logicalModel == "claude-opus-4-8" }))
+        let flash = try #require(catalog.candidates.first(where: { $0.logicalModel == "deepseek-v4-flash" }))
+        let pro = try #require(catalog.candidates.first(where: { $0.logicalModel == "deepseek-v4-pro" }))
 
         #expect(catalog.routeKeys.map(\.description) == [
-            "claude-desktop:claude-opus-4-8",
-            "claude-desktop:claude-sonnet-4-6"
+            "claude-desktop:deepseek-v4-flash",
+            "claude-desktop:deepseek-v4-pro"
         ])
-        #expect(sonnet.upstreamModel == "deepseek-v4-flash")
-        #expect(sonnet.displayModelName == "DeepSeek V4 Flash")
-        #expect(sonnet.supportsLongContext)
-        #expect(opus.upstreamModel == "deepseek-v4-pro")
-        #expect(opus.displayModelName == "DeepSeek V4 Pro")
+        #expect(flash.upstreamModel == "deepseek-v4-flash")
+        #expect(flash.displayModelName == "deepseek-v4-flash")
+        #expect(flash.label == "DeepSeek V4 Flash")
+        #expect(flash.supportsLongContext)
+        #expect(pro.upstreamModel == "deepseek-v4-pro")
+        #expect(pro.displayModelName == "deepseek-v4-pro")
+        #expect(pro.label == "DeepSeek V4 Pro")
     }
 
     @Test
@@ -480,7 +482,7 @@ struct CcSwitchImporterTests {
 
     private func desktopCandidate(upstreamModel: String) -> ModelCandidate {
         ModelCandidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: ModelNameNormalizer.stripOneMSuffix(upstreamModel),
             providerRef: ProviderRef(appType: "claude-desktop", id: "desktop"),
             providerName: "Desktop",
             appType: "claude-desktop",

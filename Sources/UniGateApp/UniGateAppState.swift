@@ -133,18 +133,14 @@ final class UniGateAppState: ObservableObject {
         let candidates = scopedBaseCandidates()
         let routeKeys = visibleRouteKeys
         let visibleGroups = ModelRouteGrouping.groups(
-            routeKeys: routeKeys.filter { $0.appType != "claude-desktop" },
-            candidates: candidates
-        )
-        let desktopGroups = claudeDesktopModelGroups(
-            routeKeys: routeKeys.filter { $0.appType == "claude-desktop" },
+            routeKeys: routeKeys,
             candidates: candidates
         )
         let customGroups = customModels.models.map {
             let routeKey = ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
             return ModelRouteGroup(routeKey: routeKey, routeKeys: [routeKey])
         }
-        return visibleGroups + desktopGroups + customGroups
+        return visibleGroups + customGroups
     }
 
     var modelCountText: String {
@@ -177,13 +173,8 @@ final class UniGateAppState: ObservableObject {
     }
 
     func candidates(for routeGroup: ModelRouteGroup) -> [ModelCandidate] {
-        var candidates = routeGroup.routeKeys.flatMap { self.candidates(for: $0) }
+        let candidates = routeGroup.routeKeys.flatMap { self.candidates(for: $0) }
         let isCustomModel = customModel(for: routeGroup.routeKey) != nil
-        if isSyntheticClaudeDesktopGroup(routeGroup), !isCustomModel {
-            candidates = candidates.filter {
-                ModelNameNormalizer.matches($0.upstreamModelDisplayName, routeGroup.routeKey.logicalModel)
-            }
-        }
         return ModelRouteGrouping.displayCandidates(
             candidates,
             activeProviderRef: activeProviderRef(for: routeGroup),
@@ -213,7 +204,7 @@ final class UniGateAppState: ObservableObject {
     }
 
     func isActive(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
-        activeProviderRef(for: routeGroup) == candidate.providerRef
+        activeCandidate(for: routeGroup)?.providerRef == candidate.providerRef
     }
 
     func isExpanded(_ routeGroup: ModelRouteGroup) -> Bool {
@@ -248,12 +239,7 @@ final class UniGateAppState: ObservableObject {
         guard customModelAvailability(for: routeKey) == nil else {
             return routeKey.logicalModel
         }
-        guard routeKey.appType == "claude-desktop",
-              let candidate = activeCandidate(for: routeGroup) ?? candidates(for: routeGroup).first
-        else {
-            return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
-        }
-        return candidate.displayModelName
+        return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
     }
 
     func modelDetailText(for routeGroup: ModelRouteGroup) -> String {
@@ -267,12 +253,6 @@ final class UniGateAppState: ObservableObject {
             case .missingTarget:
                 return "自定义模型目标失效"
             }
-        }
-        if routeKey.appType == "claude-desktop" {
-            guard let candidate = activeCandidate(for: routeGroup) ?? candidates(for: routeGroup).first else {
-                return ProviderDisplay.appTypeLabel(routeKey.appType)
-            }
-            return "请求模型：\(candidate.upstreamModelDisplayName) · 路由：\(routeAliasSummary(for: routeGroup))"
         }
         guard let active = activeCandidate(for: routeGroup) else {
             return ProviderDisplay.appTypeLabel(routeKey.appType)
@@ -465,41 +445,6 @@ final class UniGateAppState: ObservableObject {
         ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
     }
 
-    private func claudeDesktopModelGroups(
-        routeKeys: [ModelRouteKey],
-        candidates: [ModelCandidate]
-    ) -> [ModelRouteGroup] {
-        var usedRouteKeys = Set<ModelRouteKey>()
-        return routeKeys.compactMap { modelKey in
-            let matchingRouteKeys = candidates
-                .filter {
-                    $0.appType == "claude-desktop"
-                        && ModelNameNormalizer.matches($0.upstreamModelDisplayName, modelKey.logicalModel)
-                }
-                .map(\.routeKey)
-                .uniqueRouteKeys()
-                .sorted { lhs, rhs in
-                    let lhsUsed = usedRouteKeys.contains(lhs)
-                    let rhsUsed = usedRouteKeys.contains(rhs)
-                    if lhsUsed != rhsUsed {
-                        return !lhsUsed
-                    }
-                    return ClaudeRouteRole.rank(for: lhs) < ClaudeRouteRole.rank(for: rhs)
-                }
-
-            guard let routeKey = matchingRouteKeys.first else {
-                return nil
-            }
-            usedRouteKeys.insert(routeKey)
-            return ModelRouteGroup(routeKey: modelKey, routeKeys: [routeKey])
-        }
-    }
-
-    private func isSyntheticClaudeDesktopGroup(_ routeGroup: ModelRouteGroup) -> Bool {
-        routeGroup.routeKey.appType == "claude-desktop"
-            && !routeGroup.routeKeys.contains(routeGroup.routeKey)
-    }
-
     private func activeProviderRef(for routeGroup: ModelRouteGroup) -> ProviderRef? {
         if let providerRef = routes.routes[routeGroup.routeKey.description]?.providerRef {
             return providerRef
@@ -521,47 +466,7 @@ final class UniGateAppState: ObservableObject {
     }
 
     private func upstreamDisplayName(_ candidate: ModelCandidate) -> String {
-        if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
-            return candidate.upstreamModelDisplayName
-        }
-        if let label = candidate.label, label != candidate.providerName {
-            return ModelCandidate.stripOneMSuffix(label)
-        }
         return candidate.upstreamModelDisplayName
     }
 
-    private func routeAliasSummary(for routeGroup: ModelRouteGroup) -> String {
-        routeGroup.routeKeys.map { routeKey in
-            guard routeKey.appType == "claude-desktop" else {
-                return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
-            }
-            let normalized = routeKey.logicalModel.lowercased()
-            if normalized.contains("sonnet") {
-                return "Sonnet"
-            }
-            if normalized.contains("opus") {
-                return "Opus"
-            }
-            if normalized.contains("fable") {
-                return "Fable"
-            }
-            if normalized.contains("haiku") {
-                return "Haiku"
-            }
-            return ModelCandidate.stripOneMSuffix(routeKey.logicalModel)
-        }
-        .joined(separator: " / ")
-    }
-}
-
-private extension Array where Element == ModelRouteKey {
-    func uniqueRouteKeys() -> [ModelRouteKey] {
-        var seen = Set<ModelRouteKey>()
-        var result: [ModelRouteKey] = []
-        for routeKey in self where !seen.contains(routeKey) {
-            seen.insert(routeKey)
-            result.append(routeKey)
-        }
-        return result
-    }
 }

@@ -315,7 +315,7 @@ struct ProxyResolverTests {
             meta: [:]
         )
         let candidate = ModelCandidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: "desktop-sonnet",
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
@@ -336,7 +336,7 @@ struct ProxyResolverTests {
             protocolKind: .anthropicMessages,
             appType: "claude-desktop",
             path: "/claude-desktop/v1/messages",
-            body: Data(#"{"model":"claude-sonnet-4-6","messages":[]}"#.utf8)
+            body: Data(#"{"model":"desktop-sonnet","messages":[]}"#.utf8)
         )
 
         #expect(resolved.upstreamURL.absoluteString == "https://desktop.example.com/v1/messages")
@@ -358,7 +358,7 @@ struct ProxyResolverTests {
             meta: [:]
         )
         let candidate = ModelCandidate(
-            logicalModel: "claude-sonnet-4-6",
+            logicalModel: "deepseek-v4-pro",
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
@@ -388,7 +388,7 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func resolvesClaudeDesktopUpstreamModelWhenActiveRoutePointsElsewhere() throws {
+    func rejectsClaudeDesktopRequestWhenRealModelRouteIsNotConfigured() throws {
         let dcc = ImportedProvider(
             id: "dcc",
             appType: "claude-desktop",
@@ -415,7 +415,7 @@ struct ProxyResolverTests {
             settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("deepseek-token")])],
             meta: [:]
         )
-        let routeKey = ModelRouteKey(appType: "claude-desktop", logicalModel: "claude-opus-4-8")
+        let routeKey = ModelRouteKey(appType: "claude-desktop", logicalModel: "auto-max")
         let stale = ModelCandidate(
             logicalModel: routeKey.logicalModel,
             providerRef: dcc.ref,
@@ -430,7 +430,7 @@ struct ProxyResolverTests {
             supportsLongContext: false
         )
         let target = ModelCandidate(
-            logicalModel: routeKey.logicalModel,
+            logicalModel: "deepseek-v4-flash",
             providerRef: deepseek.ref,
             providerName: deepseek.name,
             appType: routeKey.appType,
@@ -452,17 +452,16 @@ struct ProxyResolverTests {
             )
         ])
 
-        let resolved = try ProxyResolver.resolveRoute(
-            catalog: catalog,
-            routes: routes,
-            protocolKind: .anthropicMessages,
-            appType: "claude-desktop",
-            path: "/claude-desktop/v1/messages",
-            body: Data(#"{"model":"deepseek-v4-flash","messages":[]}"#.utf8)
-        )
-
-        #expect(resolved.providerName == "DeepSeek")
-        #expect(resolved.outboundModel == "deepseek-v4-flash")
+        #expect(throws: ProxyResolverError.self) {
+            try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .anthropicMessages,
+                appType: "claude-desktop",
+                path: "/claude-desktop/v1/messages",
+                body: Data(#"{"model":"deepseek-v4-flash","messages":[]}"#.utf8)
+            )
+        }
     }
 
     @Test
@@ -701,16 +700,16 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func fallsBackFableRoleToOpusRouteWhenFableRouteIsAbsent() throws {
+    func fallsBackFableRoleToOpusRouteWhenFableRouteIsAbsentForClaudeCode() throws {
         let provider = ImportedProvider(
             id: "p1",
-            appType: "claude-desktop",
-            name: "Desktop Provider",
+            appType: "claude",
+            name: "Claude Provider",
             category: nil,
             sortIndex: 1,
             isCurrent: false,
             apiFormat: .anthropic,
-            baseURL: "https://desktop.example.com",
+            baseURL: "https://anthropic.example.com",
             hasSecret: true,
             settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("desktop-token")])],
             meta: [:]
@@ -735,8 +734,8 @@ struct ProxyResolverTests {
             catalog: catalog,
             routes: routes,
             protocolKind: .anthropicMessages,
-            appType: "claude-desktop",
-            path: "/claude-desktop/v1/messages",
+            appType: "claude",
+            path: "/claude-code/v1/messages",
             body: Data(#"{"model":"claude-fable-5","messages":[]}"#.utf8)
         )
 

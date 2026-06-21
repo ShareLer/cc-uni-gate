@@ -106,7 +106,7 @@ public struct CustomModelState: Codable, Sendable {
                     upstreamModel: candidate.upstreamModel,
                     baseURL: candidate.baseURL,
                     requiresTransform: candidate.requiresTransform,
-                    label: "自定义：\(candidate.logicalModel)",
+                    label: candidate.logicalModel,
                     supportsLongContext: candidate.supportsLongContext,
                     upstreamProviderRef: candidate.providerRef
                 )
