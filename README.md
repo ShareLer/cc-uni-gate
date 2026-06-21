@@ -28,35 +28,6 @@ gpt-5.5
 - 某个供应商异常时，快速切到备用供应商。
 - 对比不同供应商的速度、稳定性和回答质量。
 
-### Claude Desktop 真实模型路由
-
-Claude Desktop 只识别 Claude 兼容模型入口。接入 Claude Desktop 时，需要在 `cc-switch` 的 Claude Desktop 供应商里开启“模型映射/模型路由”。每条映射包含三层含义：
-
-- 兼容路由名：`claude-sonnet-*`、`claude-opus-*` 等，供 Claude Desktop 通过校验。
-- 菜单显示名：`labelOverride`，写入 Claude Desktop profile，决定 Claude Desktop 菜单里看到的名称。
-- 实际请求模型：`model`，真实发往上游供应商的模型名。
-
-例如在 `cc-switch` 中配置：
-
-```text
-兼容路由名        菜单显示名          实际请求模型
-claude-sonnet-*  deepseek-v4-flash  deepseek-v4-flash
-claude-opus-*    deepseek-v4-pro    deepseek-v4-pro
-```
-
-UniGate 会读取这份映射里的 `model` 字段，并在自己的模型列表中以真实模型名展示和路由，例如：
-
-```text
-deepseek-v4-flash
-deepseek-v4-pro
-auto
-union-model
-```
-
-`claude-*` 只是 Claude Desktop 和 `cc-switch` 之间的兼容入口，不作为 UniGate 的主要模型名。切换 Claude Desktop 路由时，UniGate 只会在已配置的真实模型上切换，避免把一个真实模型误切到其它模型上。
-
-如果 Claude Desktop 供应商没有开启模型映射，UniGate 不会从 Claude Code 风格环境变量里猜测模型。`/claude-desktop/v1/models` 会尝试请求供应商的模型列表接口来补全客户端可见模型，但实际可切换路由仍以 `cc-switch` 的 Claude Desktop 模型映射为准。
-
 ### 自定义 Uni 模型
 
 自定义 Uni 模型用于把多个模型聚合成一个统一入口，也可以直接绑定全部已有模型。例如可以创建一个模型名：
@@ -86,53 +57,24 @@ uni
 - 想用一个统一模型名承载日常默认模型。
 - 想在不同模型之间快速试错，而不频繁修改客户端配置。
 
-## 工作方式
-
-整体调用链路是：
-
-```text
-Codex / Claude Code / Claude Desktop
-  -> UniGate 本地代理
-  -> 读取 cc-switch 数据库和 UniGate 本地路由
-  -> 实际供应商
-```
-
-UniGate 默认监听：
-
-```text
-http://127.0.0.1:17888
-```
-
-常用入口：
-
-```text
-Codex:          http://127.0.0.1:17888/codex
-Claude Code:    http://127.0.0.1:17888/claude-code
-Claude Desktop: http://127.0.0.1:17888/claude-desktop
-```
-
-UniGate 只读 `cc-switch.db`，不会改写供应商配置、密钥或 `is_current` 状态。模型路由、可见模型、自定义模型等 UniGate 自己的状态保存在本机应用目录里。
-
 ## 使用方式
 
-### 1. 启动 UniGate
+### 1. 下载并启动 Uni Gate
 
-开发环境可以直接运行：
+从 GitHub Releases 下载最新 macOS 包：
 
-```bash
-swift run UniGateApp
-```
+[https://github.com/ShareLer/cc-uni-gate/releases](https://github.com/ShareLer/cc-uni-gate/releases)
 
-构建、安装并启动 macOS 应用：
-
-```bash
-./scripts/build-install-run.sh
-```
-
-启动后菜单栏会显示 `UniGate` 和状态灯：
+下载 `CC-Uni-Gate-v*-macos.zip`，解压后运行：
 
 ```text
-UniGate ●
+CC Uni Gate.app
+```
+
+启动后菜单栏会显示 `Uni Gate` 和状态灯：
+
+```text
+Uni Gate ●
 ```
 
 状态含义：
@@ -173,6 +115,8 @@ http://127.0.0.1:17888/claude-desktop
 ```
 
 只有开启模型映射后，UniGate 才能从 `cc-switch` 读取 Claude Desktop 的真实请求模型并进行正确路由。
+
+注意：Claude Desktop 的模型映射里，`labelOverride` 是 Claude Desktop 菜单显示名，`model` 是真实发往上游供应商的模型名；`claude-*` 只是 `cc-switch` 为 Claude Desktop 保留的兼容路由名。UniGate 使用 `model` 作为自己的展示和切换对象。如果没有开启模型映射，UniGate 不会从 Claude Code 风格环境变量里猜测模型；`/claude-desktop/v1/models` 可以尝试请求供应商模型列表，但实际可切换路由仍以 `cc-switch` 的模型映射为准。
 
 ### 4. 配置可用模型
 
@@ -229,6 +173,33 @@ model = "uni"
 ```
 
 之后就可以在菜单栏里把 `uni` 切换到任意已绑定目标。
+
+## 工作方式
+
+整体调用链路是：
+
+```text
+Codex / Claude Code / Claude Desktop
+  -> UniGate 本地代理
+  -> 读取 cc-switch 数据库和 UniGate 本地路由
+  -> 实际供应商
+```
+
+UniGate 默认监听：
+
+```text
+http://127.0.0.1:17888
+```
+
+常用入口：
+
+```text
+Codex:          http://127.0.0.1:17888/codex
+Claude Code:    http://127.0.0.1:17888/claude-code
+Claude Desktop: http://127.0.0.1:17888/claude-desktop
+```
+
+UniGate 只读 `cc-switch.db`，不会改写供应商配置、密钥或 `is_current` 状态。模型路由、可见模型、自定义模型等 UniGate 自己的状态保存在本机应用目录里。
 
 ## 设置页面
 
@@ -330,6 +301,26 @@ POST /openai/v1/chat/completions
 GET  /anthropic/v1/models
 POST /anthropic/v1/messages
 POST /anthropic/v1/messages/count_tokens
+```
+
+## 开发者使用
+
+开发环境可以直接运行：
+
+```bash
+swift run UniGateApp
+```
+
+构建、安装并启动 macOS 应用：
+
+```bash
+./scripts/build-install-run.sh
+```
+
+运行测试：
+
+```bash
+swift test
 ```
 
 ## 当前限制
