@@ -1,8 +1,10 @@
-# CC Uni Gate
+# Uni Gate
 
-CC Uni Gate 是一个 macOS 菜单栏应用，用来接管 `cc-switch` 的本地路由能力，并在不修改 `cc-switch.db` 的前提下，为 Codex、Claude Code、Claude Desktop 等客户端提供模型级转发。
+Uni Gate 是一个 macOS 菜单栏应用，用来接管 `cc-switch` 的本地路由能力，并在不修改 `cc-switch.db` 的前提下，为 Codex、Claude Code、Claude Desktop 等客户端提供模型级转发。
 
 它读取 `cc-switch` 里已经配置好的供应商、密钥、模型目录和协议信息，然后在 UniGate 内维护“模型 -> 实际供应商”的路由状态。客户端只需要请求 UniGate，本地菜单栏里就可以实时切换每个模型背后的供应商。
+
+> 说明：当前安装包和 macOS app bundle 仍沿用 `CC Uni Gate.app` 命名；应用界面中显示为 `Uni Gate`。
 
 ## 核心功能
 
@@ -18,13 +20,42 @@ gpt-5.5
   ...
 ```
 
-在菜单栏点击 `UniGate` 后，可以直接切换到任意供应商，路由立即生效。Codex 或 Claude Code 不需要重启，也不需要重新写配置文件；后续请求会直接走新的上游供应商。
+在菜单栏点击 `Uni Gate` 后，可以直接切换到任意供应商，路由立即生效。Codex、Claude Code 或 Claude Desktop 不需要重启，也不需要重新写配置文件；后续请求会直接走新的上游供应商。
 
 这个能力适合这些场景：
 
 - 同一个模型有多个供应商，临时切到更快或更稳定的一个。
 - 某个供应商异常时，快速切到备用供应商。
 - 对比不同供应商的速度、稳定性和回答质量。
+
+### Claude Desktop 真实模型路由
+
+Claude Desktop 只识别 Claude 兼容模型入口。接入 Claude Desktop 时，需要在 `cc-switch` 的 Claude Desktop 供应商里开启“模型映射/模型路由”。每条映射包含三层含义：
+
+- 兼容路由名：`claude-sonnet-*`、`claude-opus-*` 等，供 Claude Desktop 通过校验。
+- 菜单显示名：`labelOverride`，写入 Claude Desktop profile，决定 Claude Desktop 菜单里看到的名称。
+- 实际请求模型：`model`，真实发往上游供应商的模型名。
+
+例如在 `cc-switch` 中配置：
+
+```text
+兼容路由名        菜单显示名          实际请求模型
+claude-sonnet-*  deepseek-v4-flash  deepseek-v4-flash
+claude-opus-*    deepseek-v4-pro    deepseek-v4-pro
+```
+
+UniGate 会读取这份映射里的 `model` 字段，并在自己的模型列表中以真实模型名展示和路由，例如：
+
+```text
+deepseek-v4-flash
+deepseek-v4-pro
+auto
+union-model
+```
+
+`claude-*` 只是 Claude Desktop 和 `cc-switch` 之间的兼容入口，不作为 UniGate 的主要模型名。切换 Claude Desktop 路由时，UniGate 只会在已配置的真实模型上切换，避免把一个真实模型误切到其它模型上。
+
+如果 Claude Desktop 供应商没有开启模型映射，UniGate 不会从 Claude Code 风格环境变量里猜测模型。`/claude-desktop/v1/models` 会尝试请求供应商的模型列表接口来补全客户端可见模型，但实际可切换路由仍以 `cc-switch` 的 Claude Desktop 模型映射为准。
 
 ### 自定义 Uni 模型
 
@@ -47,7 +78,7 @@ uni
 
 客户端始终只请求 `uni`，但你可以在 UniGate 菜单栏里把 `uni` 热切换到任意已绑定目标。这样就能实现“一个模型名，任意切换到其他模型或供应商”。
 
-如果希望 Codex 或 Claude Code 直接看到并请求这个自定义模型名，需要同时把 `uni` 加到 `cc-switch` 中 UniGate 自供应商的模型清单里。UniGate 会用这份清单控制对外暴露的模型范围。
+如果希望客户端经由 `cc-switch` 直接看到并请求这个自定义模型名，需要同时把 `uni` 加到 `cc-switch` 中 UniGate 自供应商的模型清单里。UniGate 会用这份清单控制基础模型的可见范围；自定义模型可以在 UniGate 中维护，未加入清单时在客户端侧可能不可见或不可选。
 
 这个能力适合这些场景：
 
@@ -135,11 +166,21 @@ Claude Code: http://127.0.0.1:17888/claude-code
 
 导入后，在 `cc-switch` 里选择 UniGate 作为当前供应商。这样客户端仍然从 `cc-switch` 获取配置，但请求会进入 UniGate，再由 UniGate 转发到实际供应商。
 
+Claude Desktop 需要额外在 `cc-switch` 的 Claude Desktop 供应商中开启模型映射/模型路由，并把请求地址指向：
+
+```text
+http://127.0.0.1:17888/claude-desktop
+```
+
+只有开启模型映射后，UniGate 才能从 `cc-switch` 读取 Claude Desktop 的真实请求模型并进行正确路由。
+
 ### 4. 配置可用模型
 
 打开 `设置 -> 模型`。
 
-UniGate 会读取 `cc-switch` 中 UniGate 自供应商配置的模型清单，只允许这些模型出现在菜单和客户端模型列表里。这样可以避免客户端看到无法通过 UniGate 路由的模型。
+UniGate 会读取 `cc-switch` 中 UniGate 自供应商配置的模型清单，用它限制基础模型的可见范围。这样可以避免客户端看到无法通过 UniGate 路由的模型。
+
+Claude Desktop 的基础模型来自 `cc-switch` Claude Desktop 模型映射中的真实请求模型，并会按真实模型名去重和排序。`[1M]` 这类后缀只作为内部能力标识参与判断，不会作为展示模型名。
 
 在模型页可以：
 
@@ -179,7 +220,7 @@ Codex
 
 保存后，`uni` 会和普通模型一起出现在模型列表和菜单栏中，并带有“自定义”标签。
 
-注意：`uni` 也需要存在于 `cc-switch` 的 UniGate 自供应商模型清单中，才会作为可用模型暴露给客户端。
+注意：如果客户端通过 `cc-switch` 获取模型列表，`uni` 也需要存在于 `cc-switch` 的 UniGate 自供应商模型清单中，才会作为可用模型暴露给客户端。
 
 客户端请求：
 
@@ -224,7 +265,7 @@ model = "uni"
 菜单栏顶部会显示：
 
 ```text
-CC Uni Gate
+Uni Gate
 供应商数量，模型数量
 代理端口: 17888 | 运行中
 Codex：12 req
@@ -250,6 +291,8 @@ custom-models.json  自定义 Uni 模型
 logs/unigate.log    运行日志
 ```
 
+UniGate 会监听 `cc-switch.db` 所在目录，并比较主库、`-wal`、`-shm` 文件变化。检测到数据库变化后，会经过短暂 debounce 自动重新加载供应商、模型和路由候选；也可以在界面中手动点击 `reload` 或调用管理接口重新加载。
+
 ## 管理接口
 
 UniGate 暴露少量本地管理接口：
@@ -264,11 +307,14 @@ POST /__manager/routes
 常用代理接口：
 
 ```text
+GET  /codex/v1/models
 POST /codex/v1/responses
 POST /codex/v1/responses/compact
 POST /codex/v1/chat/completions
+GET  /claude-code/v1/models
 POST /claude-code/v1/messages
 POST /claude-code/v1/messages/count_tokens
+GET  /claude-desktop/v1/models
 POST /claude-desktop/v1/messages
 POST /claude-desktop/v1/messages/count_tokens
 ```
@@ -276,9 +322,12 @@ POST /claude-desktop/v1/messages/count_tokens
 兼容入口：
 
 ```text
+GET  /models
+GET  /openai/v1/models
 POST /openai/v1/responses
 POST /openai/v1/responses/compact
 POST /openai/v1/chat/completions
+GET  /anthropic/v1/models
 POST /anthropic/v1/messages
 POST /anthropic/v1/messages/count_tokens
 ```
@@ -289,3 +338,4 @@ POST /anthropic/v1/messages/count_tokens
 - UniGate 支持同协议透传，以及 Codex Responses 到 OpenAI Chat 的非流式文本转换。
 - 如果某条路由需要暂不支持的协议转换，UniGate 会直接返回明确错误，而不是静默转发到错误端点。
 - UniGate 不管理供应商密钥，只读取 `cc-switch` 已有配置。
+- Claude Desktop 需要依赖 `cc-switch` 的模型映射/模型路由来得到真实请求模型；UniGate 不会猜测或兼容旧的 Claude Desktop 环境变量 fallback。
