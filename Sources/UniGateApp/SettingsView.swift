@@ -56,8 +56,11 @@ final class SettingsViewModel: ObservableObject {
         return nil
     }
 
-    func applyGeneralSettings() -> Bool {
-        guard let nextPreferences = currentPreferences(brandColor: brandColor) else {
+    func applyGeneralSettings(commitDatabasePath: Bool = true) -> Bool {
+        guard let nextPreferences = currentPreferences(
+            brandColor: brandColor,
+            commitDatabasePath: commitDatabasePath
+        ) else {
             return false
         }
         guard hasGeneralSettingsChange(nextPreferences) else {
@@ -68,7 +71,10 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func applyBrandColor(_ preset: BrandColorPreset) {
-        guard let nextPreferences = currentPreferences(brandColor: preset) else {
+        guard let nextPreferences = currentPreferences(
+            brandColor: preset,
+            commitDatabasePath: false
+        ) else {
             NSSound.beep()
             return
         }
@@ -114,7 +120,10 @@ final class SettingsViewModel: ObservableObject {
         return "http://127.0.0.1:\(port)\(path)"
     }
 
-    private func currentPreferences(brandColor: BrandColorPreset) -> AppPreferences? {
+    private func currentPreferences(
+        brandColor: BrandColorPreset,
+        commitDatabasePath: Bool
+    ) -> AppPreferences? {
         guard generalSettingsValidationText == nil,
               let port = UInt16(portText.trimmingCharacters(in: .whitespacesAndNewlines)),
               port > 0
@@ -125,7 +134,9 @@ final class SettingsViewModel: ObservableObject {
             visibleModels: preferences.visibleModels,
             protocolOverrides: preferences.protocolOverrides,
             port: port,
-            ccSwitchDBPath: ccSwitchDBPathPreferenceValue(),
+            ccSwitchDBPath: commitDatabasePath
+                ? ccSwitchDBPathPreferenceValue()
+                : preferences.ccSwitchDBPath,
             brandColor: brandColor
         )
     }

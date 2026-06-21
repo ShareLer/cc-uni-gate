@@ -74,7 +74,7 @@ public struct CcSwitchImporter: Sendable {
             isCurrent: row.isCurrent,
             apiFormat: inferApiFormat(appType: row.appType, settings: settings, meta: meta),
             baseURL: extractBaseURL(appType: row.appType, settings: settings),
-            hasSecret: hasSecret(appType: row.appType, settings: settings),
+            hasSecret: ProviderCredentials.hasSecret(appType: row.appType, settings: settings),
             settings: settings,
             meta: meta
         )
@@ -356,28 +356,6 @@ public struct CcSwitchImporter: Sendable {
 
         return JSONValueParser.string(settings, ["base_url"])
             ?? JSONValueParser.string(settings, ["baseURL"])
-    }
-
-    private func hasSecret(appType: String, settings: [String: SendableValue]) -> Bool {
-        let paths: [[String]]
-        switch appType {
-        case "codex":
-            paths = [["auth", "OPENAI_API_KEY"], ["env", "OPENAI_API_KEY"]]
-        case "claude", "claude-desktop":
-            paths = [
-                ["env", "ANTHROPIC_AUTH_TOKEN"],
-                ["env", "ANTHROPIC_API_KEY"],
-                ["env", "OPENAI_API_KEY"],
-                ["apiKey"],
-                ["api_key"]
-            ]
-        case "gemini":
-            paths = [["env", "GEMINI_API_KEY"], ["env", "GOOGLE_API_KEY"]]
-        default:
-            paths = [["api_key"]]
-        }
-
-        return paths.contains { JSONValueParser.string(settings, $0) != nil }
     }
 
     private func string(_ value: SendableValue?) -> String? {

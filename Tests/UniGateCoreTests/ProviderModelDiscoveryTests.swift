@@ -29,6 +29,32 @@ struct ProviderModelDiscoveryTests {
     }
 
     @Test
+    func buildsModelFetchPlanWithBearerAuthForAnthropicApiKey() throws {
+        let provider = ImportedProvider(
+            id: "desktop",
+            appType: "claude-desktop",
+            name: "Desktop Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://api.example.com/anthropic",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_API_KEY": .string("claude-key")])],
+            meta: [:]
+        )
+
+        let plan = try #require(ProviderModelDiscovery.fetchPlan(for: provider))
+
+        #expect(plan.headers == ["authorization": "Bearer claude-key"])
+        #expect(plan.urls.map(\.absoluteString) == [
+            "https://api.example.com/anthropic/v1/models",
+            "https://api.example.com/v1/models",
+            "https://api.example.com/models"
+        ])
+    }
+
+    @Test
     func parsesModelIDsFromOpenAICompatibleResponses() {
         let data = Data("""
         {

@@ -120,7 +120,7 @@ struct UniGatePopoverRootView: View {
             .frame(width: 34, height: 34)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("CC Uni Gate")
+                Text("Uni Gate")
                     .font(.headline)
                     .lineLimit(1)
                 Text("模型路由控制台")
@@ -1125,8 +1125,10 @@ private struct InlineSettingsPanel: View {
         .onChange(of: model.portText) { _, _ in
             scheduleApply()
         }
-        .onChange(of: model.ccSwitchDBPathText) { _, _ in
-            scheduleApply()
+        .onChange(of: focusedField) { oldValue, newValue in
+            if oldValue == .databasePath, newValue != .databasePath {
+                applyNow()
+            }
         }
         .onDisappear {
             applyTask?.cancel()
@@ -1400,7 +1402,7 @@ private struct InlineSettingsPanel: View {
             guard !Task.isCancelled else {
                 return
             }
-            _ = model.applyGeneralSettings()
+            _ = model.applyGeneralSettings(commitDatabasePath: false)
         }
     }
 

@@ -30,7 +30,7 @@ public enum ProviderModelDiscovery {
     public static func fetchPlan(for provider: ImportedProvider) -> ProviderModelFetchPlan? {
         guard
             let baseURL = provider.baseURL,
-            let secret = secret(for: provider)
+            let headers = ProviderCredentials.modelFetchHeaders(for: provider)
         else {
             return nil
         }
@@ -45,7 +45,7 @@ public enum ProviderModelDiscovery {
         return ProviderModelFetchPlan(
             providerRef: provider.ref,
             urls: urls,
-            headers: modelFetchHeaders(secret: secret),
+            headers: headers,
             userAgent: JSONValueParser.string(provider.meta, ["customUserAgent"])
         )
     }
@@ -136,41 +136,6 @@ public enum ProviderModelDiscovery {
 
     public static func mergedModelIDs(_ ids: [String]) -> [String] {
         Array(Set(ids.compactMap(trimmed))).sorted()
-    }
-
-    private static func modelFetchHeaders(secret: (field: String, value: String)) -> [String: String] {
-        var headers = ["authorization": "Bearer \(secret.value)"]
-        if secret.field.hasSuffix("ANTHROPIC_API_KEY") {
-            headers["x-api-key"] = secret.value
-        }
-        return headers
-    }
-
-    private static func secret(for provider: ImportedProvider) -> (field: String, value: String)? {
-        let paths: [[String]]
-        switch provider.appType {
-        case "codex":
-            paths = [["auth", "OPENAI_API_KEY"], ["env", "OPENAI_API_KEY"]]
-        case "claude", "claude-desktop":
-            paths = [
-                ["env", "ANTHROPIC_AUTH_TOKEN"],
-                ["env", "ANTHROPIC_API_KEY"],
-                ["env", "OPENAI_API_KEY"],
-                ["apiKey"],
-                ["api_key"]
-            ]
-        case "gemini":
-            paths = [["env", "GEMINI_API_KEY"], ["env", "GOOGLE_API_KEY"]]
-        default:
-            paths = [["api_key"]]
-        }
-
-        for path in paths {
-            if let value = JSONValueParser.string(provider.settings, path) {
-                return (path.joined(separator: "."), value)
-            }
-        }
-        return nil
     }
 
     private static func modelsURLOverride(for provider: ImportedProvider) -> String? {

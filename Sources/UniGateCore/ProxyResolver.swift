@@ -119,7 +119,7 @@ public enum ProxyResolver {
             providerName: provider.name,
             outboundModel: ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel),
             upstreamURL: upstreamURL,
-            headers: buildAuthHeaders(provider),
+            headers: ProviderCredentials.proxyAuthHeaders(for: provider),
             body: outboundData,
             responseTransform: responseTransform
         )
@@ -362,53 +362,6 @@ public enum ProxyResolver {
             return String(path.dropFirst(prefix.count))
         }
         return path
-    }
-
-    private static func buildAuthHeaders(_ provider: ImportedProvider) -> [String: String] {
-        guard let secret = secret(for: provider) else {
-            return [:]
-        }
-
-        if provider.appType == "codex" {
-            return ["authorization": "Bearer \(secret.value)"]
-        }
-
-        if secret.field.hasSuffix("ANTHROPIC_API_KEY") {
-            return ["x-api-key": secret.value]
-        }
-
-        if provider.appType == "claude" || provider.appType == "claude-desktop" {
-            return ["authorization": "Bearer \(secret.value)"]
-        }
-
-        return ["authorization": "Bearer \(secret.value)"]
-    }
-
-    private static func secret(for provider: ImportedProvider) -> (field: String, value: String)? {
-        let paths: [[String]]
-        switch provider.appType {
-        case "codex":
-            paths = [["auth", "OPENAI_API_KEY"], ["env", "OPENAI_API_KEY"]]
-        case "claude", "claude-desktop":
-            paths = [
-                ["env", "ANTHROPIC_AUTH_TOKEN"],
-                ["env", "ANTHROPIC_API_KEY"],
-                ["env", "OPENAI_API_KEY"],
-                ["apiKey"],
-                ["api_key"]
-            ]
-        case "gemini":
-            paths = [["env", "GEMINI_API_KEY"], ["env", "GOOGLE_API_KEY"]]
-        default:
-            paths = [["api_key"]]
-        }
-
-        for path in paths {
-            if let value = JSONValueParser.string(provider.settings, path) {
-                return (path.joined(separator: "."), value)
-            }
-        }
-        return nil
     }
 
     private static func isOriginOnlyURL(_ value: String) -> Bool {
