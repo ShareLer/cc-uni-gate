@@ -56,9 +56,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             publishState()
         } catch {
             if let recordEventMessage {
-                recordEvent(.error, "\(recordEventMessage)失败：\(error.localizedDescription)")
+                recordEvent(.error, formattedIssueMessage(
+                    appName: "Uni Gate",
+                    group: "配置异常",
+                    detail: "\(recordEventMessage)失败：\(error.localizedDescription)"
+                ))
             }
-            publishError(error)
+            publishError(error, notify: recordEventMessage == nil)
         }
         syncCcSwitchDBWatcher()
     }
@@ -79,9 +83,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateProxyStatus(
                 .failed(error.localizedDescription),
                 eventLevel: .error,
-                eventMessage: "代理启动失败：\(error.localizedDescription)"
+                eventMessage: formattedIssueMessage(
+                    appName: "Uni Gate",
+                    group: "代理异常",
+                    detail: "代理启动失败：\(error.localizedDescription)"
+                )
             )
-            showError(error)
         }
     }
 
@@ -95,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             publishState()
         } catch {
-            showError(error)
+            showError(error.localizedDescription)
         }
     }
 
@@ -135,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 appState.showToast("已保存")
             }
         } catch {
-            showError(error)
+            showError(error.localizedDescription)
         }
     }
 
@@ -151,12 +158,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    private func showError(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "CC Uni Gate"
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .warning
-        alert.runModal()
+    private func showError(_ message: String) {
+        if statusItemController.isPopoverShown {
+            appState.showToast(message)
+        } else if preferences.bubbleNotificationsEnabled {
+            statusItemController.showNotice(
+                message: formattedIssueMessage(appName: "Uni Gate", group: "异常", detail: message),
+                accentColor: .systemRed
+            )
+        }
+    }
+
+    private func showBackgroundError(_ message: String) {
+        guard preferences.bubbleNotificationsEnabled, !statusItemController.isPopoverShown else {
+            return
+        }
+        statusItemController.showNotice(
+            message: message,
+            accentColor: .systemRed
+        )
     }
 
     private func defaultCcSwitchDBPath() -> String {
@@ -227,6 +247,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         logger.log(level, message)
         appState.updateRecentEvents(recentEvents)
+        if level == .error {
+            showBackgroundError(message)
+        }
+    }
+
+    private func formattedIssueMessage(appName: String, group: String, detail: String) -> String {
+        "\(appName) · \(group)：\(detail)"
     }
 
     private func configureAppStateActions() {
@@ -265,9 +292,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.updateForwardedRequestCounts(forwardedRequestCounts)
     }
 
-    private func publishError(_ error: Error) {
+    private func publishError(_ error: Error, notify: Bool = true) {
         catalogLoadError = "加载 cc-switch DB 失败：\(error.localizedDescription)"
         publishState()
+        guard notify else {
+            return
+        }
+        showBackgroundError(formattedIssueMessage(
+            appName: "Uni Gate",
+            group: "配置异常",
+            detail: catalogLoadError ?? error.localizedDescription
+        ))
     }
 
     private func updateProxyStatus(
@@ -317,7 +352,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updateProxyStatus(
                 .failed("健康检查失败：\(message)"),
                 eventLevel: .error,
-                eventMessage: "代理健康检查失败：\(message)"
+                eventMessage: formattedIssueMessage(
+                    appName: "Uni Gate",
+                    group: "代理异常",
+                    detail: "代理健康检查失败：\(message)"
+                )
             )
         }
     }
@@ -380,7 +419,24 @@ extension AppDelegate: LocalProxyRuntime {
         updateProxyStatus(
             .providerIssue(message),
             eventLevel: .error,
-            eventMessage: "供应商请求异常：\(message)"
+            eventMessage: formattedIssueMessage(
+                appName: "Uni Gate",
+                group: "供应商异常",
+                detail: message
+            )
+        )
+    }
+
+    func proxyProviderDidFail(appType: String, message: String) {
+        guard proxyStatus.canShowProviderIssue else {
+            return
+        }
+        let appName = ProviderDisplay.appTypeLabel(appType)
+        let eventMessage = formattedIssueMessage(appName: appName, group: "供应商异常", detail: message)
+        updateProxyStatus(
+            .providerIssue(message),
+            eventLevel: .error,
+            eventMessage: eventMessage
         )
     }
 
@@ -396,7 +452,11 @@ extension AppDelegate: LocalProxyRuntime {
             updateProxyStatus(
                 .failed("监听等待：\(message)"),
                 eventLevel: .error,
-                eventMessage: "代理监听等待：\(message)"
+                eventMessage: formattedIssueMessage(
+                    appName: "Uni Gate",
+                    group: "代理异常",
+                    detail: "代理监听等待：\(message)"
+                )
             )
         case .ready:
             updateProxyStatus(
@@ -408,13 +468,21 @@ extension AppDelegate: LocalProxyRuntime {
             updateProxyStatus(
                 .failed("监听失败：\(message)"),
                 eventLevel: .error,
-                eventMessage: "代理监听失败：\(message)"
+                eventMessage: formattedIssueMessage(
+                    appName: "Uni Gate",
+                    group: "代理异常",
+                    detail: "代理监听失败：\(message)"
+                )
             )
         case .cancelled:
             updateProxyStatus(
                 .failed("监听已停止"),
                 eventLevel: .error,
-                eventMessage: "代理监听已停止"
+                eventMessage: formattedIssueMessage(
+                    appName: "Uni Gate",
+                    group: "代理异常",
+                    detail: "代理监听已停止"
+                )
             )
         }
     }

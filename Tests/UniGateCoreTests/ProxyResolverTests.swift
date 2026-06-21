@@ -31,6 +31,8 @@ struct ProxyResolverTests {
         )
 
         #expect(resolved.upstreamURL.absoluteString == "https://api.example.com/v1/responses")
+        #expect(resolved.requestedModel == "gpt-5.5")
+        #expect(resolved.routeKey.description == "codex:gpt-5.5")
         #expect(resolved.headers["authorization"] == "Bearer key-1")
         #expect(resolved.outboundModel == "gpt-5.5")
         let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]

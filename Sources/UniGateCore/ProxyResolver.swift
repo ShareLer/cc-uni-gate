@@ -1,6 +1,8 @@
 import Foundation
 
 public struct ResolvedRoute: Sendable {
+    public let requestedModel: String
+    public let routeKey: ModelRouteKey
     public let candidate: ModelCandidate
     public let providerName: String
     public let outboundModel: String
@@ -108,6 +110,8 @@ public enum ProxyResolver {
         )
 
         return ResolvedRoute(
+            requestedModel: requestedModel,
+            routeKey: routeKey,
             candidate: candidate,
             providerName: provider.name,
             outboundModel: ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel),

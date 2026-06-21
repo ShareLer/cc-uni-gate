@@ -10,6 +10,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var portText: String
     @Published var ccSwitchDBPathText: String
     @Published var brandColor: BrandColorPreset
+    @Published var bubbleNotificationsEnabled: Bool
     @Published var toast: String?
 
     private var uniGateModelScope: UniGateModelScope
@@ -30,6 +31,7 @@ final class SettingsViewModel: ObservableObject {
         self.portText = "\(preferences.normalizedPort)"
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
         self.brandColor = preferences.brandColor
+        self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
         self.onApply = onApply
     }
 
@@ -46,6 +48,7 @@ final class SettingsViewModel: ObservableObject {
         self.portText = "\(preferences.normalizedPort)"
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
         self.brandColor = preferences.brandColor
+        self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
     }
 
     var generalSettingsValidationText: String? {
@@ -137,7 +140,8 @@ final class SettingsViewModel: ObservableObject {
             ccSwitchDBPath: commitDatabasePath
                 ? ccSwitchDBPathPreferenceValue()
                 : preferences.ccSwitchDBPath,
-            brandColor: brandColor
+            brandColor: brandColor,
+            bubbleNotificationsEnabled: bubbleNotificationsEnabled
         )
     }
 
@@ -164,6 +168,7 @@ final class SettingsViewModel: ObservableObject {
         preferences.normalizedPort != nextPreferences.normalizedPort
             || normalizedPath(preferences.ccSwitchDBPath) != normalizedPath(nextPreferences.ccSwitchDBPath)
             || preferences.brandColor != nextPreferences.brandColor
+            || preferences.bubbleNotificationsEnabled != nextPreferences.bubbleNotificationsEnabled
     }
 
     private func normalizedPath(_ path: String?) -> String {

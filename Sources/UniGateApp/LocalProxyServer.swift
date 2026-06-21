@@ -11,6 +11,7 @@ protocol LocalProxyRuntime: AnyObject {
     func recordForwardedRequest(appType: String)
     func proxyProviderDidSucceed()
     func proxyProviderDidFail(_ message: String)
+    func proxyProviderDidFail(appType: String, message: String)
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID)
 }
 
@@ -203,13 +204,17 @@ final class LocalProxyServer: @unchecked Sendable {
     }
 
     private func proxy(_ request: HTTPRequest, on connection: NWConnection) async {
+        var requestAppType: String?
+        var providerFailureAppType: String?
         var providerFailureContext: String?
+        var resolvedContext: String?
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
             guard let route = proxyRoute(for: request.path) else {
                 send(.json(status: 404, body: ["error": "Not found"]), on: connection)
                 return
             }
+            requestAppType = route.appType
             let resolved = try ProxyResolver.resolveRoute(
                 catalog: snapshot.catalog,
                 routes: snapshot.routes,
@@ -218,7 +223,9 @@ final class LocalProxyServer: @unchecked Sendable {
                 path: request.path,
                 body: request.body
             )
-            providerFailureContext = "\(ProviderDisplay.appTypeLabel(resolved.candidate.appType)) · \(resolved.providerName)"
+            providerFailureAppType = resolved.candidate.appType
+            providerFailureContext = resolved.providerName
+            resolvedContext = Self.resolvedContext(for: resolved)
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
             }
@@ -241,7 +248,10 @@ final class LocalProxyServer: @unchecked Sendable {
             let headers = forwardResponseHeaders(http)
             await MainActor.run {
                 if Self.isProviderFailureStatus(status) {
-                    runtime.proxyProviderDidFail("\(providerFailureContext ?? resolved.providerName) 返回 HTTP \(status)")
+                    runtime.proxyProviderDidFail(
+                        appType: resolved.candidate.appType,
+                        message: "\(providerFailureContext ?? resolved.providerName) 返回 HTTP \(status)"
+                    )
                 } else if status >= 200 && status < 400 {
                     runtime.proxyProviderDidSucceed()
                 }
@@ -249,7 +259,7 @@ final class LocalProxyServer: @unchecked Sendable {
             await MainActor.run {
                 runtime.recordProxyEvent(
                     level: .info,
-                    message: "\(request.path) -> \(resolved.providerName) · \(ProviderDisplay.appTypeLabel(resolved.candidate.appType)) \(status)"
+                    message: "\(request.path) \(Self.resolvedContext(for: resolved)) \(status)"
                 )
             }
             if resolved.responseTransform != .none {
@@ -282,24 +292,76 @@ final class LocalProxyServer: @unchecked Sendable {
             connection.cancel()
         } catch let error as ProxyResolverError {
             await MainActor.run {
-                runtime.recordProxyEvent(level: .error, message: "\(request.path) failed: \(error.localizedDescription)")
+                runtime.recordProxyEvent(
+                    level: .error,
+                    message: Self.issueMessage(
+                        appType: requestAppType,
+                        group: "代理异常",
+                        detail: "\(request.path) model=\(Self.requestedModel(in: request.body) ?? "<missing>") failed: \(error.localizedDescription)"
+                    )
+                )
             }
             send(.json(status: 400, body: ["error": error.localizedDescription]), on: connection)
         } catch {
             await MainActor.run {
-                if let providerFailureContext {
-                    runtime.proxyProviderDidFail("\(providerFailureContext)：\(error.localizedDescription)")
+                if let providerFailureAppType, let providerFailureContext {
+                    runtime.proxyProviderDidFail(
+                        appType: providerFailureAppType,
+                        message: "\(providerFailureContext)：\(error.localizedDescription)"
+                    )
+                    if let resolvedContext {
+                        runtime.recordProxyEvent(
+                            level: .info,
+                            message: "\(request.path) \(resolvedContext) upstream error: \(error.localizedDescription)"
+                        )
+                    }
                 } else {
                     runtime.proxyProviderDidFail(error.localizedDescription)
+                    runtime.recordProxyEvent(
+                        level: .error,
+                        message: Self.issueMessage(
+                            appType: requestAppType,
+                            group: "代理异常",
+                            detail: "\(request.path) \(resolvedContext ?? "unresolved") upstream error: \(error.localizedDescription)"
+                        )
+                    )
                 }
-                runtime.recordProxyEvent(level: .error, message: "\(request.path) upstream error: \(error.localizedDescription)")
             }
             send(.json(status: 502, body: ["error": error.localizedDescription]), on: connection)
         }
     }
 
+    private static func resolvedContext(for resolved: ResolvedRoute) -> String {
+        [
+            "model=\(resolved.requestedModel)",
+            "routeKey=\(resolved.routeKey.description)",
+            "provider=\(resolved.providerName)",
+            "providerRef=\(resolved.candidate.providerRef.description)",
+            "upstreamProviderRef=\(resolved.candidate.upstreamProviderRef.description)",
+            "upstreamModel=\(resolved.outboundModel)",
+            "url=\(resolved.upstreamURL.absoluteString)"
+        ].joined(separator: " ")
+    }
+
+    private static func requestedModel(in body: Data) -> String? {
+        guard
+            let value = try? JSONSerialization.jsonObject(with: body),
+            let object = value as? [String: Any],
+            let model = object["model"] as? String
+        else {
+            return nil
+        }
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private static func isProviderFailureStatus(_ status: Int) -> Bool {
         status == 408 || status == 409 || status == 425 || status == 429 || status >= 500
+    }
+
+    private static func issueMessage(appType: String?, group: String, detail: String) -> String {
+        let appName = appType.map(ProviderDisplay.appTypeLabel) ?? "Uni Gate"
+        return "\(appName) · \(group)：\(detail)"
     }
 
     private func sendTransformedResponse(

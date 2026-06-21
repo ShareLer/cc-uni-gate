@@ -1094,9 +1094,9 @@ private struct InlineSettingsPanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    themeSettingsCard
                     generalSettingsCard
                     endpointCard
+                    themeSettingsCard
                 }
                 .padding(.trailing, 4)
             }
@@ -1118,6 +1118,9 @@ private struct InlineSettingsPanel: View {
         }
         .onChange(of: model.portText) { _, _ in
             scheduleApply()
+        }
+        .onChange(of: model.bubbleNotificationsEnabled) { _, _ in
+            _ = model.applyGeneralSettings(commitDatabasePath: false)
         }
         .onChange(of: focusedField) { oldValue, newValue in
             if oldValue == .databasePath, newValue != .databasePath {
@@ -1167,6 +1170,15 @@ private struct InlineSettingsPanel: View {
                         .background(fieldFill(isFocused: focusedField == .port), in: RoundedRectangle(cornerRadius: 6))
                         .overlay(fieldBorder(isFocused: focusedField == .port, cornerRadius: 6))
                         .onSubmit(applyNow)
+                }
+
+                Divider()
+                    .padding(.vertical, 10)
+
+                settingRow(title: "气泡通知", detail: "未打开面板时提示异常") {
+                    Toggle("", isOn: $model.bubbleNotificationsEnabled)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
                 }
 
                 Divider()

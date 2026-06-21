@@ -18,19 +18,22 @@ public struct AppPreferences: Codable, Sendable {
     public var port: UInt16
     public var ccSwitchDBPath: String?
     public var brandColor: BrandColorPreset
+    public var bubbleNotificationsEnabled: Bool
 
     public init(
         visibleModels: Set<String>? = nil,
         protocolOverrides: [String: ApiFormat] = [:],
         port: UInt16 = 17888,
         ccSwitchDBPath: String? = nil,
-        brandColor: BrandColorPreset = .ember
+        brandColor: BrandColorPreset = .ember,
+        bubbleNotificationsEnabled: Bool = true
     ) {
         self.visibleModels = visibleModels
         self.protocolOverrides = protocolOverrides
         self.port = port
         self.ccSwitchDBPath = ccSwitchDBPath
         self.brandColor = brandColor
+        self.bubbleNotificationsEnabled = bubbleNotificationsEnabled
     }
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +42,7 @@ public struct AppPreferences: Codable, Sendable {
         case port
         case ccSwitchDBPath
         case brandColor
+        case bubbleNotificationsEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,6 +53,10 @@ public struct AppPreferences: Codable, Sendable {
         self.ccSwitchDBPath = try container.decodeIfPresent(String.self, forKey: .ccSwitchDBPath)
         let brandColorValue = try container.decodeIfPresent(String.self, forKey: .brandColor)
         self.brandColor = brandColorValue.flatMap(BrandColorPreset.init(rawValue:)) ?? .ember
+        self.bubbleNotificationsEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .bubbleNotificationsEnabled
+        ) ?? true
     }
 
     public func visibleModelList(allModels: [String]) -> [String] {
