@@ -171,10 +171,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func exportConfiguration() {
+        prepareForSystemModal {
+            self.performExportConfiguration()
+        }
+    }
+
+    private func performExportConfiguration() {
         let panel = NSSavePanel()
         panel.title = "导出 Uni Gate 配置"
         panel.nameFieldStringValue = ConfigurationBackupStore.defaultExportURL().lastPathComponent
         panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
         panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Downloads", isDirectory: true)
         guard panel.runModal() == .OK, let url = panel.url else {
@@ -195,6 +202,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func importConfiguration() {
+        prepareForSystemModal {
+            self.performImportConfiguration()
+        }
+    }
+
+    private func performImportConfiguration() {
         let previousPort = currentProxyPort()
         let panel = NSOpenPanel()
         panel.title = "恢复 Uni Gate 配置"
@@ -231,6 +244,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func resetConfiguration() {
+        prepareForSystemModal {
+            self.performResetConfiguration()
+        }
+    }
+
+    private func performResetConfiguration() {
         guard confirmDestructiveAction(
             title: "重置 Uni Gate 配置？",
             message: "这会清空本地偏好、自定义模型和路由选择，并重新从 cc-switch 生成默认路由。"
@@ -254,6 +273,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState.showToast("配置已重置")
         } catch {
             showError("配置重置失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func prepareForSystemModal(_ action: @escaping @MainActor () -> Void) {
+        statusItemController.closePopover()
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            await Task.yield()
+            action()
         }
     }
 

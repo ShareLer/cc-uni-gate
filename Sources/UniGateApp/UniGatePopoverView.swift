@@ -272,7 +272,7 @@ struct UniGatePopoverRootView: View {
     }
 
     private var appSelector: some View {
-        let isActive = state.screen == .routes
+        let isActive = state.screen == .routes || state.screen == .modelDiscovery
         return ZStack {
             Capsule()
                 .fill(UGPopoverStyle.tabFill)
@@ -1222,6 +1222,7 @@ private struct InlineSettingsPanel: View {
                     generalSettingsCard
                     endpointCard
                     diagnosticsCard
+                    backupRestoreCard
                     themeSettingsCard
                 }
                 .padding(.trailing, 4)
@@ -1311,7 +1312,7 @@ private struct InlineSettingsPanel: View {
     private var diagnosticsCard: some View {
         settingsCard(spacing: 10) {
             HStack(spacing: 8) {
-                Text("诊断与配置")
+                Text("诊断中心")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 compactAction("复制诊断", systemImage: "doc.on.doc") {
@@ -1320,7 +1321,16 @@ private struct InlineSettingsPanel: View {
             }
 
             requestMetricsSummary
+        }
+    }
 
+    private var backupRestoreCard: some View {
+        settingsCard(spacing: 10) {
+            HStack(spacing: 8) {
+                Text("备份与恢复")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
             HStack(spacing: 8) {
                 compactAction("导出", systemImage: "square.and.arrow.up") {
                     state.exportConfiguration()

@@ -18,6 +18,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover?.isShown == true
     }
 
+    func closePopover() {
+        popover?.performClose(nil)
+    }
+
     func install(state: UniGateAppState) {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem = statusItem
