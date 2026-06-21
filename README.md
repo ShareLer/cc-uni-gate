@@ -110,7 +110,7 @@ Uni Gate ●
 
 ### 3. 把 UniGate 导入到 cc-switch
 
-在 `设置 -> 通用` 里，可以把 UniGate 的本地地址导入到 `cc-switch`。
+在 `设置 -> 通用` 里，点击对应应用旁边的“导入”按钮，可以把 UniGate 的本地地址一键导入到 `cc-switch`。
 
 推荐至少导入：
 
