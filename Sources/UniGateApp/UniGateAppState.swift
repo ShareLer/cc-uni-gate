@@ -26,6 +26,9 @@ final class UniGateAppState: ObservableObject {
     @Published var proxyPort: UInt16 = 17888
     @Published var recentEvents: [ProxyEvent] = []
     @Published var forwardedRequestCounts: [String: Int] = [:]
+    @Published var integrationSnapshot: CcSwitchIntegrationSnapshot?
+    @Published var requestMetrics = RequestMetricsState()
+    @Published var discoveryState = ProviderModelDiscoveryState()
     @Published var selectedAppType: String?
     @Published var expandedRouteKeyDescription: String?
     @Published var loadError: String?
@@ -49,6 +52,7 @@ final class UniGateAppState: ObservableObject {
         uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         proxyPort: UInt16,
+        integrationSnapshot: CcSwitchIntegrationSnapshot? = nil,
         loadError: String? = nil
     ) {
         self.catalog = catalog
@@ -58,6 +62,7 @@ final class UniGateAppState: ObservableObject {
         self.uniGateModelScope = uniGateModelScope
         self.proxyStatus = proxyStatus
         self.proxyPort = proxyPort
+        self.integrationSnapshot = integrationSnapshot
         self.loadError = loadError
         syncSelectedAppType()
         updateSettingsViewModel()
@@ -74,6 +79,18 @@ final class UniGateAppState: ObservableObject {
 
     func updateForwardedRequestCounts(_ counts: [String: Int]) {
         forwardedRequestCounts = counts
+    }
+
+    func updateIntegrationSnapshot(_ snapshot: CcSwitchIntegrationSnapshot?) {
+        integrationSnapshot = snapshot
+    }
+
+    func updateRequestMetrics(_ metrics: RequestMetricsState) {
+        requestMetrics = metrics
+    }
+
+    func updateDiscoveryState(_ state: ProviderModelDiscoveryState) {
+        discoveryState = state
     }
 
     func routeGroupsForCurrentApp() -> [ModelRouteGroup] {
@@ -389,6 +406,55 @@ final class UniGateAppState: ObservableObject {
         onQuit?()
     }
 
+    var healthReport: ConfigurationHealthReport {
+        ConfigurationHealthReport.build(
+            databasePath: preferences.resolvedCcSwitchDBPath,
+            databaseExists: FileManager.default.fileExists(atPath: preferences.resolvedCcSwitchDBPath),
+            catalogLoadError: loadError,
+            proxySeverity: proxyStatus.healthSeverity,
+            proxyDetail: proxyStatus.healthDetail(port: proxyPort),
+            catalog: catalog,
+            routes: routes,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope,
+            integration: integrationSnapshot
+        )
+    }
+
+    var diagnosticsText: String {
+        DiagnosticsReportGenerator.text(DiagnosticsReportInput(
+            databasePath: preferences.resolvedCcSwitchDBPath,
+            proxyStatus: proxyStatus.healthDetail(port: proxyPort),
+            proxyPort: proxyPort,
+            catalog: catalog,
+            routes: routes,
+            preferences: preferences,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope,
+            integration: integrationSnapshot,
+            healthReport: healthReport,
+            recentEvents: recentEvents.map { DiagnosticEvent(date: $0.date, level: $0.level.rawValue, message: $0.message) },
+            requestMetrics: requestMetrics,
+            discoveryState: discoveryState
+        ))
+    }
+
+    var currentRequestMetrics: [(RequestMetricKey, RequestMetricRecord)] {
+        guard let appType = currentAppType else {
+            return requestMetrics.records.sorted { $0.key.description.localizedStandardCompare($1.key.description) == .orderedAscending }
+        }
+        return requestMetrics.records(appType: appType)
+    }
+
+    var currentDiscoveryResults: [ProviderModelDiscoveryResult] {
+        guard let appType = currentAppType else {
+            return discoveryState.results.values.sorted {
+                $0.providerName.localizedStandardCompare($1.providerName) == .orderedAscending
+            }
+        }
+        return discoveryState.results(appType: appType)
+    }
+
     func showToast(_ message: String) {
         let token = UUID()
         toastToken = token
@@ -469,4 +535,23 @@ final class UniGateAppState: ObservableObject {
         return candidate.upstreamModelDisplayName
     }
 
+}
+
+private extension ProxyStatus {
+    var healthSeverity: ConfigurationHealthSeverity {
+        switch self {
+        case .starting:
+            return .error
+        case .running:
+            return .ok
+        case .providerIssue:
+            return .warning
+        case .failed:
+            return .error
+        }
+    }
+
+    func healthDetail(port: UInt16) -> String {
+        title(port: port)
+    }
 }

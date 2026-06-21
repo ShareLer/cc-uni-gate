@@ -160,6 +160,57 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func loadsIntegrationSnapshotWithUniGateProvidersAndDesktopRoutes() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "unigate-codex",
+                appType: "codex",
+                name: "UniGate",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/codex\\"\\nwire_api = \\"responses\\""
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#,
+                isCurrent: true
+            )
+            try insertProvider(
+                db,
+                id: "desktop",
+                appType: "claude-desktop",
+                name: "Desktop",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.desktop.example",
+                    "ANTHROPIC_AUTH_TOKEN": "key-1"
+                  }
+                }
+                """,
+                meta: """
+                {
+                  "claudeDesktopModelRoutes": {
+                    "claude-sonnet-4-6": {"model": "deepseek-v4-flash"}
+                  }
+                }
+                """
+            )
+        }
+
+        let snapshot = try CcSwitchImporter(dbPath: dbURL.path).loadIntegrationSnapshot()
+        let uniGate = try #require(snapshot.uniGateProvider(appType: "codex"))
+        let desktop = try #require(snapshot.providers(appType: "claude-desktop").first)
+
+        #expect(uniGate.isCurrent)
+        #expect(uniGate.configuredModels == ["gpt-5.5"])
+        #expect(desktop.hasClaudeDesktopRoutes)
+        #expect(!desktop.isUniGateProvider)
+    }
+
+    @Test
     func excludesGeminiProvidersUntilGeminiProxyIsSupported() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)
@@ -468,7 +519,8 @@ struct CcSwitchImporterTests {
         name: String,
         settings: String,
         meta: String,
-        sortIndex: Int = 1
+        sortIndex: Int = 1,
+        isCurrent: Bool = false
     ) throws {
         try db.execute(
             sql: """
@@ -476,7 +528,7 @@ struct CcSwitchImporterTests {
                     id, app_type, name, settings_config, category, sort_index, meta, is_current
                 ) values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: [id, appType, name, settings, nil, sortIndex, meta, 0]
+            arguments: [id, appType, name, settings, nil, sortIndex, meta, isCurrent ? 1 : 0]
         )
     }
 

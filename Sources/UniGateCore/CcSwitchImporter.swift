@@ -58,8 +58,43 @@ public struct CcSwitchImporter: Sendable {
                     return
                 }
                 result[provider.appType, default: []].formUnion(models)
-            }
+        }
         return UniGateModelScope(modelsByApp: modelsByApp)
+    }
+
+    public func loadIntegrationSnapshot() throws -> CcSwitchIntegrationSnapshot {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
+
+        let providers = try dbQueue.read { db in
+            try ProviderRow.fetchAll(
+                db,
+                sql: """
+                select id, app_type, name, settings_config, category, sort_index, meta, is_current
+                from providers
+                where app_type in ('claude', 'claude-desktop', 'codex')
+                order by app_type, coalesce(sort_index, 999999), name, id
+                """
+            )
+        }
+
+        let summaries = providers.map(importProvider).map { provider in
+            CcSwitchProviderSummary(
+                id: provider.id,
+                appType: provider.appType,
+                name: provider.name,
+                isCurrent: provider.isCurrent,
+                isUniGateProvider: isUniGateProvider(provider),
+                baseURL: provider.baseURL,
+                configuredModels: Array(uniGateConfiguredModels(provider))
+                    .map(ModelNameNormalizer.stripOneMSuffix)
+                    .sorted { $0.localizedStandardCompare($1) == .orderedAscending },
+                hasClaudeDesktopRoutes: JSONValueParser.object(provider.meta, ["claudeDesktopModelRoutes"])?.isEmpty == false
+            )
+        }
+
+        return CcSwitchIntegrationSnapshot(databasePath: dbPath, providers: summaries)
     }
 
     private func importProvider(_ row: ProviderRow) -> ImportedProvider {

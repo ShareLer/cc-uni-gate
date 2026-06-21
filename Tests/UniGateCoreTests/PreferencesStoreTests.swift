@@ -73,6 +73,7 @@ struct PreferencesStoreTests {
         #expect(loaded.resolvedCcSwitchDBPath == AppPreferences.defaultCcSwitchDBPath())
         #expect(loaded.brandColor == .ember)
         #expect(loaded.bubbleNotificationsEnabled)
+        #expect(loaded.launchAtLoginEnabled)
     }
 
     @Test
@@ -138,6 +139,19 @@ struct PreferencesStoreTests {
         let loaded = try store.load()
 
         #expect(!loaded.bubbleNotificationsEnabled)
+    }
+
+    @Test
+    func persistsLaunchAtLoginEnabled() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        let store = PreferencesStore(fileURL: tmp)
+        try store.save(AppPreferences(launchAtLoginEnabled: false))
+
+        let loaded = try store.load()
+
+        #expect(!loaded.launchAtLoginEnabled)
     }
 
     @Test
