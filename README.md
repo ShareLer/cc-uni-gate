@@ -71,6 +71,12 @@ uni
 CC Uni Gate.app
 ```
 
+当前发布包使用 ad-hoc 签名，没有 Apple Developer ID 公证。首次打开时，如果 macOS 拦截直接双击打开，可以按住 Control 点击 app 后选择“打开”。如果系统仍提示 app 已损坏，可以在确认文件来自本项目 GitHub Release 后移除 quarantine 标记：
+
+```bash
+xattr -dr com.apple.quarantine "/path/to/CC Uni Gate.app"
+```
+
 启动后菜单栏会显示 `Uni Gate` 和状态灯：
 
 ```text

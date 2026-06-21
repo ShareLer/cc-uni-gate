@@ -41,9 +41,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.2</string>
+  <string>0.1.3</string>
   <key>CFBundleVersion</key>
-  <string>3</string>
+  <string>4</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
@@ -53,6 +53,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 pkill -f UniGateApp 2>/dev/null || true
 pkill -f ApiManagerApp 2>/dev/null || true
