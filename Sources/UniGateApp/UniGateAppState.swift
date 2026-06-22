@@ -319,7 +319,7 @@ final class UniGateAppState: ObservableObject {
         case .none, .configured:
             return true
         case .missingTarget:
-            return false
+            return !candidates(for: routeGroup).isEmpty
         case .unconfigured:
             return false
         }

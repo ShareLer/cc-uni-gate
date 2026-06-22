@@ -833,6 +833,7 @@ struct UniGatePopoverRootView: View {
         let showsExpandedProviders = isExpanded && canSwitchProvider
         let customModel = state.customModel(for: key)
         let routeStatusText = state.routeStatusText(for: group)
+        let hasRouteIssue = routeStatusText == "目标失效"
         let isConfirmingDelete = customModel?.id == pendingDeleteCustomModelID
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
@@ -851,7 +852,7 @@ struct UniGatePopoverRootView: View {
                     Spacer(minLength: 8)
 
                     if let routeStatusText {
-                        disabledRouteTag(routeStatusText)
+                        routeStatusTag(routeStatusText, isError: hasRouteIssue)
                     } else if isOperable {
                         providerTag(
                             active?.providerName ?? "未选择",
@@ -859,7 +860,7 @@ struct UniGatePopoverRootView: View {
                             canSwitchProvider: canSwitchProvider
                         )
                     } else {
-                        disabledRouteTag("不可用")
+                        routeStatusTag("不可用", isError: false)
                     }
                 }
                 .contentShape(Rectangle())
@@ -906,8 +907,13 @@ struct UniGatePopoverRootView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(showsExpandedProviders ? UGPopoverStyle.cardFillStrong : UGPopoverStyle.cardFill)
-                .strokeBorder(showsExpandedProviders ? brand.opacity(0.42) : disabledAwareBorder(isOperable), lineWidth: 1)
+                .fill(hasRouteIssue ? UGPopoverStyle.deleteConfirmFill : (showsExpandedProviders ? UGPopoverStyle.cardFillStrong : UGPopoverStyle.cardFill))
+                .strokeBorder(
+                    showsExpandedProviders
+                        ? brand.opacity(0.42)
+                        : hasRouteIssue ? UGPopoverStyle.deleteConfirmBorder : disabledAwareBorder(isOperable),
+                    lineWidth: 1
+                )
                 .shadow(color: UGPopoverStyle.cardShadowColor, radius: 5, x: 0, y: 6)
         )
         .opacity(isOperable ? 1 : 0.72)
@@ -990,13 +996,20 @@ struct UniGatePopoverRootView: View {
         .help(canSwitchProvider ? "切换供应商" : "只有一个供应商，无需切换")
     }
 
-    private func disabledRouteTag(_ title: String) -> some View {
-        return Text(title)
+    private func routeStatusTag(_ title: String, isError: Bool) -> some View {
+        Text(title)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(UGPopoverStyle.textSecondary)
+            .foregroundStyle(isError ? UGPopoverStyle.destructive : UGPopoverStyle.textSecondary)
             .lineLimit(1)
             .frame(width: providerTagWidth, height: 24)
-            .background(UGPopoverStyle.disabledTagFill, in: RoundedRectangle(cornerRadius: 6))
+            .background(
+                isError ? UGPopoverStyle.deleteConfirmFill : UGPopoverStyle.disabledTagFill,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isError ? UGPopoverStyle.deleteConfirmBorder : Color.clear)
+            )
     }
 
     private func disabledAwareBorder(_ isOperable: Bool) -> Color {
