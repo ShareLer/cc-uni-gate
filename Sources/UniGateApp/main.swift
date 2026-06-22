@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dbWatcher = CcSwitchDatabaseWatcher()
     private let logger = FileLogger()
 
+    private struct ImportedConfigurationSnapshot: Sendable {
+        let catalog: ProviderCatalog
+        let uniGateModelScope: UniGateModelScope
+        let integrationSnapshot: CcSwitchIntegrationSnapshot
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureAppStateActions()
@@ -55,11 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
             discoveryState = try discoveryStore.load()
-            let importedCatalog = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
-            pruneDiscoveryState(for: importedCatalog)
-            catalog = loadExpandedCatalog(imported: importedCatalog)
-            uniGateModelScope = try currentImporter().loadUniGateModelScope()
-            integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+            let importedSnapshot = try loadImportedConfigurationSnapshot()
+            pruneDiscoveryState(for: importedSnapshot.catalog)
+            applyImportedConfigurationSnapshot(importedSnapshot)
             routes = try routeStore.load(catalog: proxyCatalog())
             catalogLoadError = nil
             if let recordEventMessage {
@@ -316,39 +320,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !appState.isRefreshingModelDiscovery else {
             return
         }
-        let providers = catalog.providers.filter { provider in
-            appType == nil || provider.appType == appType
-        }
-        guard !providers.isEmpty else {
-            appState.showToast("没有可探测的供应商")
-            return
-        }
+        do {
+            let importedSnapshot = try loadImportedConfigurationSnapshot()
+            let providers = importedSnapshot.catalog.providers.filter { provider in
+                appType == nil || provider.appType == appType
+            }
+            guard !providers.isEmpty else {
+                appState.showToast("没有可探测的供应商")
+                return
+            }
 
-        appState.updateModelDiscoveryRefreshing(true)
-        Task { [providers] in
-            defer {
-                appState.updateModelDiscoveryRefreshing(false)
+            appState.updateModelDiscoveryRefreshing(true)
+            Task { [importedSnapshot, providers] in
+                defer {
+                    appState.updateModelDiscoveryRefreshing(false)
+                }
+                var nextState = discoveryState.pruning(validProviders: importedSnapshot.catalog.providers)
+                for provider in providers {
+                    let result = await discoverModels(for: provider)
+                    nextState.upsert(result)
+                    discoveryState = nextState
+                    appState.updateDiscoveryState(nextState)
+                }
+                do {
+                    nextState = nextState.pruning(validProviders: importedSnapshot.catalog.providers)
+                    discoveryState = nextState
+                    appState.updateDiscoveryState(nextState)
+                    try discoveryStore.save(nextState)
+                    applyImportedConfigurationSnapshot(importedSnapshot)
+                    routes = try routeStore.load(catalog: proxyCatalog())
+                    catalogLoadError = nil
+                    recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
+                    publishState()
+                    appState.showToast("模型探测已刷新")
+                } catch {
+                    showError("模型探测结果应用失败：\(error.localizedDescription)")
+                }
             }
-            var nextState = discoveryState
-            for provider in providers {
-                let result = await discoverModels(for: provider)
-                nextState.upsert(result)
-                discoveryState = nextState
-                appState.updateDiscoveryState(nextState)
-            }
-            do {
-                nextState = nextState.pruning(validProviders: catalog.providers)
-                discoveryState = nextState
-                appState.updateDiscoveryState(nextState)
-                try discoveryStore.save(nextState)
-                catalog = try loadExpandedCatalog()
-                routes = try routeStore.load(catalog: proxyCatalog())
-                recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
-                publishState()
-                appState.showToast("模型探测已刷新")
-            } catch {
-                showError("模型探测结果应用失败：\(error.localizedDescription)")
-            }
+        } catch {
+            showError("模型探测刷新失败：\(error.localizedDescription)")
         }
     }
 
@@ -547,6 +557,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private func loadImportedConfigurationSnapshot() throws -> ImportedConfigurationSnapshot {
+        let importedCatalog = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+        let uniGateModelScope = try currentImporter().loadUniGateModelScope()
+        let integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+        return ImportedConfigurationSnapshot(
+            catalog: importedCatalog,
+            uniGateModelScope: uniGateModelScope,
+            integrationSnapshot: integrationSnapshot
+        )
+    }
+
+    private func applyImportedConfigurationSnapshot(_ snapshot: ImportedConfigurationSnapshot) {
+        catalog = loadExpandedCatalog(imported: snapshot.catalog)
+        uniGateModelScope = snapshot.uniGateModelScope
+        integrationSnapshot = snapshot.integrationSnapshot
+    }
+
     private func pruneDiscoveryState(for catalog: ProviderCatalog) {
         let nextState = discoveryState.pruning(validProviders: catalog.providers)
         guard nextState != discoveryState else {
@@ -727,11 +754,11 @@ extension AppDelegate: LocalProxyRuntime {
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()
         discoveryState = try discoveryStore.load()
-        let importedCatalog = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
-        pruneDiscoveryState(for: importedCatalog)
-        catalog = loadExpandedCatalog(imported: importedCatalog)
-        uniGateModelScope = try currentImporter().loadUniGateModelScope()
+        let importedSnapshot = try loadImportedConfigurationSnapshot()
+        pruneDiscoveryState(for: importedSnapshot.catalog)
+        applyImportedConfigurationSnapshot(importedSnapshot)
         routes = try routeStore.load(catalog: proxyCatalog())
+        catalogLoadError = nil
         recordEvent(.info, "已重新加载 cc-switch DB")
         publishState()
         syncCcSwitchDBWatcher()
