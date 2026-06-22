@@ -76,7 +76,7 @@ struct UniGatePopoverRootView: View {
             .frame(width: 420, height: 620)
             .environment(\.ugBrandColor, brand)
         .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
+        .overlay(alignment: .center) {
             if let toast = state.toast {
                 Text(toast)
                     .font(.system(size: 13, weight: .medium))
@@ -85,7 +85,6 @@ struct UniGatePopoverRootView: View {
                     .background(UGPopoverStyle.cardFillStrong, in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
                     .shadow(color: UGPopoverStyle.cardShadowColor, radius: 12, x: 0, y: 7)
-                    .padding(.top, 14)
                     .transition(.opacity.combined(with: .scale(scale: 0.97)))
                     .allowsHitTesting(false)
             }
@@ -257,6 +256,10 @@ struct UniGatePopoverRootView: View {
                 reloadFeedbackActive = false
             }
         }
+    }
+
+    private func triggerModelDiscoveryRefresh() {
+        state.refreshModelDiscovery()
     }
 
     private var selectorRow: some View {
@@ -434,9 +437,7 @@ struct UniGatePopoverRootView: View {
                     .font(.caption)
                     .foregroundStyle(UGPopoverStyle.textSecondary)
                 Spacer()
-                compactIconButton(systemImage: "arrow.clockwise") {
-                    state.refreshModelDiscovery()
-                }
+                modelDiscoveryRefreshButton
                 .help("刷新模型探测")
                 compactIconButton(systemImage: "xmark") {
                     state.closeSettings()
@@ -444,31 +445,39 @@ struct UniGatePopoverRootView: View {
                 .help("返回模型列表")
             }
 
-            if state.currentDiscoveryResults.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "list.bullet.rectangle")
-                        .font(.system(size: 28))
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                    Text("暂无探测结果")
-                        .font(.system(size: 13, weight: .medium))
-                    Text("点击右上角刷新当前应用供应商的模型接口。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(state.currentDiscoveryResults) { result in
-                            discoveryResultRow(result)
-                        }
-                    }
-                    .padding(2)
-                }
-            }
+            modelDiscoveryContent
+                .opacity(state.isRefreshingModelDiscovery ? 0.70 : 1)
+                .scaleEffect(state.isRefreshingModelDiscovery ? 0.996 : 1)
+                .animation(.easeInOut(duration: 0.22), value: state.isRefreshingModelDiscovery)
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var modelDiscoveryContent: some View {
+        if state.currentDiscoveryResults.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 28))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                Text("暂无探测结果")
+                    .font(.system(size: 13, weight: .medium))
+                Text("点击右上角刷新当前应用供应商的模型接口。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(state.currentDiscoveryResults) { result in
+                        discoveryResultRow(result)
+                    }
+                }
+                .padding(2)
+            }
+        }
     }
 
     private func discoveryResultRow(_ result: ProviderModelDiscoveryResult) -> some View {
@@ -1084,12 +1093,39 @@ struct UniGatePopoverRootView: View {
         .buttonStyle(.plain)
     }
 
+    private var modelDiscoveryRefreshButton: some View {
+        Button {
+            triggerModelDiscoveryRefresh()
+        } label: {
+            ZStack {
+                if state.isRefreshingModelDiscovery {
+                    DottedSpinner()
+                        .transition(.opacity)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(UGPopoverStyle.neutralActionText)
+                        .transition(.opacity)
+                }
+            }
+            .frame(width: 26, height: 24)
+            .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
+            .animation(.easeInOut(duration: 0.18), value: state.isRefreshingModelDiscovery)
+        }
+        .buttonStyle(.plain)
+        .disabled(state.isRefreshingModelDiscovery)
+    }
+
     private func providerDetail(_ candidate: ModelCandidate) -> String {
         var parts: [String] = []
         if candidate.upstreamModelDisplayName != ModelCandidate.stripOneMSuffix(candidate.logicalModel) {
             parts.append(candidate.upstreamModelDisplayName)
         }
         parts.append(candidate.requiresTransform ? "需要转换" : candidate.apiFormat.rawValue)
+        if candidate.source == .discovered {
+            parts.append("探测到")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -2068,6 +2104,9 @@ private struct InlineCustomModelEditorView: View {
             parts.append("需要转换")
         } else {
             parts.append(candidate.apiFormat.rawValue)
+        }
+        if candidate.source == .discovered {
+            parts.append("探测到")
         }
         return parts.joined(separator: " · ")
     }

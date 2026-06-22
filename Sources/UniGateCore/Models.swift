@@ -20,6 +20,11 @@ public enum ProxyResponseTransform: String, Codable, Sendable {
     case openAIChatToCodexResponse = "openai_chat_to_codex_response"
 }
 
+public enum ModelCandidateSource: String, Sendable {
+    case configured
+    case discovered
+}
+
 public enum ProxyRequestPath: Equatable, Sendable {
     case proxy(protocolKind: ClientProtocolKind, appType: String)
     case models(appType: String?)
@@ -237,6 +242,7 @@ public struct ModelCandidate: Identifiable, Sendable {
     public let label: String?
     public let supportsLongContext: Bool
     public let upstreamProviderRef: ProviderRef
+    public let source: ModelCandidateSource
 
     public var id: String {
         "\(routeKey.description)|\(providerRef.description)"
@@ -266,7 +272,8 @@ public struct ModelCandidate: Identifiable, Sendable {
         requiresTransform: Bool,
         label: String?,
         supportsLongContext: Bool,
-        upstreamProviderRef: ProviderRef? = nil
+        upstreamProviderRef: ProviderRef? = nil,
+        source: ModelCandidateSource = .configured
     ) {
         self.logicalModel = logicalModel
         self.providerRef = providerRef
@@ -280,6 +287,7 @@ public struct ModelCandidate: Identifiable, Sendable {
         self.label = label
         self.supportsLongContext = supportsLongContext
         self.upstreamProviderRef = upstreamProviderRef ?? providerRef
+        self.source = source
     }
 
     public func withApiFormat(_ apiFormat: ApiFormat) -> ModelCandidate {
@@ -295,7 +303,8 @@ public struct ModelCandidate: Identifiable, Sendable {
             requiresTransform: requiresTransform(for: appType, apiFormat: apiFormat),
             label: label,
             supportsLongContext: supportsLongContext,
-            upstreamProviderRef: upstreamProviderRef
+            upstreamProviderRef: upstreamProviderRef,
+            source: source
         )
     }
 

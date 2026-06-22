@@ -588,7 +588,8 @@ final class LocalProxyServer: @unchecked Sendable {
                 "baseUrl": candidate.baseURL as Any,
                 "requiresTransform": candidate.requiresTransform,
                 "label": candidate.label as Any,
-                "supportsLongContext": candidate.supportsLongContext
+                "supportsLongContext": candidate.supportsLongContext,
+                "source": candidate.source.rawValue
             ]
         }
 

@@ -150,6 +150,9 @@ public struct CustomModelState: Codable, Sendable {
         if candidateIsPreserved != existingIsPreserved {
             return candidateIsPreserved
         }
+        if candidate.source != existing.source {
+            return candidate.source == .configured
+        }
         if candidate.supportsLongContext != existing.supportsLongContext {
             return candidate.supportsLongContext
         }

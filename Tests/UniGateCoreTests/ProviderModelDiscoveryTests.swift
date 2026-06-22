@@ -124,4 +124,47 @@ struct ProviderModelDiscoveryTests {
             appType: "claude-desktop"
         ) == ["deepseek-v4-pro"])
     }
+
+    @Test
+    func discoveredCandidatesUseProviderConfigAndStripLogicalModel() throws {
+        let provider = ImportedProvider(
+            id: "desktop",
+            appType: "claude-desktop",
+            name: "DeepSeek Desktop",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://api.deepseek.example/anthropic",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
+            meta: [:]
+        )
+        let result = ProviderModelDiscoveryResult(
+            providerRef: provider.ref,
+            appType: provider.appType,
+            providerName: provider.name,
+            modelIDs: ["deepseek-v4-pro[1M]", "auto", "auto"],
+            errorMessage: nil,
+            sourceURL: nil
+        )
+        let state = ProviderModelDiscoveryState(results: [provider.ref.description: result])
+        let catalog = ProviderCatalog(providers: [provider], candidates: [])
+
+        let candidates = ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog)
+
+        #expect(candidates.map(\.logicalModel) == ["auto", "deepseek-v4-pro"])
+        let pro = try #require(candidates.first { $0.logicalModel == "deepseek-v4-pro" })
+        #expect(pro.source == .discovered)
+        #expect(pro.providerRef == provider.ref)
+        #expect(pro.upstreamProviderRef == provider.ref)
+        #expect(pro.providerName == provider.name)
+        #expect(pro.appType == "claude-desktop")
+        #expect(pro.clientProtocol == .anthropicMessages)
+        #expect(pro.apiFormat == .anthropic)
+        #expect(pro.upstreamModel == "deepseek-v4-pro[1M]")
+        #expect(pro.supportsLongContext)
+        #expect(pro.requiresTransform == false)
+        #expect(pro.baseURL == provider.baseURL)
+    }
 }

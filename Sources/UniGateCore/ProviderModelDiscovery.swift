@@ -134,8 +134,65 @@ public enum ProviderModelDiscovery {
         })
     }
 
+    public static func discoveredCandidates(
+        from state: ProviderModelDiscoveryState,
+        catalog: ProviderCatalog
+    ) -> [ModelCandidate] {
+        let providersByRef = Dictionary(uniqueKeysWithValues: catalog.providers.map { ($0.ref, $0) })
+        return state.results.values.flatMap { result -> [ModelCandidate] in
+            guard
+                result.errorMessage == nil,
+                let provider = providersByRef[result.providerRef],
+                provider.appType == result.appType,
+                let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !baseURL.isEmpty
+            else {
+                return []
+            }
+
+            return mergedModelIDs(result.modelIDs).map { modelID in
+                ModelCandidate(
+                    logicalModel: ModelNameNormalizer.stripOneMSuffix(modelID),
+                    providerRef: provider.ref,
+                    providerName: provider.name,
+                    appType: provider.appType,
+                    clientProtocol: clientProtocol(for: provider.appType),
+                    apiFormat: provider.apiFormat,
+                    upstreamModel: modelID,
+                    baseURL: provider.baseURL,
+                    requiresTransform: requiresTransform(appType: provider.appType, apiFormat: provider.apiFormat),
+                    label: nil,
+                    supportsLongContext: ModelNameNormalizer.hasOneMMarker(modelID),
+                    source: .discovered
+                )
+            }
+        }
+    }
+
     public static func mergedModelIDs(_ ids: [String]) -> [String] {
         Array(Set(ids.compactMap(trimmed))).sorted()
+    }
+
+    private static func clientProtocol(for appType: String) -> ClientProtocolKind {
+        switch appType {
+        case "claude", "claude-desktop":
+            return .anthropicMessages
+        case "codex":
+            return .codexResponses
+        default:
+            return .openaiChat
+        }
+    }
+
+    private static func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool {
+        switch appType {
+        case "claude", "claude-desktop":
+            return apiFormat != .anthropic
+        case "codex":
+            return apiFormat != .openaiResponses && apiFormat != .openaiChat
+        default:
+            return false
+        }
     }
 
     private static func modelsURLOverride(for provider: ImportedProvider) -> String? {

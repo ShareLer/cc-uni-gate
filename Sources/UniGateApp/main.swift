@@ -52,10 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
+            discoveryState = try discoveryStore.load()
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
-            discoveryState = try discoveryStore.load()
             routes = try routeStore.load(catalog: proxyCatalog())
             catalogLoadError = nil
             if let recordEventMessage {
@@ -307,6 +307,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshModelDiscovery(appType: String?) {
+        guard !appState.isRefreshingModelDiscovery else {
+            return
+        }
         let providers = catalog.providers.filter { provider in
             appType == nil || provider.appType == appType
         }
@@ -315,8 +318,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        appState.showToast("正在刷新模型探测")
+        appState.updateModelDiscoveryRefreshing(true)
         Task { [providers] in
+            defer {
+                appState.updateModelDiscoveryRefreshing(false)
+            }
             var nextState = discoveryState
             for provider in providers {
                 let result = await discoverModels(for: provider)
@@ -326,10 +332,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             do {
                 try discoveryStore.save(nextState)
+                catalog = try loadExpandedCatalog()
+                routes = try routeStore.load(catalog: proxyCatalog())
                 recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
+                publishState()
                 appState.showToast("模型探测已刷新")
             } catch {
-                showError("模型探测结果保存失败：\(error.localizedDescription)")
+                showError("模型探测结果应用失败：\(error.localizedDescription)")
             }
         }
     }
@@ -458,10 +467,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func loadExpandedCatalog() throws -> ProviderCatalog {
         let imported = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
-        let customCandidates = customModels.expandedCandidates(from: imported)
+        let discoveredCandidates = ProviderModelDiscovery.discoveredCandidates(
+            from: discoveryState,
+            catalog: imported
+        )
+        let baseCatalog = ProviderCatalog(
+            providers: imported.providers,
+            candidates: imported.candidates + discoveredCandidates
+        )
+        let customCandidates = customModels.expandedCandidates(from: baseCatalog)
         return ProviderCatalog(
             providers: imported.providers,
-            candidates: imported.candidates + customCandidates
+            candidates: baseCatalog.candidates + customCandidates
         )
     }
 
@@ -631,6 +648,7 @@ extension AppDelegate: LocalProxyRuntime {
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()
+        discoveryState = try discoveryStore.load()
         catalog = try loadExpandedCatalog()
         uniGateModelScope = try currentImporter().loadUniGateModelScope()
         routes = try routeStore.load(catalog: proxyCatalog())

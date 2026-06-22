@@ -842,6 +842,97 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesRouteToDiscoveredProviderForConfiguredModel() throws {
+        let discoveredProvider = ImportedProvider(
+            id: "discovered",
+            appType: "codex",
+            name: "Discovered Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://discovered.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("discovered-key")])],
+            meta: [:]
+        )
+        let configuredProvider = ImportedProvider(
+            id: "configured",
+            appType: "codex",
+            name: "Configured Provider",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://configured.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("configured-key")])],
+            meta: [:]
+        )
+        let discoveredCandidate = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: discoveredProvider.ref,
+            providerName: discoveredProvider.name,
+            appType: discoveredProvider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: discoveredProvider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .discovered
+        )
+        let configuredCandidate = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: configuredProvider.ref,
+            providerName: configuredProvider.name,
+            appType: configuredProvider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: configuredProvider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(
+            providers: [discoveredProvider, configuredProvider],
+            candidates: [configuredCandidate, discoveredCandidate]
+        )
+        let routeFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        defer {
+            try? FileManager.default.removeItem(at: routeFile.deletingLastPathComponent())
+        }
+        let store = RouteStore(fileURL: routeFile)
+        let initial = try store.load(catalog: catalog)
+        let routes = try store.switchRoute(
+            initial,
+            catalog: catalog,
+            appType: "codex",
+            logicalModel: "qwen3.6",
+            providerRef: discoveredProvider.ref
+        )
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/v1/responses",
+            body: Data(#"{"model":"qwen3.6","input":"hello"}"#.utf8)
+        )
+
+        #expect(resolved.candidate.source == .discovered)
+        #expect(resolved.providerName == discoveredProvider.name)
+        #expect(resolved.outboundModel == "qwen3.6")
+        #expect(resolved.upstreamURL.absoluteString == "https://discovered.example.com/v1/responses")
+        #expect(resolved.headers["authorization"] == "Bearer discovered-key")
+    }
+
+    @Test
     func providerDisplayNameIncludesAppType() {
         let provider = ImportedProvider(
             id: "p1",

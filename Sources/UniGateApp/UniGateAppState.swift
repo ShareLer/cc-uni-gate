@@ -34,6 +34,7 @@ final class UniGateAppState: ObservableObject {
     @Published var expandedRouteKeyDescription: String?
     @Published var loadError: String?
     @Published var toast: String?
+    @Published var isRefreshingModelDiscovery = false
 
     var onSwitchProvider: (([ModelRouteKey], ProviderRef) -> Void)?
     var onReload: (() -> Void)?
@@ -99,6 +100,12 @@ final class UniGateAppState: ObservableObject {
         discoveryState = state
     }
 
+    func updateModelDiscoveryRefreshing(_ isRefreshing: Bool) {
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isRefreshingModelDiscovery = isRefreshing
+        }
+    }
+
     func routeGroupsForCurrentApp() -> [ModelRouteGroup] {
         let appType = currentAppType
         let groups = displayRouteGroups.filter { appType == nil || $0.routeKey.appType == appType }
@@ -135,12 +142,13 @@ final class UniGateAppState: ObservableObject {
 
     var visibleRouteKeys: [ModelRouteKey] {
         let candidates = scopedBaseCandidates()
-        let scopedRouteKeys = Set(candidates.map(\.routeKey))
+        let configuredCandidates = candidates.filter { $0.source == .configured }
+        let scopedRouteKeys = Set(configuredCandidates.map(\.routeKey))
         let configuredRouteKeys = catalog.routeKeys.filter {
             $0.appType != "claude-desktop" && scopedRouteKeys.contains($0)
         }
         let desktopRouteKeys = ModelRouteVisibility.claudeDesktopVisibleModelKeys(
-            candidates: candidates,
+            candidates: configuredCandidates,
             customModels: customModels,
             uniGateModelScope: uniGateModelScope
         )
@@ -253,6 +261,9 @@ final class UniGateAppState: ObservableObject {
             parts.append("需要转换")
         } else {
             parts.append(candidate.apiFormat.rawValue)
+        }
+        if candidate.source == .discovered {
+            parts.append("探测到")
         }
         return parts.joined(separator: " · ")
     }

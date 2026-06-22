@@ -190,4 +190,95 @@ struct CustomModelStoreTests {
         #expect(baseCandidates.map(\.upstreamModel) == ["deepseek-v4-flash", "deepseek-v4-pro"])
         #expect(baseCandidates.map(\.logicalModel) == ["deepseek-v4-flash", "deepseek-v4-pro"])
     }
+
+    @Test
+    func baseCandidatesPreferConfiguredCandidateOverDiscoveredDuplicate() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let discovered = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: true,
+            source: .discovered
+        )
+        let configured = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: "Configured Qwen",
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(
+            providers: [provider],
+            candidates: [discovered, configured]
+        )
+
+        let baseCandidates = CustomModelState().baseCandidates(from: catalog)
+
+        #expect(baseCandidates.count == 1)
+        #expect(baseCandidates.first?.source == .configured)
+        #expect(baseCandidates.first?.label == "Configured Qwen")
+    }
+
+    @Test
+    func baseCandidatesIncludeDiscoveredOnlyTargetsForCustomModels() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let discovered = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .discovered
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [discovered])
+
+        let baseCandidates = CustomModelState().baseCandidates(from: catalog)
+
+        #expect(baseCandidates.map(\.logicalModel) == ["qwen3.6"])
+        #expect(baseCandidates.first?.source == .discovered)
+    }
 }
