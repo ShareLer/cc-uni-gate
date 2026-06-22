@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var forwardedRequestCounts: [String: Int] = [:]
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
+    private var automaticModelDiscoveryTask: Task<Void, Never>?
     private let dbWatcher = CcSwitchDatabaseWatcher()
     private let logger = FileLogger()
 
@@ -43,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         healthCheckTask?.cancel()
+        automaticModelDiscoveryTask?.cancel()
         dbWatcher.stop()
         currentProxyServerID = nil
         proxyServer?.stop()
@@ -65,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             syncLaunchAtLoginPreference()
             publishState()
+            scheduleAutomaticModelDiscoveryRefresh()
         } catch {
             if let recordEventMessage {
                 recordEvent(.error, formattedIssueMessage(
@@ -309,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshModelDiscovery(appType: String?) {
+        automaticModelDiscoveryTask?.cancel()
         guard !appState.isRefreshingModelDiscovery else {
             return
         }
@@ -333,7 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 appState.updateDiscoveryState(nextState)
             }
             do {
-                nextState = nextState.pruning(validProviderRefs: Set(catalog.providers.map(\.ref)))
+                nextState = nextState.pruning(validProviders: catalog.providers)
                 discoveryState = nextState
                 appState.updateDiscoveryState(nextState)
                 try discoveryStore.save(nextState)
@@ -348,8 +352,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func scheduleAutomaticModelDiscoveryRefresh() {
+        guard !appState.isRefreshingModelDiscovery else {
+            return
+        }
+        automaticModelDiscoveryTask?.cancel()
+        let providers = catalog.providers
+        guard !providers.isEmpty else {
+            return
+        }
+        automaticModelDiscoveryTask = Task { [providers] in
+            await refreshModelDiscoverySilently(providers: providers)
+        }
+    }
+
+    private func refreshModelDiscoverySilently(providers: [ImportedProvider]) async {
+        var nextState = discoveryState.pruning(validProviders: providers)
+        var didRefreshProvider = nextState != discoveryState
+        for provider in providers {
+            guard !Task.isCancelled else {
+                return
+            }
+            let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
+            if nextState.results[provider.ref.description]?.configurationFingerprint == fingerprint {
+                continue
+            }
+            let result = await discoverModels(for: provider)
+            nextState.upsert(result)
+            didRefreshProvider = true
+        }
+        guard !Task.isCancelled, didRefreshProvider, !appState.isRefreshingModelDiscovery else {
+            return
+        }
+        do {
+            discoveryState = nextState.pruning(validProviders: catalog.providers)
+            try discoveryStore.save(discoveryState)
+            catalog = try loadExpandedCatalog()
+            routes = try routeStore.load(catalog: proxyCatalog())
+            recordEvent(.info, "已自动刷新模型探测缓存")
+            publishState()
+        } catch {
+            recordEvent(.error, formattedIssueMessage(
+                appName: "Uni Gate",
+                group: "模型探测",
+                detail: "自动刷新失败：\(error.localizedDescription)"
+            ))
+        }
+    }
+
     private func discoverModels(for provider: ImportedProvider) async -> ProviderModelDiscoveryResult {
         let now = Date()
+        let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
         guard let plan = ProviderModelDiscovery.fetchPlan(for: provider) else {
             return ProviderModelDiscoveryResult(
                 providerRef: provider.ref,
@@ -358,7 +411,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 modelIDs: [],
                 errorMessage: "缺少模型接口地址或鉴权信息",
                 sourceURL: provider.baseURL,
-                updatedAt: now
+                updatedAt: now,
+                configurationFingerprint: fingerprint
             )
         }
 
@@ -386,7 +440,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         modelIDs: ids,
                         errorMessage: ids.isEmpty ? "接口返回成功，但未解析到模型" : nil,
                         sourceURL: url.absoluteString,
-                        updatedAt: now
+                        updatedAt: now,
+                        configurationFingerprint: fingerprint
                     )
                 }
                 lastFailure = "HTTP \(status)"
@@ -407,7 +462,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             modelIDs: [],
             errorMessage: lastFailure ?? "所有模型接口均不可用",
             sourceURL: plan.urls.first?.absoluteString,
-            updatedAt: now
+            updatedAt: now,
+            configurationFingerprint: fingerprint
         )
     }
 
@@ -492,7 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pruneDiscoveryState(for catalog: ProviderCatalog) {
-        let nextState = discoveryState.pruning(validProviderRefs: Set(catalog.providers.map(\.ref)))
+        let nextState = discoveryState.pruning(validProviders: catalog.providers)
         guard nextState != discoveryState else {
             return
         }

@@ -146,7 +146,8 @@ struct ProviderModelDiscoveryTests {
             providerName: provider.name,
             modelIDs: ["deepseek-v4-pro[1M]", "auto", "auto"],
             errorMessage: nil,
-            sourceURL: nil
+            sourceURL: nil,
+            configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: provider)
         )
         let state = ProviderModelDiscoveryState(results: [provider.ref.description: result])
         let catalog = ProviderCatalog(providers: [provider], candidates: [])
@@ -166,5 +167,48 @@ struct ProviderModelDiscoveryTests {
         #expect(pro.supportsLongContext)
         #expect(pro.requiresTransform == false)
         #expect(pro.baseURL == provider.baseURL)
+    }
+
+    @Test
+    func discoveredCandidatesIgnoreStaleProviderConfigurationFingerprint() {
+        let currentProvider = ImportedProvider(
+            id: "desktop",
+            appType: "claude-desktop",
+            name: "DeepSeek Desktop",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://api.current.example/anthropic",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
+            meta: [:]
+        )
+        let oldProvider = ImportedProvider(
+            id: "desktop",
+            appType: "claude-desktop",
+            name: "DeepSeek Desktop",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://api.old.example/anthropic",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
+            meta: [:]
+        )
+        let result = ProviderModelDiscoveryResult(
+            providerRef: currentProvider.ref,
+            appType: currentProvider.appType,
+            providerName: currentProvider.name,
+            modelIDs: ["stale-model"],
+            errorMessage: nil,
+            sourceURL: nil,
+            configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: oldProvider)
+        )
+        let state = ProviderModelDiscoveryState(results: [currentProvider.ref.description: result])
+        let catalog = ProviderCatalog(providers: [currentProvider], candidates: [])
+
+        #expect(ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog).isEmpty)
     }
 }

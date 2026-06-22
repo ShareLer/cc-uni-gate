@@ -82,6 +82,62 @@ struct ProductizationStoreTests {
     }
 
     @Test
+    func prunesProviderModelDiscoveryStateWhenProviderConfigurationChanges() {
+        let original = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.one.example",
+            apiKey: "key-one"
+        )
+        let changedBaseURL = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.two.example",
+            apiKey: "key-one"
+        )
+        let state = ProviderModelDiscoveryState(results: [
+            original.ref.description: ProviderModelDiscoveryResult(
+                providerRef: original.ref,
+                appType: original.appType,
+                providerName: original.name,
+                modelIDs: ["gpt-5.5"],
+                errorMessage: nil,
+                sourceURL: "https://api.one.example/v1/models",
+                updatedAt: Date(timeIntervalSince1970: 1),
+                configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: original)
+            )
+        ])
+
+        #expect(state.pruning(validProviders: [original]).results.keys.sorted() == [original.ref.description])
+        #expect(state.pruning(validProviders: [changedBaseURL]).results.isEmpty)
+    }
+
+    @Test
+    func providerModelDiscoveryFingerprintTracksSecretAndModelsURLChanges() {
+        let original = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.example.com",
+            apiKey: "key-one",
+            meta: ["modelsUrl": .string("https://api.example.com/v1/models")]
+        )
+        let changedSecret = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.example.com",
+            apiKey: "key-two",
+            meta: ["modelsUrl": .string("https://api.example.com/v1/models")]
+        )
+        let changedModelsURL = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.example.com",
+            apiKey: "key-one",
+            meta: ["modelsUrl": .string("https://api.example.com/models")]
+        )
+
+        let fingerprint = ProviderModelDiscoveryFingerprint.value(for: original)
+
+        #expect(fingerprint != ProviderModelDiscoveryFingerprint.value(for: changedSecret))
+        #expect(fingerprint != ProviderModelDiscoveryFingerprint.value(for: changedModelsURL))
+    }
+
+    @Test
     func configurationBackupRoundTrips() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -120,5 +176,26 @@ struct ProductizationStoreTests {
         #expect(text.contains("<redacted>"))
         #expect(!text.contains("sk-secret123456"))
         #expect(!text.contains("abc123456789"))
+    }
+
+    private func discoveryProvider(
+        id: String,
+        baseURL: String,
+        apiKey: String,
+        meta: [String: SendableValue] = [:]
+    ) -> ImportedProvider {
+        ImportedProvider(
+            id: id,
+            appType: "codex",
+            name: "Provider",
+            category: nil,
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: baseURL,
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string(apiKey)])],
+            meta: meta
+        )
     }
 }

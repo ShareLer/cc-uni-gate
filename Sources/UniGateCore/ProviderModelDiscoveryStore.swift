@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identifiable {
     public var providerRef: ProviderRef
@@ -8,6 +9,7 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
     public var errorMessage: String?
     public var sourceURL: String?
     public var updatedAt: Date
+    public var configurationFingerprint: String?
 
     public var id: String {
         providerRef.description
@@ -20,7 +22,8 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
         modelIDs: [String],
         errorMessage: String?,
         sourceURL: String?,
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        configurationFingerprint: String? = nil
     ) {
         self.providerRef = providerRef
         self.appType = appType
@@ -29,6 +32,7 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
         self.errorMessage = errorMessage
         self.sourceURL = sourceURL
         self.updatedAt = updatedAt
+        self.configurationFingerprint = configurationFingerprint
     }
 }
 
@@ -53,8 +57,57 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
         })
     }
 
+    public func pruning(validProviders providers: [ImportedProvider]) -> ProviderModelDiscoveryState {
+        let fingerprintsByRef = Dictionary(uniqueKeysWithValues: providers.map {
+            ($0.ref, ProviderModelDiscoveryFingerprint.value(for: $0))
+        })
+        return ProviderModelDiscoveryState(results: results.filter { _, result in
+            guard let fingerprint = fingerprintsByRef[result.providerRef] else {
+                return false
+            }
+            return result.configurationFingerprint == fingerprint
+        })
+    }
+
     public mutating func upsert(_ result: ProviderModelDiscoveryResult) {
         results[result.providerRef.description] = result
+    }
+}
+
+public enum ProviderModelDiscoveryFingerprint {
+    public static func value(for provider: ImportedProvider) -> String {
+        let plan = ProviderModelDiscovery.fetchPlan(for: provider)
+        let secret = ProviderCredentials.secret(for: provider)
+        let components = [
+            "app=\(provider.appType)",
+            "format=\(provider.apiFormat.rawValue)",
+            "base=\(provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")",
+            "isFullURL=\(bool(provider.meta, ["isFullUrl"]) ?? false)",
+            "modelsURL=\(modelsURLOverride(for: provider) ?? "")",
+            "urls=\(plan?.urls.map(\.absoluteString).joined(separator: ",") ?? "")",
+            "ua=\(JSONValueParser.string(provider.meta, ["customUserAgent"]) ?? "")",
+            "secretField=\(secret?.field ?? "")",
+            "secretHash=\(secret.map { shortHash($0.value) } ?? "")"
+        ]
+        return shortHash(components.joined(separator: "\n"))
+    }
+
+    private static func modelsURLOverride(for provider: ImportedProvider) -> String? {
+        JSONValueParser.string(provider.meta, ["modelsUrl"])
+            ?? JSONValueParser.string(provider.settings, ["modelsUrl"])
+            ?? JSONValueParser.string(provider.settings, ["models_url"])
+    }
+
+    private static func bool(_ object: [String: SendableValue], _ path: [String]) -> Bool? {
+        guard case let .bool(value)? = JSONValueParser.value(object, path) else {
+            return nil
+        }
+        return value
+    }
+
+    private static func shortHash(_ value: String) -> String {
+        let digest = SHA256.hash(data: Data(value.utf8))
+        return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 }
 

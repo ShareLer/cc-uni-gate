@@ -144,6 +144,7 @@ public enum ProviderModelDiscovery {
                 result.errorMessage == nil,
                 let provider = providersByRef[result.providerRef],
                 provider.appType == result.appType,
+                result.configurationFingerprint == ProviderModelDiscoveryFingerprint.value(for: provider),
                 let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
                 !baseURL.isEmpty
             else {
