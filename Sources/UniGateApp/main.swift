@@ -53,7 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
             discoveryState = try discoveryStore.load()
-            catalog = try loadExpandedCatalog()
+            let importedCatalog = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+            pruneDiscoveryState(for: importedCatalog)
+            catalog = loadExpandedCatalog(imported: importedCatalog)
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
             routes = try routeStore.load(catalog: proxyCatalog())
@@ -331,6 +333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 appState.updateDiscoveryState(nextState)
             }
             do {
+                nextState = nextState.pruning(validProviderRefs: Set(catalog.providers.map(\.ref)))
+                discoveryState = nextState
+                appState.updateDiscoveryState(nextState)
                 try discoveryStore.save(nextState)
                 catalog = try loadExpandedCatalog()
                 routes = try routeStore.load(catalog: proxyCatalog())
@@ -467,6 +472,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func loadExpandedCatalog() throws -> ProviderCatalog {
         let imported = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+        return loadExpandedCatalog(imported: imported)
+    }
+
+    private func loadExpandedCatalog(imported: ProviderCatalog) -> ProviderCatalog {
         let discoveredCandidates = ProviderModelDiscovery.discoveredCandidates(
             from: discoveryState,
             catalog: imported
@@ -480,6 +489,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             providers: imported.providers,
             candidates: baseCatalog.candidates + customCandidates
         )
+    }
+
+    private func pruneDiscoveryState(for catalog: ProviderCatalog) {
+        let nextState = discoveryState.pruning(validProviderRefs: Set(catalog.providers.map(\.ref)))
+        guard nextState != discoveryState else {
+            return
+        }
+        discoveryState = nextState
+        try? discoveryStore.save(nextState)
     }
 
     private func defaultProxyPort() -> UInt16 {
@@ -649,7 +667,9 @@ extension AppDelegate: LocalProxyRuntime {
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()
         discoveryState = try discoveryStore.load()
-        catalog = try loadExpandedCatalog()
+        let importedCatalog = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
+        pruneDiscoveryState(for: importedCatalog)
+        catalog = loadExpandedCatalog(imported: importedCatalog)
         uniGateModelScope = try currentImporter().loadUniGateModelScope()
         routes = try routeStore.load(catalog: proxyCatalog())
         recordEvent(.info, "已重新加载 cc-switch DB")

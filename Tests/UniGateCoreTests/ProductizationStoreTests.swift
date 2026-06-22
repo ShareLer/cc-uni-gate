@@ -51,6 +51,37 @@ struct ProductizationStoreTests {
     }
 
     @Test
+    func prunesProviderModelDiscoveryStateForRemovedProviders() {
+        let activeRef = ProviderRef(appType: "claude", id: "active")
+        let removedRef = ProviderRef(appType: "claude", id: "removed")
+        let state = ProviderModelDiscoveryState(results: [
+            activeRef.description: ProviderModelDiscoveryResult(
+                providerRef: activeRef,
+                appType: "claude",
+                providerName: "Active",
+                modelIDs: ["claude-sonnet"],
+                errorMessage: nil,
+                sourceURL: nil,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            ),
+            removedRef.description: ProviderModelDiscoveryResult(
+                providerRef: removedRef,
+                appType: "claude",
+                providerName: "Removed",
+                modelIDs: [],
+                errorMessage: "HTTP 401",
+                sourceURL: nil,
+                updatedAt: Date(timeIntervalSince1970: 2)
+            )
+        ])
+
+        let pruned = state.pruning(validProviderRefs: [activeRef])
+
+        #expect(pruned.results.keys.sorted() == [activeRef.description])
+        #expect(pruned.results[activeRef.description]?.providerName == "Active")
+    }
+
+    @Test
     func configurationBackupRoundTrips() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

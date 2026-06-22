@@ -47,6 +47,12 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
             }
     }
 
+    public func pruning(validProviderRefs: Set<ProviderRef>) -> ProviderModelDiscoveryState {
+        ProviderModelDiscoveryState(results: results.filter { _, result in
+            validProviderRefs.contains(result.providerRef)
+        })
+    }
+
     public mutating func upsert(_ result: ProviderModelDiscoveryResult) {
         results[result.providerRef.description] = result
     }
@@ -88,4 +94,3 @@ public final class ProviderModelDiscoveryStore: @unchecked Sendable {
         try data.write(to: fileURL, options: .atomic)
     }
 }
-
