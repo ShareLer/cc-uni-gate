@@ -1053,16 +1053,24 @@ struct UniGatePopoverRootView: View {
 
     private func providerOptionRow(_ candidate: ModelCandidate, routeGroup: ModelRouteGroup) -> some View {
         let selected = state.isActive(candidate, for: routeGroup)
+        let unavailable = state.isUnavailableCandidate(candidate, for: routeGroup)
         return Button {
+            guard !unavailable else {
+                return
+            }
             withAnimation(.spring(response: 0.20, dampingFraction: 0.90)) {
                 state.switchProvider(routeGroup: routeGroup, providerRef: candidate.providerRef)
             }
         } label: {
             HStack(spacing: 10) {
+                Image(systemName: selected ? (unavailable ? "xmark.circle.fill" : "checkmark.circle.fill") : "circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(selected ? (unavailable ? .red : brand) : UGPopoverStyle.textSecondary)
+
                 VStack(alignment: .leading, spacing: 3) {
                     Text(candidate.providerName)
                         .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                        .foregroundStyle(selected ? brand : .primary)
+                        .foregroundStyle(selected ? (unavailable ? .red : brand) : .primary)
                         .lineLimit(1)
                     Text(providerDetail(candidate))
                         .font(.caption2)
@@ -1073,16 +1081,29 @@ struct UniGatePopoverRootView: View {
                 Spacer(minLength: 8)
 
                 if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(brand)
+                    Text(unavailable ? "失效" : "当前")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(unavailable ? .red : brand)
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                        .background((unavailable ? Color.red.opacity(0.12) : brand.opacity(0.12)), in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(unavailable ? Color.red.opacity(0.24) : Color.clear))
                         .transition(.scale.combined(with: .opacity))
                 }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? UGPopoverStyle.brandSelectionFill(brand) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(
+                selected
+                    ? (unavailable ? UGPopoverStyle.deleteConfirmFill : UGPopoverStyle.brandSelectionFill(brand))
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(unavailable ? UGPopoverStyle.deleteConfirmBorder : Color.clear)
+            )
             .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)

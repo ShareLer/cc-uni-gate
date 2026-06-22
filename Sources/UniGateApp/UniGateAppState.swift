@@ -197,10 +197,14 @@ final class UniGateAppState: ObservableObject {
 
     func candidates(for routeKey: ModelRouteKey) -> [ModelCandidate] {
         let candidates = catalog.candidates(for: routeKey)
-        guard customModel(for: routeKey) == nil else {
-            return candidates
+        guard let definition = customModel(for: routeKey) else {
+            return candidates.filter(isCandidateInUniGateScope)
         }
-        return candidates.filter(isCandidateInUniGateScope)
+        var scopedCandidates = candidates.filter(isCandidateInUniGateScope)
+        if let missingSelectedTargetCandidate = missingSelectedTargetCandidate(for: definition) {
+            scopedCandidates.append(missingSelectedTargetCandidate)
+        }
+        return scopedCandidates
     }
 
     func candidates(for routeGroup: ModelRouteGroup) -> [ModelCandidate] {
@@ -236,6 +240,18 @@ final class UniGateAppState: ObservableObject {
 
     func isActive(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
         activeCandidate(for: routeGroup)?.providerRef == candidate.providerRef
+    }
+
+    func isUnavailableCandidate(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
+        guard customModelAvailability(for: routeGroup.routeKey) == .missingTarget else {
+            return false
+        }
+        guard let definition = customModel(for: routeGroup.routeKey),
+              let selectedTarget = definition.selectedTarget else {
+            return false
+        }
+        return candidate.providerRef == selectedTarget.providerRef
+            && candidate.routeKey == selectedTarget.routeKey
     }
 
     func isExpanded(_ routeGroup: ModelRouteGroup) -> Bool {
@@ -319,7 +335,7 @@ final class UniGateAppState: ObservableObject {
         case .none, .configured:
             return true
         case .missingTarget:
-            return !candidates(for: routeGroup).isEmpty
+            return candidates(for: routeGroup).count > 1
         case .unconfigured:
             return false
         }
@@ -577,6 +593,52 @@ final class UniGateAppState: ObservableObject {
 
     private func isCandidateInUniGateScope(_ candidate: ModelCandidate) -> Bool {
         ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
+    }
+
+    private func missingSelectedTargetCandidate(for definition: CustomModelDefinition) -> ModelCandidate? {
+        guard definition.selectedTargetCandidate(in: catalog) == nil else {
+            return nil
+        }
+        guard let selectedTarget = definition.selectedTarget else {
+            return nil
+        }
+        let provider = catalog.providers.first(where: { $0.ref == selectedTarget.providerRef })
+        return ModelCandidate(
+            logicalModel: selectedTarget.routeKey.logicalModel,
+            providerRef: selectedTarget.providerRef,
+            providerName: provider?.name ?? selectedTarget.providerRef.description,
+            appType: selectedTarget.routeKey.appType,
+            clientProtocol: clientProtocol(for: selectedTarget.routeKey.appType),
+            apiFormat: provider?.apiFormat ?? .unknown,
+            upstreamModel: selectedTarget.routeKey.logicalModel,
+            baseURL: provider?.baseURL,
+            requiresTransform: provider.map { requiresTransform(appType: selectedTarget.routeKey.appType, apiFormat: $0.apiFormat) } ?? false,
+            label: provider?.name ?? selectedTarget.routeKey.logicalModel,
+            supportsLongContext: false,
+            upstreamProviderRef: selectedTarget.providerRef
+        )
+    }
+
+    private func clientProtocol(for appType: String) -> ClientProtocolKind {
+        switch appType {
+        case "claude", "claude-desktop":
+            return .anthropicMessages
+        case "codex":
+            return .codexResponses
+        default:
+            return .openaiChat
+        }
+    }
+
+    private func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool {
+        switch appType {
+        case "claude", "claude-desktop":
+            return apiFormat != .anthropic
+        case "codex":
+            return apiFormat != .openaiResponses && apiFormat != .openaiChat
+        default:
+            return false
+        }
     }
 
     private func activeProviderRef(for routeGroup: ModelRouteGroup) -> ProviderRef? {
