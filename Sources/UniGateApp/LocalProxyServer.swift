@@ -439,7 +439,7 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private static func statusCode(for error: ProxyResolverError) -> Int {
         switch error {
-        case .noRoute:
+        case .noRoute, .unavailableRouteTarget:
             return 404
         case .invalidJSONBody, .missingModel, .transformRequired, .streamingTransformUnsupported, .invalidUpstreamURL:
             return 400
@@ -450,7 +450,7 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private static func errorType(for error: ProxyResolverError) -> String {
         switch error {
-        case .noRoute:
+        case .noRoute, .unavailableRouteTarget:
             return "invalid_request_error"
         case .missingProvider, .missingBaseURL:
             return "proxy_error"
@@ -463,6 +463,8 @@ final class LocalProxyServer: @unchecked Sendable {
         switch error {
         case .noRoute:
             return "model_not_found"
+        case .unavailableRouteTarget:
+            return "route_target_unavailable"
         case .missingModel:
             return "missing_model"
         case .invalidJSONBody:

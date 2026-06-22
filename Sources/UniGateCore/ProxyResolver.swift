@@ -16,6 +16,7 @@ public enum ProxyResolverError: Error, LocalizedError, Equatable {
     case invalidJSONBody
     case missingModel
     case noRoute(routeKey: String)
+    case unavailableRouteTarget(routeKey: String, providerRef: String)
     case missingProvider(ref: String)
     case transformRequired(model: String, provider: String, apiFormat: ApiFormat)
     case streamingTransformUnsupported(model: String, provider: String, apiFormat: ApiFormat)
@@ -30,6 +31,8 @@ public enum ProxyResolverError: Error, LocalizedError, Equatable {
             return "Request body must include a string model"
         case let .noRoute(routeKey):
             return "No route configured for \(routeKey)"
+        case let .unavailableRouteTarget(routeKey, providerRef):
+            return "Route \(routeKey) points to unavailable target \(providerRef)"
         case let .missingProvider(ref):
             return "Provider \(ref) is missing from catalog"
         case let .transformRequired(model, provider, apiFormat):
@@ -66,13 +69,19 @@ public enum ProxyResolver {
         )
 
         let candidate: ModelCandidate
-        if let route = routes.routes[routeKey.description],
-           let activeCandidate = catalog.candidates.first(where: {
+        if let route = routes.routes[routeKey.description] {
+            if let activeCandidate = catalog.candidates.first(where: {
                 $0.appType == routeKey.appType
                     && $0.logicalModel == routeKey.logicalModel
                     && $0.providerRef == route.providerRef
             }) {
-            candidate = activeCandidate
+                candidate = activeCandidate
+            } else {
+                throw ProxyResolverError.unavailableRouteTarget(
+                    routeKey: routeKey.description,
+                    providerRef: route.providerRef.description
+                )
+            }
         } else {
             throw ProxyResolverError.noRoute(routeKey: routeKey.description)
         }
@@ -194,10 +203,7 @@ public enum ProxyResolver {
         if let match = keys.first(where: { ClaudeRouteRole.role(in: $0.logicalModel) == role && routes.routes[$0.description] != nil }) {
             return match
         }
-        if role == .fable,
-           let opus = keys.first(where: { ClaudeRouteRole.role(in: $0.logicalModel) == .opus && routes.routes[$0.description] != nil }) {
-            return opus
-        }
+
         return exactKey
     }
 

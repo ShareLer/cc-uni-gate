@@ -34,10 +34,10 @@ public struct CustomModelDefinition: Codable, Hashable, Identifiable, Sendable {
     }
 
     public var selectedTarget: CustomModelTarget? {
-        if let selectedTargetID, let target = targets.first(where: { $0.id == selectedTargetID }) {
-            return target
+        guard let selectedTargetID else {
+            return nil
         }
-        return targets.first
+        return targets.first(where: { $0.id == selectedTargetID })
     }
 }
 

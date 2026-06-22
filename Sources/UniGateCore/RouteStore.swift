@@ -128,25 +128,21 @@ public final class RouteStore: @unchecked Sendable {
     }
 
     private func merge(_ state: RouteState, catalog: ProviderCatalog) -> RouteState {
-        var merged = RouteStore.defaultState(candidates: catalog.candidates)
+        let availableRouteKeys = Set(catalog.routeKeys)
+        var merged = RouteState()
+
         for (rawKey, route) in state.routes {
             let routeKey = ModelRouteKey(description: rawKey)
                 ?? ModelRouteKey(appType: route.appType, logicalModel: route.logicalModel)
-            let stillValid = catalog.candidates.contains {
-                $0.appType == routeKey.appType
-                    && $0.logicalModel == routeKey.logicalModel
-                    && $0.providerRef == route.providerRef
-            }
-            if stillValid {
-                merged.routes[routeKey.description] = ActiveRoute(
-                    appType: routeKey.appType,
-                    logicalModel: routeKey.logicalModel,
-                    providerRef: route.providerRef,
-                    updatedAt: route.updatedAt
-                )
+            guard availableRouteKeys.contains(routeKey) else {
                 continue
             }
+            merged.routes[routeKey.description] = route
+        }
 
+        let defaults = RouteStore.defaultState(candidates: catalog.candidates)
+        for (key, route) in defaults.routes where merged.routes[key] == nil {
+            merged.routes[key] = route
         }
         return merged
     }

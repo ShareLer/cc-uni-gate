@@ -61,4 +61,65 @@ struct ConfigurationHealthTests {
         #expect(report.items.contains { $0.id == "custom-target-missing-codex:uni" })
         #expect(report.items.contains { $0.id == "custom-unconfigured-codex:uni" })
     }
+
+    @Test
+    func reportsMissingCustomModelTargetEvenWhenAnotherTargetStillExists() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+        let activeTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "present"),
+            providerRef: provider.ref
+        )
+        let staleTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "missing"),
+            providerRef: provider.ref
+        )
+        let report = ConfigurationHealthReport.build(
+            databasePath: "/tmp/cc-switch.db",
+            databaseExists: true,
+            catalogLoadError: nil,
+            proxySeverity: .ok,
+            proxyDetail: "running",
+            catalog: ProviderCatalog(providers: [provider], candidates: [
+                ModelCandidate(
+                    logicalModel: "present",
+                    providerRef: provider.ref,
+                    providerName: provider.name,
+                    appType: provider.appType,
+                    clientProtocol: .codexResponses,
+                    apiFormat: .openaiResponses,
+                    upstreamModel: "present",
+                    baseURL: provider.baseURL,
+                    requiresTransform: false,
+                    label: nil,
+                    supportsLongContext: false
+                )
+            ]),
+            routes: RouteState(),
+            customModels: CustomModelState(models: [
+                CustomModelDefinition(
+                    appType: "codex",
+                    name: "uni",
+                    targets: [staleTarget, activeTarget],
+                    selectedTargetID: staleTarget.id
+                )
+            ]),
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["uni"]]),
+            integration: CcSwitchIntegrationSnapshot(databasePath: "/tmp/cc-switch.db", providers: []),
+            now: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(report.items.contains { $0.id == "custom-target-missing-codex:uni" })
+    }
 }

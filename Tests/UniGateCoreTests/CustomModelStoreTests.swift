@@ -4,6 +4,26 @@ import Testing
 
 struct CustomModelStoreTests {
     @Test
+    func selectedTargetDoesNotFallBackWhenSelectionIsMissing() {
+        let target1 = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5"),
+            providerRef: ProviderRef(appType: "codex", id: "p1")
+        )
+        let target2 = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "gpt-5.6"),
+            providerRef: ProviderRef(appType: "codex", id: "p1")
+        )
+        let definition = CustomModelDefinition(
+            appType: "codex",
+            name: "customer_model",
+            targets: [target1, target2],
+            selectedTargetID: UUID()
+        )
+
+        #expect(definition.selectedTarget == nil)
+    }
+
+    @Test
     func expandsCustomModelTargetsIntoSyntheticCandidates() throws {
         let provider = ImportedProvider(
             id: "p1",

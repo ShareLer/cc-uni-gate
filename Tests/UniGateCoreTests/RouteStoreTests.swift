@@ -132,6 +132,36 @@ struct RouteStoreTests {
     }
 
     @Test
+    func loadKeepsRoutesWhenSelectedTargetDisappearsButRouteKeyStillExists() throws {
+        let stale = ProviderRef(appType: "codex", id: "stale")
+        let active = ProviderRef(appType: "codex", id: "active")
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "customer_model")
+        let catalog = ProviderCatalog(providers: [], candidates: [
+            candidate(
+                routeKey: routeKey,
+                providerRef: active,
+                providerName: "Active Provider"
+            )
+        ])
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: stale,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ]))
+
+        let loaded = try store.load(catalog: catalog)
+
+        #expect(loaded.routes[routeKey.description]?.providerRef == stale)
+    }
+
+    @Test
     func keepsSameModelSeparateAcrossApps() {
         let candidates = [
             ModelCandidate(

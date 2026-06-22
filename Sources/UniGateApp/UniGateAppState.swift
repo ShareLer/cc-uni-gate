@@ -288,6 +288,9 @@ final class UniGateAppState: ObservableObject {
                 return "自定义模型目标失效"
             }
         }
+        if routeStatusText(for: routeGroup) == "目标失效" {
+            return "当前路由目标失效"
+        }
         guard let active = activeCandidate(for: routeGroup) else {
             return ProviderDisplay.appTypeLabel(routeKey.appType)
         }
@@ -299,12 +302,20 @@ final class UniGateAppState: ObservableObject {
     }
 
     func customModelAvailability(for routeKey: ModelRouteKey) -> CustomModelAvailability? {
-        guard customModels.models.contains(where: {
-            $0.appType == routeKey.appType && $0.name == routeKey.logicalModel
-        }) else {
+        guard let definition = customModel(for: routeKey) else {
             return nil
         }
-        guard !candidates(for: routeKey).isEmpty else {
+        let candidates = candidates(for: routeKey)
+        guard !candidates.isEmpty else {
+            return .missingTarget
+        }
+        guard let selectedTarget = definition.selectedTarget else {
+            return .missingTarget
+        }
+        guard candidates.contains(where: {
+            $0.providerRef == selectedTarget.providerRef
+                && $0.routeKey == selectedTarget.routeKey
+        }) else {
             return .missingTarget
         }
         guard isConfigured(routeKey) else {
@@ -314,7 +325,32 @@ final class UniGateAppState: ObservableObject {
     }
 
     func isRouteOperable(_ routeGroup: ModelRouteGroup) -> Bool {
-        customModelAvailability(for: routeGroup.routeKey).map { $0 == .configured } ?? true
+        switch customModelAvailability(for: routeGroup.routeKey) {
+        case .none, .configured:
+            return true
+        case .missingTarget:
+            return false
+        case .unconfigured:
+            return false
+        }
+    }
+
+    func routeStatusText(for routeGroup: ModelRouteGroup) -> String? {
+        if let availability = customModelAvailability(for: routeGroup.routeKey) {
+            switch availability {
+            case .configured:
+                return nil
+            case .unconfigured:
+                return "未配置"
+            case .missingTarget:
+                return "目标失效"
+            }
+        }
+
+        guard routes.routes[routeGroup.routeKey.description] != nil else {
+            return nil
+        }
+        return activeCandidate(for: routeGroup) == nil ? "目标失效" : nil
     }
 
     func switchProvider(routeGroup: ModelRouteGroup, providerRef: ProviderRef) {

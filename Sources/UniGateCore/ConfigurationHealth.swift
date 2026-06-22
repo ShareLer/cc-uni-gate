@@ -216,20 +216,21 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
 
         for definition in customModels.models {
             let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
-            let hasMatchedTarget = definition.targets.contains { target in
+            let selectedTarget = definition.selectedTarget
+            let hasSelectedTarget = selectedTarget.map { target in
                 catalog.candidates.contains {
                     $0.appType == target.routeKey.appType
                         && $0.logicalModel == target.routeKey.logicalModel
                         && $0.providerRef == target.providerRef
                 }
-            }
-            if !hasMatchedTarget {
+            } ?? false
+            if !hasSelectedTarget {
                 items.append(ConfigurationHealthItem(
                     id: "custom-target-missing-\(routeKey.description)",
                     severity: .warning,
                     appType: definition.appType,
                     title: "自定义模型目标失效",
-                    detail: "\(definition.name) 的转发目标在当前 cc-switch 配置中不存在。",
+                    detail: "\(definition.name) 的默认转发目标在当前 cc-switch 配置中不存在。",
                     actionTitle: "编辑"
                 ))
             }

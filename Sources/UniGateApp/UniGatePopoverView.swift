@@ -832,6 +832,7 @@ struct UniGatePopoverRootView: View {
         let canSwitchProvider = isOperable && candidates.count > 1
         let showsExpandedProviders = isExpanded && canSwitchProvider
         let customModel = state.customModel(for: key)
+        let routeStatusText = state.routeStatusText(for: group)
         let isConfirmingDelete = customModel?.id == pendingDeleteCustomModelID
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
@@ -849,14 +850,16 @@ struct UniGatePopoverRootView: View {
 
                     Spacer(minLength: 8)
 
-                    if isOperable {
+                    if let routeStatusText {
+                        disabledRouteTag(routeStatusText)
+                    } else if isOperable {
                         providerTag(
                             active?.providerName ?? "未选择",
                             isExpanded: showsExpandedProviders,
                             canSwitchProvider: canSwitchProvider
                         )
                     } else {
-                        disabledRouteTag(for: key)
+                        disabledRouteTag("不可用")
                     }
                 }
                 .contentShape(Rectangle())
@@ -987,16 +990,7 @@ struct UniGatePopoverRootView: View {
         .help(canSwitchProvider ? "切换供应商" : "只有一个供应商，无需切换")
     }
 
-    private func disabledRouteTag(for key: ModelRouteKey) -> some View {
-        let title: String
-        switch state.customModelAvailability(for: key) {
-        case .missingTarget:
-            title = "目标失效"
-        case .unconfigured:
-            title = "未配置"
-        case .configured, nil:
-            title = "不可用"
-        }
+    private func disabledRouteTag(_ title: String) -> some View {
         return Text(title)
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(UGPopoverStyle.textSecondary)

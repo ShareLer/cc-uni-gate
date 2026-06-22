@@ -811,7 +811,81 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func fallsBackFableRoleToOpusRouteWhenFableRouteIsAbsentForClaudeCode() throws {
+    func rejectsRequestsWhenConfiguredCustomModelTargetIsUnavailable() throws {
+        let staleProvider = ImportedProvider(
+            id: "stale",
+            appType: "codex",
+            name: "Stale Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://stale.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("stale-key")])],
+            meta: [:]
+        )
+        let activeProvider = ImportedProvider(
+            id: "active",
+            appType: "codex",
+            name: "Active Provider",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://active.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("active-key")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "customer_model")
+        let activeCandidate = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: activeProvider.ref,
+            providerName: activeProvider.name,
+            appType: routeKey.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "active-upstream",
+            baseURL: activeProvider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [staleProvider, activeProvider], candidates: [activeCandidate])
+        let routes = RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: staleProvider.ref,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+
+        do {
+            _ = try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .codexResponses,
+                appType: "codex",
+                path: "/codex/responses",
+                body: Data(#"{"model":"customer_model","input":"hello"}"#.utf8)
+            )
+            #expect(Bool(false))
+        } catch let error as ProxyResolverError {
+            guard case let .unavailableRouteTarget(actualRouteKey, actualProviderRef) = error else {
+                #expect(Bool(false))
+                return
+            }
+            #expect(actualRouteKey == routeKey.description)
+            #expect(actualProviderRef == staleProvider.ref.description)
+        } catch {
+            #expect(Bool(false))
+        }
+    }
+
+    @Test
+    func rejectsClaudeRoleFallbackWhenFableRouteIsAbsentForClaudeCode() throws {
         let provider = ImportedProvider(
             id: "p1",
             appType: "claude",
@@ -841,16 +915,16 @@ struct ProxyResolverTests {
         let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
         let routes = RouteStore.defaultState(candidates: catalog.candidates)
 
-        let resolved = try ProxyResolver.resolveRoute(
-            catalog: catalog,
-            routes: routes,
-            protocolKind: .anthropicMessages,
-            appType: "claude",
-            path: "/claude-code/v1/messages",
-            body: Data(#"{"model":"claude-fable-5","messages":[]}"#.utf8)
-        )
-
-        #expect(resolved.outboundModel == "opus-upstream")
+        #expect(throws: ProxyResolverError.self) {
+            try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .anthropicMessages,
+                appType: "claude",
+                path: "/claude-code/v1/messages",
+                body: Data(#"{"model":"claude-fable-5","messages":[]}"#.utf8)
+            )
+        }
     }
 
     @Test
