@@ -75,6 +75,63 @@ struct CustomModelStoreTests {
     }
 
     @Test
+    func selectedTargetMatchesRealCatalogCandidates() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let target = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5"),
+            providerRef: provider.ref
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let syntheticCandidate = ModelCandidate(
+            logicalModel: "customer_model",
+            providerRef: ProviderRef(appType: "codex", id: "synthetic"),
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: "gpt-5.5",
+            supportsLongContext: false,
+            upstreamProviderRef: provider.ref
+        )
+        let definition = CustomModelDefinition(
+            appType: "codex",
+            name: "customer_model",
+            targets: [target],
+            selectedTargetID: target.id
+        )
+
+        #expect(definition.hasSelectedTarget(in: ProviderCatalog(providers: [provider], candidates: [baseCandidate])))
+        #expect(!definition.hasSelectedTarget(in: ProviderCatalog(providers: [provider], candidates: [syntheticCandidate])))
+    }
+
+    @Test
     func persistsCustomModelState() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

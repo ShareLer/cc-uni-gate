@@ -216,15 +216,7 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
 
         for definition in customModels.models {
             let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
-            let selectedTarget = definition.selectedTarget
-            let hasSelectedTarget = selectedTarget.map { target in
-                catalog.candidates.contains {
-                    $0.appType == target.routeKey.appType
-                        && $0.logicalModel == target.routeKey.logicalModel
-                        && $0.providerRef == target.providerRef
-                }
-            } ?? false
-            if !hasSelectedTarget {
+            if !definition.hasSelectedTarget(in: catalog) {
                 items.append(ConfigurationHealthItem(
                     id: "custom-target-missing-\(routeKey.description)",
                     severity: .warning,

@@ -305,17 +305,7 @@ final class UniGateAppState: ObservableObject {
         guard let definition = customModel(for: routeKey) else {
             return nil
         }
-        let candidates = candidates(for: routeKey)
-        guard !candidates.isEmpty else {
-            return .missingTarget
-        }
-        guard let selectedTarget = definition.selectedTarget else {
-            return .missingTarget
-        }
-        guard candidates.contains(where: {
-            $0.providerRef == selectedTarget.providerRef
-                && $0.routeKey == selectedTarget.routeKey
-        }) else {
+        guard definition.hasSelectedTarget(in: catalog) else {
             return .missingTarget
         }
         guard isConfigured(routeKey) else {

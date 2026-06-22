@@ -39,6 +39,21 @@ public struct CustomModelDefinition: Codable, Hashable, Identifiable, Sendable {
         }
         return targets.first(where: { $0.id == selectedTargetID })
     }
+
+    public func hasSelectedTarget(in catalog: ProviderCatalog) -> Bool {
+        selectedTargetCandidate(in: catalog) != nil
+    }
+
+    public func selectedTargetCandidate(in catalog: ProviderCatalog) -> ModelCandidate? {
+        guard let selectedTarget else {
+            return nil
+        }
+        return catalog.candidates.first {
+            $0.appType == selectedTarget.routeKey.appType
+                && $0.logicalModel == selectedTarget.routeKey.logicalModel
+                && $0.providerRef == selectedTarget.providerRef
+        }
+    }
 }
 
 public struct CustomModelState: Codable, Sendable {
