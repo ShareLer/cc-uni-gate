@@ -56,6 +56,90 @@ struct RouteStoreTests {
     }
 
     @Test
+    func rejectsSwitchingToStaleDiscoveredCandidates() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://p1.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .staleDiscovered
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+
+        #expect(throws: RouteStoreError.self) {
+            _ = try store.switchRoute(
+                RouteState(),
+                catalog: catalog,
+                appType: "codex",
+                logicalModel: "gpt-5.5",
+                providerRef: provider.ref,
+                now: Date(timeIntervalSince1970: 1)
+            )
+        }
+    }
+
+    @Test
+    func defaultStateDoesNotSelectStaleDiscoveredCandidates() {
+        let staleCandidate = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: ProviderRef(appType: "codex", id: "stale"),
+            providerName: "Stale Provider",
+            appType: "codex",
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: "https://stale.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .staleDiscovered
+        )
+        let activeCandidate = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: ProviderRef(appType: "codex", id: "active"),
+            providerName: "Active Provider",
+            appType: "codex",
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: "https://active.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+
+        let staleOnly = RouteStore.defaultState(candidates: [staleCandidate])
+        let mixed = RouteStore.defaultState(candidates: [staleCandidate, activeCandidate])
+
+        #expect(staleOnly.routes.isEmpty)
+        #expect(mixed.routes["codex:qwen3.6"]?.providerRef == activeCandidate.providerRef)
+    }
+
+    @Test
     func switchesGroupedModelProvidersTogether() throws {
         let provider1 = ProviderRef(appType: "claude-desktop", id: "p1")
         let provider2 = ProviderRef(appType: "claude-desktop", id: "p2")

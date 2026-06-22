@@ -216,7 +216,18 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
 
         for definition in customModels.models {
             let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
-            if !definition.hasSelectedTarget(in: catalog) {
+            if let selectedTarget = definition.selectedTargetCandidate(in: catalog) {
+                if selectedTarget.isDiscoveryStale(in: catalog) {
+                    items.append(ConfigurationHealthItem(
+                        id: "custom-target-stale-\(routeKey.description)",
+                        severity: .warning,
+                        appType: definition.appType,
+                        title: "自定义模型目标失效",
+                        detail: "\(definition.name) 的默认转发目标当前探测失效，仍保留为缓存候选。",
+                        actionTitle: "刷新"
+                    ))
+                }
+            } else {
                 items.append(ConfigurationHealthItem(
                     id: "custom-target-missing-\(routeKey.description)",
                     severity: .warning,
@@ -239,12 +250,21 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
         }
 
         for (key, route) in routes.routes {
-            let stillValid = catalog.candidates.contains {
+            let candidate = catalog.candidates.first {
                 $0.appType == route.appType
                     && $0.logicalModel == route.logicalModel
                     && $0.providerRef == route.providerRef
             }
-            if !stillValid {
+            if let candidate, candidate.isDiscoveryStale(in: catalog) {
+                items.append(ConfigurationHealthItem(
+                    id: "route-stale-\(key)",
+                    severity: .warning,
+                    appType: route.appType,
+                    title: "路由指向的模型探测失效",
+                    detail: "\(key) -> \(route.providerRef.description) 的上次成功结果已失效。",
+                    actionTitle: "刷新"
+                ))
+            } else if candidate == nil {
                 items.append(ConfigurationHealthItem(
                     id: "route-invalid-\(key)",
                     severity: .warning,

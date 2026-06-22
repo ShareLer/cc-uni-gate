@@ -239,10 +239,13 @@ final class UniGateAppState: ObservableObject {
     }
 
     func isActive(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
-        activeCandidate(for: routeGroup)?.providerRef == candidate.providerRef
+        activeCandidate(for: routeGroup)?.id == candidate.id
     }
 
     func isUnavailableCandidate(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
+        if candidate.isDiscoveryStale(in: catalog) {
+            return true
+        }
         guard customModelAvailability(for: routeGroup.routeKey) == .missingTarget else {
             return false
         }
@@ -278,8 +281,13 @@ final class UniGateAppState: ObservableObject {
         } else {
             parts.append(candidate.apiFormat.rawValue)
         }
-        if candidate.source == .discovered {
+        switch candidate.source {
+        case .discovered:
             parts.append("探测到")
+        case .staleDiscovered:
+            parts.append("探测失效")
+        case .configured:
+            break
         }
         return parts.joined(separator: " · ")
     }
@@ -351,6 +359,10 @@ final class UniGateAppState: ObservableObject {
             case .missingTarget:
                 return "目标失效"
             }
+        }
+
+        if let active = activeCandidate(for: routeGroup), active.isDiscoveryStale(in: catalog) {
+            return "目标失效"
         }
 
         guard routes.routes[routeGroup.routeKey.description] != nil else {

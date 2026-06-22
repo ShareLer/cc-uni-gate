@@ -122,18 +122,6 @@ public enum ProviderModelDiscovery {
         return mergedModelIDs(ids)
     }
 
-    public static func configuredUpstreamModelIDs(from catalog: ProviderCatalog, appType: String) -> [String] {
-        mergedModelIDs(catalog.candidates.compactMap { candidate in
-            guard
-                candidate.appType == appType,
-                candidate.providerRef == candidate.upstreamProviderRef
-            else {
-                return nil
-            }
-            return ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel)
-        })
-    }
-
     public static func discoveredCandidates(
         from state: ProviderModelDiscoveryState,
         catalog: ProviderCatalog
@@ -141,7 +129,6 @@ public enum ProviderModelDiscovery {
         let providersByRef = Dictionary(uniqueKeysWithValues: catalog.providers.map { ($0.ref, $0) })
         return state.results.values.flatMap { result -> [ModelCandidate] in
             guard
-                result.errorMessage == nil,
                 let provider = providersByRef[result.providerRef],
                 provider.appType == result.appType,
                 result.configurationFingerprint == ProviderModelDiscoveryFingerprint.value(for: provider),
@@ -164,7 +151,7 @@ public enum ProviderModelDiscovery {
                     requiresTransform: requiresTransform(appType: provider.appType, apiFormat: provider.apiFormat),
                     label: nil,
                     supportsLongContext: ModelNameNormalizer.hasOneMMarker(modelID),
-                    source: .discovered
+                    source: result.errorMessage == nil ? .discovered : .staleDiscovered
                 )
             }
         }

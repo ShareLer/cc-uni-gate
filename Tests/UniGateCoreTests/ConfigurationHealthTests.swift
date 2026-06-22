@@ -122,4 +122,70 @@ struct ConfigurationHealthTests {
 
         #expect(report.items.contains { $0.id == "custom-target-missing-codex:uni" })
     }
+
+    @Test
+    func reportsDiscoveryStaleTargetsAndRoutes() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let staleCandidate = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: routeKey.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .staleDiscovered
+        )
+        let selectedTarget = CustomModelTarget(
+            routeKey: routeKey,
+            providerRef: provider.ref
+        )
+        let report = ConfigurationHealthReport.build(
+            databasePath: "/tmp/cc-switch.db",
+            databaseExists: true,
+            catalogLoadError: nil,
+            proxySeverity: .ok,
+            proxyDetail: "running",
+            catalog: ProviderCatalog(providers: [provider], candidates: [staleCandidate]),
+            routes: RouteState(routes: [
+                routeKey.description: ActiveRoute(
+                    appType: routeKey.appType,
+                    logicalModel: routeKey.logicalModel,
+                    providerRef: provider.ref,
+                    updatedAt: Date(timeIntervalSince1970: 1)
+                )
+            ]),
+            customModels: CustomModelState(models: [
+                CustomModelDefinition(
+                    appType: "codex",
+                    name: "uni",
+                    targets: [selectedTarget],
+                    selectedTargetID: selectedTarget.id
+                )
+            ]),
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            integration: CcSwitchIntegrationSnapshot(databasePath: "/tmp/cc-switch.db", providers: []),
+            now: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(report.items.contains { $0.id == "route-stale-codex:gpt-5.5" })
+        #expect(report.items.contains { $0.id == "custom-target-stale-codex:uni" })
+    }
 }

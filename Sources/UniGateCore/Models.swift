@@ -23,6 +23,7 @@ public enum ProxyResponseTransform: String, Codable, Sendable {
 public enum ModelCandidateSource: String, Sendable {
     case configured
     case discovered
+    case staleDiscovered
 }
 
 public enum ProxyRequestPath: Equatable, Sendable {
@@ -408,6 +409,27 @@ public struct ProviderCatalog: Sendable {
             providers: providers,
             candidates: baseCatalog.candidates + customCandidates
         )
+    }
+}
+
+public extension ModelCandidate {
+    func isDiscoveryStale(in catalog: ProviderCatalog) -> Bool {
+        switch source {
+        case .staleDiscovered:
+            return true
+        case .discovered, .configured:
+            break
+        }
+        guard providerRef != upstreamProviderRef else {
+            return false
+        }
+        let upstreamLogicalModel = label ?? upstreamModelDisplayName
+        return catalog.candidates.contains {
+            $0.appType == appType
+                && $0.logicalModel == upstreamLogicalModel
+                && $0.providerRef == upstreamProviderRef
+                && $0.source == .staleDiscovered
+        }
     }
 }
 

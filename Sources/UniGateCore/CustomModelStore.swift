@@ -123,7 +123,8 @@ public struct CustomModelState: Codable, Sendable {
                     requiresTransform: candidate.requiresTransform,
                     label: candidate.logicalModel,
                     supportsLongContext: candidate.supportsLongContext,
-                    upstreamProviderRef: candidate.providerRef
+                    upstreamProviderRef: candidate.providerRef,
+                    source: candidate.source
                 )
             }
         }

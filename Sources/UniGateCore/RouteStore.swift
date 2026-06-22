@@ -51,7 +51,10 @@ public final class RouteStore: @unchecked Sendable {
         now: Date = Date()
     ) throws -> RouteState {
         let exists = catalog.candidates.contains {
-            $0.appType == appType && $0.logicalModel == logicalModel && $0.providerRef == providerRef
+            $0.appType == appType
+                && $0.logicalModel == logicalModel
+                && $0.providerRef == providerRef
+                && isSwitchableCandidate($0, in: catalog)
         }
         guard exists else {
             throw RouteStoreError.invalidCandidate(
@@ -85,6 +88,7 @@ public final class RouteStore: @unchecked Sendable {
                 $0.appType == routeKey.appType
                     && $0.logicalModel == routeKey.logicalModel
                     && $0.providerRef == providerRef
+                    && isSwitchableCandidate($0, in: catalog)
             }
             guard exists else {
                 throw RouteStoreError.invalidCandidate(
@@ -106,6 +110,9 @@ public final class RouteStore: @unchecked Sendable {
     public static func defaultState(candidates: [ModelCandidate]) -> RouteState {
         var grouped: [String: [ModelCandidate]] = [:]
         for candidate in candidates {
+            guard candidate.source != .staleDiscovered else {
+                continue
+            }
             grouped[candidate.routeKey.description, default: []].append(candidate)
         }
 
@@ -145,6 +152,10 @@ public final class RouteStore: @unchecked Sendable {
             merged.routes[key] = route
         }
         return merged
+    }
+
+    private func isSwitchableCandidate(_ candidate: ModelCandidate, in catalog: ProviderCatalog) -> Bool {
+        !candidate.isDiscoveryStale(in: catalog)
     }
 }
 

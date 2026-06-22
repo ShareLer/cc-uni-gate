@@ -73,59 +73,6 @@ struct ProviderModelDiscoveryTests {
     }
 
     @Test
-    func configuredClaudeDesktopModelsUseUpstreamModelAndIgnoreCustomAliases() {
-        let provider = ImportedProvider(
-            id: "desktop",
-            appType: "claude-desktop",
-            name: "DeepSeek Desktop",
-            category: nil,
-            sortIndex: 1,
-            isCurrent: false,
-            apiFormat: .anthropic,
-            baseURL: "https://api.deepseek.com/anthropic",
-            hasSecret: true,
-            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
-            meta: [:]
-        )
-        let baseCandidate = ModelCandidate(
-            logicalModel: "deepseek-v4-pro",
-            providerRef: provider.ref,
-            providerName: provider.name,
-            appType: provider.appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
-            upstreamModel: "deepseek-v4-pro[1M]",
-            baseURL: provider.baseURL,
-            requiresTransform: false,
-            label: "DeepSeek V4 Pro",
-            supportsLongContext: true
-        )
-        let customCandidate = ModelCandidate(
-            logicalModel: "uni-model",
-            providerRef: ProviderRef(appType: "claude-desktop", id: "custom"),
-            providerName: provider.name,
-            appType: provider.appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
-            upstreamModel: "deepseek-v4-pro[1M]",
-            baseURL: provider.baseURL,
-            requiresTransform: false,
-            label: "deepseek-v4-pro",
-            supportsLongContext: true,
-            upstreamProviderRef: provider.ref
-        )
-        let catalog = ProviderCatalog(
-            providers: [provider],
-            candidates: [baseCandidate, customCandidate]
-        )
-
-        #expect(ProviderModelDiscovery.configuredUpstreamModelIDs(
-            from: catalog,
-            appType: "claude-desktop"
-        ) == ["deepseek-v4-pro"])
-    }
-
-    @Test
     func discoveredCandidatesUseProviderConfigAndStripLogicalModel() throws {
         let provider = ImportedProvider(
             id: "desktop",
@@ -210,5 +157,51 @@ struct ProviderModelDiscoveryTests {
         let catalog = ProviderCatalog(providers: [currentProvider], candidates: [])
 
         #expect(ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog).isEmpty)
+    }
+
+    @Test
+    func discoveredCandidatesKeepLastSuccessfulModelsWhenDiscoveryFails() throws {
+        let provider = ImportedProvider(
+            id: "desktop",
+            appType: "claude-desktop",
+            name: "DeepSeek Desktop",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://api.deepseek.example/anthropic",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
+            meta: [:]
+        )
+        let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
+        let succeeded = ProviderModelDiscoveryResult(
+            providerRef: provider.ref,
+            appType: provider.appType,
+            providerName: provider.name,
+            modelIDs: ["auto", "deepseek-v4-pro"],
+            errorMessage: nil,
+            sourceURL: "https://api.deepseek.example/v1/models",
+            updatedAt: Date(timeIntervalSince1970: 1),
+            configurationFingerprint: fingerprint
+        )
+        var state = ProviderModelDiscoveryState(results: [provider.ref.description: succeeded])
+        state.upsert(ProviderModelDiscoveryResult(
+            providerRef: provider.ref,
+            appType: provider.appType,
+            providerName: provider.name,
+            modelIDs: [],
+            errorMessage: "timeout",
+            sourceURL: "https://api.deepseek.example/v1/models",
+            updatedAt: Date(timeIntervalSince1970: 2),
+            configurationFingerprint: fingerprint
+        ))
+
+        let catalog = ProviderCatalog(providers: [provider], candidates: [])
+        let candidates = ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog)
+
+        #expect(state.results[provider.ref.description]?.modelIDs == ["auto", "deepseek-v4-pro"])
+        #expect(candidates.map(\.logicalModel) == ["auto", "deepseek-v4-pro"])
+        #expect(candidates.allSatisfy { $0.source == .staleDiscovered })
     }
 }

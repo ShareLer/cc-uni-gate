@@ -217,6 +217,56 @@ struct CustomModelStoreTests {
     }
 
     @Test
+    func expandedCustomModelCandidatesPreserveStaleDiscoverySource() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let staleBase = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .staleDiscovered
+        )
+        let target = CustomModelTarget(routeKey: staleBase.routeKey, providerRef: provider.ref)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [staleBase])
+        let state = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                targets: [target],
+                selectedTargetID: target.id
+            )
+        ])
+
+        let expanded = state.expandedCandidates(from: catalog)
+        let candidate = try #require(expanded.first)
+
+        #expect(candidate.source == .staleDiscovered)
+        #expect(candidate.isDiscoveryStale(in: ProviderCatalog(
+            providers: [provider],
+            candidates: catalog.candidates + expanded
+        )))
+    }
+
+    @Test
     func baseCandidatesDeduplicateClaudeDesktopRoutesByUpstreamTarget() throws {
         let provider = ImportedProvider(
             id: "desktop",

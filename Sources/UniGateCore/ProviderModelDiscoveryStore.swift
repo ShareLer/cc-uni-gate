@@ -70,7 +70,21 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
     }
 
     public mutating func upsert(_ result: ProviderModelDiscoveryResult) {
-        results[result.providerRef.description] = result
+        let key = result.providerRef.description
+        guard
+            result.errorMessage != nil,
+            result.modelIDs.isEmpty,
+            var previous = results[key],
+            !previous.modelIDs.isEmpty,
+            previous.configurationFingerprint == result.configurationFingerprint
+        else {
+            results[key] = result
+            return
+        }
+        previous.errorMessage = result.errorMessage
+        previous.sourceURL = result.sourceURL ?? previous.sourceURL
+        previous.updatedAt = result.updatedAt
+        results[key] = previous
     }
 }
 

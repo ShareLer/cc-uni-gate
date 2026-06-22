@@ -885,6 +885,58 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func resolvesExistingRoutesForStaleDiscoveredCandidates() throws {
+        let provider = ImportedProvider(
+            id: "discovered",
+            appType: "codex",
+            name: "Discovered Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://discovered.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("discovered-key")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .staleDiscovered
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteState(routes: [
+            candidate.routeKey.description: ActiveRoute(
+                appType: candidate.appType,
+                logicalModel: candidate.logicalModel,
+                providerRef: candidate.providerRef,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: Data(#"{"model":"qwen3.6","input":"hello"}"#.utf8)
+        )
+
+        #expect(resolved.candidate.source == .staleDiscovered)
+        #expect(resolved.outboundModel == "qwen3.6")
+    }
+
+    @Test
     func rejectsClaudeRoleFallbackWhenFableRouteIsAbsentForClaudeCode() throws {
         let provider = ImportedProvider(
             id: "p1",

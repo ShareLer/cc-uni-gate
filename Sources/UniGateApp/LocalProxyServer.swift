@@ -612,11 +612,6 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot, appType: String?) async -> HTTPResponse {
         let appType = appType ?? "codex"
-        if appType == "claude-desktop" {
-            let modelIDs = await claudeDesktopModelIDs(snapshot)
-            return openAIModelListResponse(modelIDs: modelIDs, models: modelIDs)
-        }
-
         let routeKeys = ProviderModelListing.routeKeys(from: snapshot.catalog, appType: appType)
         let modelIDs = Array(Set(routeKeys.map(\.logicalModel))).sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }
@@ -628,70 +623,6 @@ final class LocalProxyServer: @unchecked Sendable {
             "data": data,
             "models": models
         ], allowsCORS: true)
-    }
-
-    private func openAIModelListResponse(modelIDs: [String], models: Any) -> HTTPResponse {
-        let data = modelIDs.map { ["id": $0, "object": "model"] }
-        return .json(status: 200, body: [
-            "object": "list",
-            "data": data,
-            "models": models
-        ], allowsCORS: true)
-    }
-
-    private func claudeDesktopModelIDs(_ snapshot: ProxyRuntimeSnapshot) async -> [String] {
-        let providers = snapshot.catalog.providers.filter { $0.appType == "claude-desktop" }
-        var discovered: [String] = []
-
-        await withTaskGroup(of: [String].self) { group in
-            for provider in providers {
-                group.addTask {
-                    await self.fetchProviderModelIDs(provider)
-                }
-            }
-            for await ids in group {
-                discovered.append(contentsOf: ids)
-            }
-        }
-
-        let configured = ProviderModelDiscovery.configuredUpstreamModelIDs(
-            from: snapshot.catalog,
-            appType: "claude-desktop"
-        )
-        return ProviderModelDiscovery.mergedModelIDs(discovered + configured)
-    }
-
-    private func fetchProviderModelIDs(_ provider: ImportedProvider) async -> [String] {
-        guard let plan = ProviderModelDiscovery.fetchPlan(for: provider) else {
-            return []
-        }
-
-        for url in plan.urls {
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 15
-            for (key, value) in plan.headers {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
-            if let userAgent = plan.userAgent {
-                request.setValue(userAgent, forHTTPHeaderField: "user-agent")
-            }
-
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if (200..<300).contains(status) {
-                    return ProviderModelDiscovery.modelIDs(from: data)
-                }
-                if status == 404 || status == 405 {
-                    continue
-                }
-                return []
-            } catch {
-                return []
-            }
-        }
-        return []
     }
 
     private func codexModelCatalog(routeKeys: [ModelRouteKey], candidates: [ModelCandidate]) -> [[String: Any]] {

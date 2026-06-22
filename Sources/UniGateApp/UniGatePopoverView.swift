@@ -496,10 +496,17 @@ struct UniGatePopoverRootView: View {
             }
 
             if let error = result.errorMessage {
-                Text(error)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(error)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !result.modelIDs.isEmpty {
+                        Text("保留上次成功的 \(result.modelIDs.count) 个模型")
+                            .font(.system(size: 10))
+                            .foregroundStyle(UGPopoverStyle.textSecondary)
+                    }
+                }
             } else {
                 Text(result.modelIDs.prefix(8).joined(separator: ", "))
                     .font(.system(size: 11, design: .monospaced))
@@ -1063,14 +1070,14 @@ struct UniGatePopoverRootView: View {
             }
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: selected ? (unavailable ? "xmark.circle.fill" : "checkmark.circle.fill") : "circle")
+                Image(systemName: unavailable ? "xmark.circle.fill" : selected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(selected ? (unavailable ? .red : brand) : UGPopoverStyle.textSecondary)
+                    .foregroundStyle(unavailable ? .red : selected ? brand : UGPopoverStyle.textSecondary)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(candidate.providerName)
                         .font(.system(size: 12, weight: selected ? .semibold : .regular))
-                        .foregroundStyle(selected ? (unavailable ? .red : brand) : .primary)
+                        .foregroundStyle(unavailable ? .red : selected ? brand : .primary)
                         .lineLimit(1)
                     Text(providerDetail(candidate))
                         .font(.caption2)
@@ -1080,7 +1087,7 @@ struct UniGatePopoverRootView: View {
 
                 Spacer(minLength: 8)
 
-                if selected {
+                if unavailable || selected {
                     Text(unavailable ? "失效" : "当前")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(unavailable ? .red : brand)
@@ -1095,9 +1102,11 @@ struct UniGatePopoverRootView: View {
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                selected
-                    ? (unavailable ? UGPopoverStyle.deleteConfirmFill : UGPopoverStyle.brandSelectionFill(brand))
-                    : Color.clear,
+                unavailable
+                    ? UGPopoverStyle.deleteConfirmFill
+                    : selected
+                        ? UGPopoverStyle.brandSelectionFill(brand)
+                        : Color.clear,
                 in: RoundedRectangle(cornerRadius: 8)
             )
             .overlay(
@@ -1151,8 +1160,13 @@ struct UniGatePopoverRootView: View {
             parts.append(candidate.upstreamModelDisplayName)
         }
         parts.append(candidate.requiresTransform ? "需要转换" : candidate.apiFormat.rawValue)
-        if candidate.source == .discovered {
+        switch candidate.source {
+        case .discovered:
             parts.append("探测到")
+        case .staleDiscovered:
+            parts.append("探测失效")
+        case .configured:
+            break
         }
         return parts.joined(separator: " · ")
     }
@@ -2133,8 +2147,13 @@ private struct InlineCustomModelEditorView: View {
         } else {
             parts.append(candidate.apiFormat.rawValue)
         }
-        if candidate.source == .discovered {
+        switch candidate.source {
+        case .discovered:
             parts.append("探测到")
+        case .staleDiscovered:
+            parts.append("探测失效")
+        case .configured:
+            break
         }
         return parts.joined(separator: " · ")
     }
