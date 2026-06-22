@@ -93,6 +93,63 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func modelListingUsesFullCatalogWhileProxyCatalogRemainsScoped() throws {
+        let configured = ImportedProvider(
+            id: "configured",
+            appType: "codex",
+            name: "Configured Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://configured.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("configured-key")])],
+            meta: [:]
+        )
+        let discovered = ImportedProvider(
+            id: "discovered",
+            appType: "codex",
+            name: "Discovered Provider",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://discovered.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("discovered-key")])],
+            meta: [:]
+        )
+        let fullCatalog = ProviderCatalog(providers: [configured, discovered], candidates: [
+            candidate(provider: configured, logicalModel: "gpt-5.5"),
+            ModelCandidate(
+                logicalModel: "qwen3.6",
+                providerRef: discovered.ref,
+                providerName: discovered.name,
+                appType: discovered.appType,
+                clientProtocol: .codexResponses,
+                apiFormat: discovered.apiFormat,
+                upstreamModel: "qwen3.6",
+                baseURL: discovered.baseURL,
+                requiresTransform: false,
+                label: nil,
+                supportsLongContext: false,
+                source: .discovered
+            )
+        ])
+        let scopedCatalog = fullCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            customModels: CustomModelState()
+        )
+
+        #expect(ProviderModelListing.routeKeys(from: fullCatalog, appType: "codex").map(\.logicalModel) == [
+            "gpt-5.5",
+            "qwen3.6"
+        ])
+        #expect(scopedCatalog.routeKeys.map(\.logicalModel) == ["gpt-5.5"])
+    }
+
+    @Test
     func resolvesCcSwitchStyleCodexRootPath() throws {
         let provider = ImportedProvider(
             id: "p1",

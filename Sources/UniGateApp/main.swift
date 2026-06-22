@@ -663,6 +663,10 @@ extension AppDelegate: LocalProxyRuntime {
         ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes)
     }
 
+    func modelListSnapshot() -> ProxyRuntimeSnapshot {
+        ProxyRuntimeSnapshot(catalog: catalog, routes: routes)
+    }
+
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()

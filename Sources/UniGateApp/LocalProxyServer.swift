@@ -5,6 +5,7 @@ import Network
 @MainActor
 protocol LocalProxyRuntime: AnyObject {
     func proxySnapshot() -> ProxyRuntimeSnapshot
+    func modelListSnapshot() -> ProxyRuntimeSnapshot
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
     func recordProxyEvent(level: ProxyEvent.Level, message: String)
@@ -181,7 +182,7 @@ final class LocalProxyServer: @unchecked Sendable {
             }
 
             if request.method == "GET", case let .models(appType) = ProxyRequestPath(request.path) {
-                let snapshot = await MainActor.run { runtime.proxySnapshot() }
+                let snapshot = await MainActor.run { runtime.modelListSnapshot() }
                 return await modelsResponse(snapshot, appType: appType)
             }
 
@@ -614,8 +615,7 @@ final class LocalProxyServer: @unchecked Sendable {
             return openAIModelListResponse(modelIDs: modelIDs, models: modelIDs)
         }
 
-        let routeKeys = snapshot.catalog.routeKeys
-            .filter { $0.appType == appType }
+        let routeKeys = ProviderModelListing.routeKeys(from: snapshot.catalog, appType: appType)
         let modelIDs = Array(Set(routeKeys.map(\.logicalModel))).sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }
         let models: Any = appType == "codex"
