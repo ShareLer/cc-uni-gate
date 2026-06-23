@@ -97,9 +97,6 @@ public enum ModelRouteVisibility {
         guard isUniGateScopedApp(routeKey.appType) else {
             return true
         }
-        if customModels.models.contains(where: { $0.appType == routeKey.appType && $0.name == routeKey.logicalModel }) {
-            return uniGateModelScope.contains(routeKey)
-        }
         if routeKey.appType == "claude-desktop" {
             return true
         }

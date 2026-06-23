@@ -16,6 +16,7 @@ public struct CustomModelDefinition: Codable, Hashable, Identifiable, Sendable {
     public let id: UUID
     public var appType: String
     public var name: String
+    public var forceEnabled: Bool
     public var targets: [CustomModelTarget]
     public var selectedTargetID: UUID?
 
@@ -23,14 +24,45 @@ public struct CustomModelDefinition: Codable, Hashable, Identifiable, Sendable {
         id: UUID = UUID(),
         appType: String,
         name: String,
+        forceEnabled: Bool = false,
         targets: [CustomModelTarget] = [],
         selectedTargetID: UUID? = nil
     ) {
         self.id = id
         self.appType = appType
         self.name = name
+        self.forceEnabled = forceEnabled
         self.targets = targets
         self.selectedTargetID = selectedTargetID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case appType
+        case name
+        case forceEnabled
+        case targets
+        case selectedTargetID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.appType = try container.decode(String.self, forKey: .appType)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.forceEnabled = try container.decodeIfPresent(Bool.self, forKey: .forceEnabled) ?? false
+        self.targets = try container.decodeIfPresent([CustomModelTarget].self, forKey: .targets) ?? []
+        self.selectedTargetID = try container.decodeIfPresent(UUID.self, forKey: .selectedTargetID)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(appType, forKey: .appType)
+        try container.encode(name, forKey: .name)
+        try container.encode(forceEnabled, forKey: .forceEnabled)
+        try container.encode(targets, forKey: .targets)
+        try container.encodeIfPresent(selectedTargetID, forKey: .selectedTargetID)
     }
 
     public var selectedTarget: CustomModelTarget? {
@@ -71,6 +103,12 @@ public struct CustomModelState: Codable, Sendable {
         "\(target.routeKey.description)|\(target.providerRef.description)"
     }
 
+    public func definition(for routeKey: ModelRouteKey) -> CustomModelDefinition? {
+        models.first {
+            $0.appType == routeKey.appType && $0.name == routeKey.logicalModel
+        }
+    }
+
     public func baseCandidates(
         from catalog: ProviderCatalog,
         preserving targets: [CustomModelTarget] = []
@@ -90,43 +128,50 @@ public struct CustomModelState: Codable, Sendable {
 
     public func expandedCandidates(from catalog: ProviderCatalog) -> [ModelCandidate] {
         models.flatMap { definition in
-            let preferredTargetID = definition.selectedTarget?.id
-            var matchedTargets: [(CustomModelTarget, ModelCandidate)] = []
+            expandedCandidates(for: definition, from: catalog)
+        }
+    }
 
-            for target in definition.targets where target.routeKey.appType == definition.appType {
-                guard let candidate = catalog.candidates.first(where: {
-                    $0.appType == target.routeKey.appType
-                        && $0.logicalModel == target.routeKey.logicalModel
-                        && $0.providerRef == target.providerRef
-                }) else {
-                    continue
-                }
-                matchedTargets.append((target, candidate))
-            }
+    public func expandedCandidates(
+        for definition: CustomModelDefinition,
+        from catalog: ProviderCatalog
+    ) -> [ModelCandidate] {
+        let preferredTargetID = definition.selectedTarget?.id
+        var matchedTargets: [(CustomModelTarget, ModelCandidate)] = []
 
-            if let preferredTargetID,
-               let index = matchedTargets.firstIndex(where: { $0.0.id == preferredTargetID }) {
-                let preferred = matchedTargets.remove(at: index)
-                matchedTargets.insert(preferred, at: 0)
+        for target in definition.targets where target.routeKey.appType == definition.appType {
+            guard let candidate = catalog.candidates.first(where: {
+                $0.appType == target.routeKey.appType
+                    && $0.logicalModel == target.routeKey.logicalModel
+                    && $0.providerRef == target.providerRef
+            }) else {
+                continue
             }
+            matchedTargets.append((target, candidate))
+        }
 
-            return matchedTargets.map { _, candidate in
-                ModelCandidate(
-                    logicalModel: definition.name,
-                    providerRef: ProviderRef(appType: definition.appType, id: "\(candidate.providerRef.description)|\(candidate.routeKey.description)"),
-                    providerName: candidate.providerName,
-                    appType: definition.appType,
-                    clientProtocol: candidate.clientProtocol,
-                    apiFormat: candidate.apiFormat,
-                    upstreamModel: candidate.upstreamModel,
-                    baseURL: candidate.baseURL,
-                    requiresTransform: candidate.requiresTransform,
-                    label: candidate.logicalModel,
-                    supportsLongContext: candidate.supportsLongContext,
-                    upstreamProviderRef: candidate.providerRef,
-                    source: candidate.source
-                )
-            }
+        if let preferredTargetID,
+           let index = matchedTargets.firstIndex(where: { $0.0.id == preferredTargetID }) {
+            let preferred = matchedTargets.remove(at: index)
+            matchedTargets.insert(preferred, at: 0)
+        }
+
+        return matchedTargets.map { _, candidate in
+            ModelCandidate(
+                logicalModel: definition.name,
+                providerRef: ProviderRef(appType: definition.appType, id: "\(candidate.providerRef.description)|\(candidate.routeKey.description)"),
+                providerName: candidate.providerName,
+                appType: definition.appType,
+                clientProtocol: candidate.clientProtocol,
+                apiFormat: candidate.apiFormat,
+                upstreamModel: candidate.upstreamModel,
+                baseURL: candidate.baseURL,
+                requiresTransform: candidate.requiresTransform,
+                label: candidate.logicalModel,
+                supportsLongContext: candidate.supportsLongContext,
+                upstreamProviderRef: candidate.providerRef,
+                source: candidate.source
+            )
         }
     }
 

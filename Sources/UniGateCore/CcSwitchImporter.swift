@@ -8,6 +8,28 @@ public struct CcSwitchImporter: Sendable {
         self.dbPath = dbPath
     }
 
+    public func loadConfigurationFingerprint() throws -> CcSwitchConfigurationFingerprint {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
+
+        let providers = try dbQueue.read { db in
+            try ProviderRow.fetchAll(
+                db,
+                sql: """
+                select id, app_type, name, settings_config, category, sort_index, meta, is_current
+                from providers
+                where app_type in ('claude', 'claude-desktop', 'codex')
+                order by app_type, coalesce(sort_index, 999999), name, id
+                """
+            )
+        }
+
+        return CcSwitchConfigurationFingerprint(
+            providers: providers.map(CcSwitchConfigurationProviderFingerprint.init(row:))
+        )
+    }
+
     public func loadCatalog() throws -> ProviderCatalog {
         var configuration = Configuration()
         configuration.readonly = true
@@ -490,5 +512,57 @@ private struct ProviderRow: FetchableRecord, Decodable {
         case sortIndex = "sort_index"
         case meta
         case isCurrent = "is_current"
+    }
+}
+
+public struct CcSwitchConfigurationFingerprint: Sendable, Equatable {
+    public var providers: [CcSwitchConfigurationProviderFingerprint]
+
+    public init(providers: [CcSwitchConfigurationProviderFingerprint]) {
+        self.providers = providers
+    }
+}
+
+public struct CcSwitchConfigurationProviderFingerprint: Sendable, Equatable {
+    public var id: String
+    public var appType: String
+    public var name: String
+    public var settingsConfig: String
+    public var category: String?
+    public var sortIndex: Int?
+    public var meta: String?
+    public var isCurrent: Bool
+
+    public init(
+        id: String,
+        appType: String,
+        name: String,
+        settingsConfig: String,
+        category: String?,
+        sortIndex: Int?,
+        meta: String?,
+        isCurrent: Bool
+    ) {
+        self.id = id
+        self.appType = appType
+        self.name = name
+        self.settingsConfig = settingsConfig
+        self.category = category
+        self.sortIndex = sortIndex
+        self.meta = meta
+        self.isCurrent = isCurrent
+    }
+
+    fileprivate init(row: ProviderRow) {
+        self.init(
+            id: row.id,
+            appType: row.appType,
+            name: row.name,
+            settingsConfig: row.settingsConfig,
+            category: row.category,
+            sortIndex: row.sortIndex,
+            meta: row.meta,
+            isCurrent: row.isCurrent
+        )
     }
 }

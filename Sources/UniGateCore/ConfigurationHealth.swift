@@ -237,7 +237,7 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
                     actionTitle: "编辑"
                 ))
             }
-            if !uniGateModelScope.contains(routeKey) {
+            if !uniGateModelScope.contains(routeKey) && !definition.forceEnabled {
                 items.append(ConfigurationHealthItem(
                     id: "custom-unconfigured-\(routeKey.description)",
                     severity: .info,

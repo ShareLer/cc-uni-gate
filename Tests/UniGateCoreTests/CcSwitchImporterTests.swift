@@ -239,6 +239,54 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func configurationFingerprintIgnoresNonProviderTables() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "p1",
+                appType: "codex",
+                name: "Provider 1",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"https://api.example.com\\"\\nwire_api = \\"responses\\""
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#
+            )
+            try db.execute(sql: """
+                create table proxy_request_logs (
+                    request_id text primary key,
+                    app_type text,
+                    model text
+                )
+                """)
+        }
+        let importer = CcSwitchImporter(dbPath: dbURL.path)
+        let before = try importer.loadConfigurationFingerprint()
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "insert into proxy_request_logs (request_id, app_type, model) values (?, ?, ?)",
+                arguments: ["r1", "codex", "gpt-5.5"]
+            )
+        }
+        let afterUsageWrite = try importer.loadConfigurationFingerprint()
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "update providers set name = ? where id = ?",
+                arguments: ["Provider 1 Renamed", "p1"]
+            )
+        }
+        let afterProviderWrite = try importer.loadConfigurationFingerprint()
+
+        #expect(afterUsageWrite == before)
+        #expect(afterProviderWrite != before)
+    }
+
+    @Test
     func importsClaudeFableModelField() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)

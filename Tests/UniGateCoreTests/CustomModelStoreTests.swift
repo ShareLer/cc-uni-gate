@@ -157,6 +157,25 @@ struct CustomModelStoreTests {
     }
 
     @Test
+    func loadsLegacyCustomModelStateWithoutForceEnabled() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("custom-models.json")
+        try FileManager.default.createDirectory(
+            at: tmp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let targetID = UUID()
+        try Data(#"{"models":[{"id":"\#(UUID().uuidString)","appType":"codex","name":"legacy","targets":[{"id":"\#(targetID.uuidString)","routeKey":{"appType":"codex","logicalModel":"gpt-5.5"},"providerRef":{"appType":"codex","id":"p1"}}],"selectedTargetID":"\#(targetID.uuidString)"}]}"#.utf8)
+            .write(to: tmp)
+        let store = CustomModelStore(fileURL: tmp)
+
+        let loaded = try store.load()
+
+        #expect(loaded.models.first?.forceEnabled == false)
+    }
+
+    @Test
     func expandsAllSelectedTargetsForCustomModel() throws {
         let provider = ImportedProvider(
             id: "p1",
@@ -214,6 +233,65 @@ struct CustomModelStoreTests {
         #expect(expanded.count == 2)
         #expect(expanded.first?.upstreamModel == "pro-upstream")
         #expect(expanded.last?.upstreamModel == "fast-upstream")
+    }
+
+    @Test
+    func expandsOnlySelectedTargetsWhenCustomModelNameMatchesBaseModel() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let qwen = ModelCandidate(
+            logicalModel: "qwen3.6",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "qwen3.6",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let auto = ModelCandidate(
+            logicalModel: "auto",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "auto",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let target = CustomModelTarget(routeKey: auto.routeKey, providerRef: provider.ref)
+        let definition = CustomModelDefinition(
+            appType: "codex",
+            name: "qwen3.6",
+            forceEnabled: true,
+            targets: [target],
+            selectedTargetID: target.id
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [qwen, auto])
+        let state = CustomModelState(models: [definition])
+
+        let expanded = state.expandedCandidates(for: definition, from: catalog)
+
+        #expect(expanded.count == 1)
+        #expect(expanded.first?.logicalModel == "qwen3.6")
+        #expect(expanded.first?.upstreamModel == "auto")
     }
 
     @Test

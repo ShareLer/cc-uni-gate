@@ -4,7 +4,13 @@ import Foundation
 final class FileLogger: @unchecked Sendable {
     let fileURL: URL
     private let queue = DispatchQueue(label: "unigate.file-logger")
-    private let formatter = ISO8601DateFormatter()
+    private let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
+        return formatter
+    }()
 
     init(fileURL: URL = AppPaths.logFileURL()) {
         self.fileURL = fileURL

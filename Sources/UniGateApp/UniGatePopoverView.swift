@@ -841,6 +841,7 @@ struct UniGatePopoverRootView: View {
         let customModel = state.customModel(for: key)
         let routeStatusText = state.routeStatusText(for: group)
         let hasRouteIssue = routeStatusText == "目标失效"
+        let isForceEnabledModel = customModel?.forceEnabled == true
         let isConfirmingDelete = customModel?.id == pendingDeleteCustomModelID
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
@@ -861,6 +862,9 @@ struct UniGatePopoverRootView: View {
                     if let routeStatusText {
                         routeStatusTag(routeStatusText, isError: hasRouteIssue)
                     } else if isOperable {
+                        if isForceEnabledModel {
+                            forceEnabledTag()
+                        }
                         providerTag(
                             active?.providerName ?? "未选择",
                             isExpanded: showsExpandedProviders,
@@ -1017,6 +1021,16 @@ struct UniGatePopoverRootView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(isError ? UGPopoverStyle.deleteConfirmBorder : Color.clear)
             )
+    }
+
+    private func forceEnabledTag() -> some View {
+        Text("强制启用")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.orange)
+            .lineLimit(1)
+            .frame(width: 62, height: 20)
+            .background(UGPopoverStyle.issueBubbleFill, in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(UGPopoverStyle.issueBubbleBorder))
     }
 
     private func disabledAwareBorder(_ isOperable: Bool) -> Color {
@@ -1794,6 +1808,7 @@ private struct InlineCustomModelEditorView: View {
 
     @State private var name: String
     @State private var appType: String
+    @State private var forceEnabled: Bool
     @State private var selectedTargetIDs: Set<String>
     @State private var currentTargetID: String
 
@@ -1846,6 +1861,7 @@ private struct InlineCustomModelEditorView: View {
         self.onCancel = onCancel
         _name = State(initialValue: existing?.name ?? "")
         _appType = State(initialValue: initial)
+        _forceEnabled = State(initialValue: existing?.forceEnabled ?? false)
         _selectedTargetIDs = State(initialValue: targetIDs)
         _currentTargetID = State(initialValue: initialTargetID)
     }
@@ -1901,6 +1917,17 @@ private struct InlineCustomModelEditorView: View {
                 TextField("例如 customer_model", text: $name)
                     .textFieldStyle(.roundedBorder)
             }
+
+            Toggle(isOn: $forceEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("强制启用")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("未配置在 cc-switch 的 UniGate 中时，也允许显示和路由。")
+                        .font(.caption2)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                }
+            }
+            .toggleStyle(.switch)
 
             editorField(title: "应用") {
                 appTypeSelector
@@ -2127,6 +2154,7 @@ private struct InlineCustomModelEditorView: View {
             id: existing?.id ?? UUID(),
             appType: appType,
             name: trimmedName,
+            forceEnabled: forceEnabled,
             targets: targets,
             selectedTargetID: selectedTargetID
         ))

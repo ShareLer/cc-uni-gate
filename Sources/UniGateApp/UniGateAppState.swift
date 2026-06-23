@@ -13,6 +13,7 @@ final class UniGateAppState: ObservableObject {
 
     enum CustomModelAvailability {
         case configured
+        case forceEnabled
         case unconfigured
         case missingTarget
     }
@@ -196,11 +197,14 @@ final class UniGateAppState: ObservableObject {
     }
 
     func candidates(for routeKey: ModelRouteKey) -> [ModelCandidate] {
-        let candidates = catalog.candidates(for: routeKey)
         guard let definition = customModel(for: routeKey) else {
+            let candidates = catalog.candidates(for: routeKey)
             return candidates.filter(isCandidateInUniGateScope)
         }
-        var scopedCandidates = candidates.filter(isCandidateInUniGateScope)
+        let candidates = customModels.expandedCandidates(for: definition, from: catalog)
+        var scopedCandidates = definition.forceEnabled
+            ? candidates
+            : candidates.filter(isCandidateInUniGateScope)
         if let missingSelectedTargetCandidate = missingSelectedTargetCandidate(for: definition) {
             scopedCandidates.append(missingSelectedTargetCandidate)
         }
@@ -306,6 +310,8 @@ final class UniGateAppState: ObservableObject {
             switch availability {
             case .configured:
                 break
+            case .forceEnabled:
+                break
             case .unconfigured:
                 return "未在 cc-switch 中配置"
             case .missingTarget:
@@ -333,14 +339,14 @@ final class UniGateAppState: ObservableObject {
             return .missingTarget
         }
         guard isConfigured(routeKey) else {
-            return .unconfigured
+            return definition.forceEnabled ? .forceEnabled : .unconfigured
         }
         return .configured
     }
 
     func isRouteOperable(_ routeGroup: ModelRouteGroup) -> Bool {
         switch customModelAvailability(for: routeGroup.routeKey) {
-        case .none, .configured:
+        case .none, .configured, .forceEnabled:
             return true
         case .missingTarget:
             return candidates(for: routeGroup).count > 1
@@ -353,6 +359,8 @@ final class UniGateAppState: ObservableObject {
         if let availability = customModelAvailability(for: routeGroup.routeKey) {
             switch availability {
             case .configured:
+                return nil
+            case .forceEnabled:
                 return nil
             case .unconfigured:
                 return "未配置"

@@ -402,8 +402,11 @@ public struct ProviderCatalog: Sendable {
                 && ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
         }
         let baseCatalog = ProviderCatalog(providers: providers, candidates: baseCandidates)
-        let customCandidates = customModels.expandedCandidates(from: self).filter {
-            uniGateModelScope.contains($0.routeKey)
+        let customCandidates = customModels.expandedCandidates(from: self).filter { candidate in
+            guard let definition = customModels.definition(for: candidate.routeKey) else {
+                return false
+            }
+            return definition.forceEnabled || uniGateModelScope.contains(candidate.routeKey)
         }
         return ProviderCatalog(
             providers: providers,

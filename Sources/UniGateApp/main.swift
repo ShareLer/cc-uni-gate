@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var healthCheckTask: Task<Void, Never>?
     private var automaticModelDiscoveryTask: Task<Void, Never>?
     private let dbWatcher = CcSwitchDatabaseWatcher()
+    private var ccSwitchConfigurationFingerprint: CcSwitchConfigurationFingerprint?
     private let logger = FileLogger()
 
     private struct ImportedConfigurationSnapshot: Sendable {
@@ -62,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             customModels = try customModelStore.load()
             discoveryState = try discoveryStore.load()
             let importedSnapshot = try loadImportedConfigurationSnapshot()
+            ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
             pruneDiscoveryState(for: importedSnapshot.catalog)
             applyImportedConfigurationSnapshot(importedSnapshot)
             routes = try routeStore.load(catalog: proxyCatalog())
@@ -129,7 +131,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func reloadFromCcSwitchDBChange() {
-        reloadCatalog(recordEventMessage: "检测到 cc-switch DB 变化，已自动重新加载")
+        do {
+            let nextFingerprint = try currentImporter().loadConfigurationFingerprint()
+            guard nextFingerprint != ccSwitchConfigurationFingerprint else {
+                dbWatcher.refreshBaseline(dbPath: defaultCcSwitchDBPath())
+                return
+            }
+            ccSwitchConfigurationFingerprint = nextFingerprint
+            reloadCatalog(recordEventMessage: "检测到 cc-switch 配置变化，已自动重新加载")
+        } catch {
+            reloadCatalog(recordEventMessage: "检测到 cc-switch DB 变化，已自动重新加载")
+        }
     }
 
     private func saveSettings(_ preferences: AppPreferences, customModels: CustomModelState) {
@@ -747,7 +759,7 @@ extension AppDelegate: LocalProxyRuntime {
     }
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
-        ProxyRuntimeSnapshot(catalog: catalog, routes: routes)
+        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes)
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
@@ -755,6 +767,7 @@ extension AppDelegate: LocalProxyRuntime {
         customModels = try customModelStore.load()
         discoveryState = try discoveryStore.load()
         let importedSnapshot = try loadImportedConfigurationSnapshot()
+        ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
         pruneDiscoveryState(for: importedSnapshot.catalog)
         applyImportedConfigurationSnapshot(importedSnapshot)
         routes = try routeStore.load(catalog: proxyCatalog())

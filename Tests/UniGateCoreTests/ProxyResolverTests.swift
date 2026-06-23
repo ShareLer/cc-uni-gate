@@ -93,7 +93,7 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func modelListingUsesFullCatalogWhileProxyCatalogRemainsScoped() throws {
+    func modelListingUsesProxyScopedCatalog() throws {
         let configured = ImportedProvider(
             id: "configured",
             appType: "codex",
@@ -147,6 +147,79 @@ struct ProxyResolverTests {
             "qwen3.6"
         ])
         #expect(scopedCatalog.routeKeys.map(\.logicalModel) == ["gpt-5.5"])
+    }
+
+    @Test
+    func scopedProxyCatalogIncludesForceEnabledCustomModelsOutsideUniGateScope() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = candidate(provider: provider, logicalModel: "qwen3.6")
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let rawCatalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                forceEnabled: true,
+                targets: [target],
+                selectedTargetID: target.id
+            )
+        ])
+
+        let scopedCatalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            customModels: customModels
+        )
+        let routes = RouteStore.defaultState(candidates: scopedCatalog.candidates)
+
+        #expect(scopedCatalog.routeKeys.map(\.description) == ["codex:customer_model"])
+        #expect(routes.routes["codex:customer_model"] != nil)
+    }
+
+    @Test
+    func scopedProxyCatalogExcludesUnconfiguredCustomModelsWithoutForceEnabled() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = candidate(provider: provider, logicalModel: "qwen3.6")
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let rawCatalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                targets: [target],
+                selectedTargetID: target.id
+            )
+        ])
+
+        let scopedCatalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            customModels: customModels
+        )
+
+        #expect(scopedCatalog.routeKeys.isEmpty)
     }
 
     @Test
