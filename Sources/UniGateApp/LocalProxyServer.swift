@@ -37,6 +37,21 @@ enum ProxyListenerState: Sendable {
 }
 
 final class LocalProxyServer: @unchecked Sendable {
+    private static let upstreamRequestTimeout: TimeInterval = 600
+
+    private struct ProxyStreamStats {
+        var bytesForwarded = 0
+        var chunksForwarded = 0
+        var linesObserved = 0
+        var sawSSEFailure = false
+        var sseFailureDetail: String?
+    }
+
+    private enum ProxyTransferError: Error {
+        case downstream(Error, stats: ProxyStreamStats)
+        case upstream(Error, stats: ProxyStreamStats)
+    }
+
     let id = UUID()
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
@@ -213,11 +228,14 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private func proxy(_ request: HTTPRequest, on connection: NWConnection) async {
         let startedAt = Date()
+        let requestID = Self.makeRequestID()
         var requestAppType: String?
         var providerFailureAppType: String?
         var providerFailureContext: String?
         var resolvedContext: String?
         var metricKey: RequestMetricKey?
+        var statusCode: Int?
+        var responseHeadersSent = false
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
             guard let route = proxyRoute(for: request.path) else {
@@ -225,6 +243,11 @@ final class LocalProxyServer: @unchecked Sendable {
                 return
             }
             requestAppType = route.appType
+            await recordProxyLog(
+                requestID: requestID,
+                phase: "received",
+                message: "path=\(request.path) app=\(route.appType) inboundModel=\(Self.requestedModel(in: request.body) ?? "<missing>") bodyBytes=\(request.body.count) stream=\(Self.requestWantsStream(request.body))"
+            )
             let resolved = try ProxyResolver.resolveRoute(
                 catalog: snapshot.catalog,
                 routes: snapshot.routes,
@@ -240,10 +263,16 @@ final class LocalProxyServer: @unchecked Sendable {
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
             }
+            await recordProxyLog(
+                requestID: requestID,
+                phase: "resolved",
+                message: "\(Self.resolvedContext(for: resolved))"
+            )
 
             var upstreamRequest = URLRequest(url: resolved.upstreamURL)
             upstreamRequest.httpMethod = "POST"
             upstreamRequest.httpBody = resolved.body
+            upstreamRequest.timeoutInterval = Self.upstreamRequestTimeout
             upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
 
             for (key, value) in copyAllowedHeaders(request.headers) {
@@ -253,26 +282,29 @@ final class LocalProxyServer: @unchecked Sendable {
                 upstreamRequest.setValue(value, forHTTPHeaderField: key)
             }
 
+            await recordProxyLog(
+                requestID: requestID,
+                phase: "upstream-start",
+                message: "method=POST timeoutSeconds=\(Int(Self.upstreamRequestTimeout)) \(Self.resolvedContext(for: resolved))"
+            )
             let (bytes, response) = try await URLSession.shared.bytes(for: upstreamRequest)
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 502
+            statusCode = status
             let headers = forwardResponseHeaders(http)
             let providerFailure = Self.isProviderFailureStatus(status)
+            await recordProxyLog(
+                requestID: requestID,
+                phase: "upstream-headers",
+                message: "status=\(status) providerFailure=\(providerFailure) contentType=\(Self.headerValue(headers, name: "content-type") ?? "-") \(Self.resolvedContext(for: resolved))"
+            )
             await MainActor.run {
                 if providerFailure {
                     runtime.proxyProviderDidFail(
                         appType: resolved.candidate.appType,
                         message: "\(providerFailureContext ?? resolved.providerName) 返回 HTTP \(status)"
                     )
-                } else if status >= 200 && status < 400 {
-                    runtime.proxyProviderDidSucceed()
                 }
-            }
-            await MainActor.run {
-                runtime.recordProxyEvent(
-                    level: .info,
-                    message: "\(request.path) \(Self.resolvedContext(for: resolved)) \(status)"
-                )
             }
             if resolved.responseTransform != .none {
                 try await sendTransformedResponse(
@@ -283,6 +315,9 @@ final class LocalProxyServer: @unchecked Sendable {
                     on: connection
                 )
                 await MainActor.run {
+                    if !providerFailure, status >= 200 && status < 400 {
+                        runtime.proxyProviderDidSucceed()
+                    }
                     runtime.recordRequestMetric(
                         key: Self.metricKey(for: resolved),
                         statusCode: status,
@@ -291,34 +326,55 @@ final class LocalProxyServer: @unchecked Sendable {
                         providerFailure: providerFailure
                     )
                 }
-                return
-            }
-            await MainActor.run {
-                runtime.recordRequestMetric(
-                    key: Self.metricKey(for: resolved),
-                    statusCode: status,
-                    latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
-                    errorMessage: providerFailure ? "HTTP \(status)" : nil,
-                    providerFailure: providerFailure
+                await recordProxyLog(
+                    level: providerFailure ? .error : .info,
+                    requestID: requestID,
+                    phase: "transform-complete",
+                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) \(Self.resolvedContext(for: resolved))"
                 )
+                return
             }
             let head = HTTPResponseHead(
                 status: status,
                 headers: headers
             )
-            try await sendHead(head, on: connection)
-            var buffer = Data()
-            buffer.reserveCapacity(8_192)
-            for try await byte in bytes {
-                buffer.append(byte)
-                if buffer.count >= 8_192 || byte == 10 {
-                    try await send(buffer, on: connection)
-                    buffer.removeAll(keepingCapacity: true)
+            do {
+                try await sendHead(head, on: connection)
+            } catch {
+                throw ProxyTransferError.downstream(error, stats: ProxyStreamStats())
+            }
+            responseHeadersSent = true
+            let stats = try await streamResponse(
+                bytes: bytes,
+                to: connection,
+                requestID: requestID
+            )
+            let sseFailure = stats.sseFailureDetail
+                ?? (stats.sawSSEFailure ? "response.failed event received without data" : nil)
+            let completedProviderFailure = providerFailure || sseFailure != nil
+            await MainActor.run {
+                if let sseFailure {
+                    runtime.proxyProviderDidFail(
+                        appType: resolved.candidate.appType,
+                        message: "\(providerFailureContext ?? resolved.providerName)：SSE response.failed：\(sseFailure)"
+                    )
+                } else if !providerFailure, status >= 200 && status < 400 {
+                    runtime.proxyProviderDidSucceed()
                 }
+                runtime.recordRequestMetric(
+                    key: Self.metricKey(for: resolved),
+                    statusCode: status,
+                    latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                    errorMessage: sseFailure.map { "SSE response.failed: \($0)" } ?? (providerFailure ? "HTTP \(status)" : nil),
+                    providerFailure: completedProviderFailure
+                )
             }
-            if !buffer.isEmpty {
-                try await send(buffer, on: connection)
-            }
+            await recordProxyLog(
+                level: completedProviderFailure ? .error : .info,
+                requestID: requestID,
+                phase: "stream-complete",
+                message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) lines=\(stats.linesObserved) sseFailed=\(sseFailure != nil) \(Self.resolvedContext(for: resolved))"
+            )
             connection.cancel()
         } catch let error as ProxyResolverError {
             let model = Self.requestedModel(in: request.body) ?? "<missing>"
@@ -328,7 +384,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     message: Self.issueMessage(
                         appType: requestAppType,
                         group: "代理异常",
-                        detail: "\(request.path) model=\(model) failed: \(error.localizedDescription)"
+                        detail: "requestId=\(requestID) phase=resolve-error path=\(request.path) model=\(model) failed: \(error.localizedDescription)"
                     )
                 )
                 if let metricKey {
@@ -345,42 +401,149 @@ final class LocalProxyServer: @unchecked Sendable {
                 Self.proxyResolverErrorResponse(error),
                 on: connection
             )
+        } catch let error as ProxyTransferError {
+            switch error {
+            case let .downstream(sendError, stats):
+                await MainActor.run {
+                    if let metricKey {
+                        runtime.recordRequestMetric(
+                            key: metricKey,
+                            statusCode: 499,
+                            latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                            errorMessage: Self.logSafeError(sendError),
+                            providerFailure: false
+                        )
+                    }
+                }
+                await recordProxyLog(
+                    requestID: requestID,
+                    phase: "downstream-disconnected",
+                    message: "status=\(statusCode.map(String.init) ?? "-") durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(sendError)) error=\(Self.logSafeError(sendError)) \(resolvedContext ?? "unresolved")"
+                )
+                connection.cancel()
+            case let .upstream(streamError, stats):
+                let metricStatus = Self.statusCode(forTransportError: streamError, fallback: statusCode ?? 502)
+                await MainActor.run {
+                    if let providerFailureAppType, let providerFailureContext {
+                        runtime.proxyProviderDidFail(
+                            appType: providerFailureAppType,
+                            message: "\(providerFailureContext)：\(Self.logSafeError(streamError))"
+                        )
+                    }
+                    if let metricKey {
+                        runtime.recordRequestMetric(
+                            key: metricKey,
+                            statusCode: metricStatus,
+                            latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                            errorMessage: Self.logSafeError(streamError),
+                            providerFailure: providerFailureContext != nil
+                        )
+                    }
+                }
+                await recordProxyLog(
+                    level: .error,
+                    requestID: requestID,
+                    phase: "upstream-stream-error",
+                    message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(streamError)) error=\(Self.logSafeError(streamError)) \(resolvedContext ?? "unresolved")"
+                )
+                connection.cancel()
+            }
         } catch {
+            let metricStatus = Self.statusCode(forTransportError: error, fallback: 502)
             await MainActor.run {
                 if let providerFailureAppType, let providerFailureContext {
                     runtime.proxyProviderDidFail(
                         appType: providerFailureAppType,
-                        message: "\(providerFailureContext)：\(error.localizedDescription)"
+                        message: "\(providerFailureContext)：\(Self.logSafeError(error))"
                     )
-                    if let resolvedContext {
-                        runtime.recordProxyEvent(
-                            level: .info,
-                            message: "\(request.path) \(resolvedContext) upstream error: \(error.localizedDescription)"
-                        )
-                    }
                 } else {
-                    runtime.proxyProviderDidFail(error.localizedDescription)
+                    runtime.proxyProviderDidFail(Self.logSafeError(error))
                     runtime.recordProxyEvent(
                         level: .error,
                         message: Self.issueMessage(
                             appType: requestAppType,
                             group: "代理异常",
-                            detail: "\(request.path) \(resolvedContext ?? "unresolved") upstream error: \(error.localizedDescription)"
+                            detail: "requestId=\(requestID) phase=proxy-error path=\(request.path) \(resolvedContext ?? "unresolved") errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error))"
                         )
                     )
                 }
                 if let metricKey {
                     runtime.recordRequestMetric(
                         key: metricKey,
-                        statusCode: 502,
+                        statusCode: metricStatus,
                         latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
-                        errorMessage: error.localizedDescription,
+                        errorMessage: Self.logSafeError(error),
                         providerFailure: providerFailureContext != nil
                     )
                 }
             }
-            send(.json(status: 502, body: ["error": error.localizedDescription]), on: connection)
+            await recordProxyLog(
+                level: .error,
+                requestID: requestID,
+                phase: "upstream-request-error",
+                message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) headersSent=\(responseHeadersSent) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error)) \(resolvedContext ?? "unresolved")"
+            )
+            if responseHeadersSent {
+                connection.cancel()
+            } else {
+                send(.json(status: metricStatus, body: ["error": error.localizedDescription]), on: connection)
+            }
         }
+    }
+
+    private func streamResponse(
+        bytes: URLSession.AsyncBytes,
+        to connection: NWConnection,
+        requestID: String
+    ) async throws -> ProxyStreamStats {
+        var stats = ProxyStreamStats()
+        var buffer = Data()
+        buffer.reserveCapacity(8_192)
+        var inspector = SSEFailureInspector()
+
+        do {
+            for try await byte in bytes {
+                buffer.append(byte)
+                if byte == 10 {
+                    stats.linesObserved += 1
+                }
+                if let failureDetail = inspector.append(byte) {
+                    stats.sawSSEFailure = true
+                    stats.sseFailureDetail = failureDetail
+                    await recordProxyLog(
+                        level: .error,
+                        requestID: requestID,
+                        phase: "sse-response-failed",
+                        message: failureDetail
+                    )
+                }
+                if buffer.count >= 8_192 || byte == 10 {
+                    do {
+                        try await send(buffer, on: connection)
+                    } catch {
+                        throw ProxyTransferError.downstream(error, stats: stats)
+                    }
+                    stats.bytesForwarded += buffer.count
+                    stats.chunksForwarded += 1
+                    buffer.removeAll(keepingCapacity: true)
+                }
+            }
+        } catch let error as ProxyTransferError {
+            throw error
+        } catch {
+            throw ProxyTransferError.upstream(error, stats: stats)
+        }
+
+        if !buffer.isEmpty {
+            do {
+                try await send(buffer, on: connection)
+            } catch {
+                throw ProxyTransferError.downstream(error, stats: stats)
+            }
+            stats.bytesForwarded += buffer.count
+            stats.chunksForwarded += 1
+        }
+        return stats
     }
 
     private static func metricKey(for resolved: ResolvedRoute) -> RequestMetricKey {
@@ -394,6 +557,35 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private static func elapsedMilliseconds(since startedAt: Date) -> Double {
         max(Date().timeIntervalSince(startedAt) * 1000, 0)
+    }
+
+    private func recordProxyLog(
+        level: ProxyEvent.Level = .info,
+        requestID: String,
+        phase: String,
+        message: String
+    ) async {
+        await MainActor.run {
+            runtime.recordProxyEvent(
+                level: level,
+                message: "requestId=\(requestID) phase=\(phase) \(message)"
+            )
+        }
+    }
+
+    private static func makeRequestID() -> String {
+        String(UUID().uuidString.prefix(8)).lowercased()
+    }
+
+    private static func requestWantsStream(_ body: Data) -> Bool {
+        guard
+            let value = try? JSONSerialization.jsonObject(with: body),
+            let object = value as? [String: Any],
+            let stream = object["stream"] as? Bool
+        else {
+            return false
+        }
+        return stream
     }
 
     private static func resolvedContext(for resolved: ResolvedRoute) -> String {
@@ -422,6 +614,61 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private static func isProviderFailureStatus(_ status: Int) -> Bool {
         status == 408 || status == 409 || status == 425 || status == 429 || status >= 500
+    }
+
+    private static func statusCode(forTransportError error: Error, fallback: Int) -> Int {
+        switch transportErrorKind(error) {
+        case "timeout":
+            return 504
+        default:
+            return fallback
+        }
+    }
+
+    private static func transportErrorKind(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return "timeout"
+            case .cancelled:
+                return "cancelled"
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                return "connectivity"
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid:
+                return "tls"
+            case .networkConnectionLost, .notConnectedToInternet:
+                return "network"
+            default:
+                return "url-error-\(urlError.errorCode)"
+            }
+        }
+
+        if let nwError = error as? NWError {
+            switch nwError {
+            case .posix(let code):
+                return "nw-posix-\(code.rawValue)"
+            case .dns:
+                return "nw-dns"
+            case .tls:
+                return "nw-tls"
+            case .wifiAware:
+                return "nw-wifi-aware"
+            @unknown default:
+                return "nw-unknown"
+            }
+        }
+
+        return String(describing: type(of: error))
+    }
+
+    private static func logSafeError(_ error: Error) -> String {
+        error.localizedDescription
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+    }
+
+    private static func headerValue(_ headers: [String: String], name: String) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
 
     private static func proxyResolverErrorResponse(
@@ -798,6 +1045,122 @@ private struct HTTPResponse {
         }
         response += "\r\n"
         return Data(response.utf8) + body
+    }
+}
+
+private struct SSEFailureInspector {
+    private var currentLine = Data()
+    private var currentEvent: String?
+    private var currentDataLines: [String] = []
+
+    mutating func append(_ byte: UInt8) -> String? {
+        if byte == 10 {
+            defer { currentLine.removeAll(keepingCapacity: true) }
+            if currentLine.last == 13 {
+                currentLine.removeLast()
+            }
+            guard let line = String(data: currentLine, encoding: .utf8) else {
+                return nil
+            }
+            return processLine(line)
+        }
+        currentLine.append(byte)
+        if currentLine.count > 65_536 {
+            currentLine.removeAll(keepingCapacity: true)
+        }
+        return nil
+    }
+
+    private mutating func processLine(_ line: String) -> String? {
+        if line.isEmpty {
+            defer {
+                currentEvent = nil
+                currentDataLines.removeAll(keepingCapacity: true)
+            }
+            guard currentEvent == "response.failed" else {
+                return nil
+            }
+            return failureDetail(from: currentDataLines.joined(separator: "\n"))
+        }
+
+        if line.hasPrefix(":") {
+            return nil
+        }
+
+        let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let rawField = parts.first else {
+            return nil
+        }
+        let field = String(rawField)
+        var value = parts.count > 1 ? String(parts[1]) : ""
+        if value.first == " " {
+            value.removeFirst()
+        }
+
+        switch field {
+        case "event":
+            currentEvent = value
+        case "data":
+            currentDataLines.append(value)
+        default:
+            break
+        }
+        return nil
+    }
+
+    private func failureDetail(from data: String) -> String {
+        let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return "response.failed"
+        }
+        guard
+            let jsonData = trimmed.data(using: .utf8),
+            let value = try? JSONSerialization.jsonObject(with: jsonData),
+            let object = value as? [String: Any]
+        else {
+            return "response.failed data=\(Self.compact(trimmed))"
+        }
+
+        var fields: [String] = []
+        if let response = object["response"] as? [String: Any],
+           let error = response["error"] as? [String: Any] {
+            appendErrorFields(error, to: &fields)
+            if let status = response["status"] as? String {
+                fields.append("status=\(status)")
+            }
+        } else if let error = object["error"] as? [String: Any] {
+            appendErrorFields(error, to: &fields)
+        } else if let type = object["type"] as? String {
+            fields.append("type=\(type)")
+        }
+
+        if fields.isEmpty {
+            fields.append("data=\(Self.compact(trimmed))")
+        }
+        return "response.failed \(fields.joined(separator: " "))"
+    }
+
+    private func appendErrorFields(_ error: [String: Any], to fields: inout [String]) {
+        for key in ["message", "type", "code", "param"] {
+            guard let value = error[key] else {
+                continue
+            }
+            let text = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                fields.append("\(key)=\(Self.compact(text))")
+            }
+        }
+    }
+
+    private static func compact(_ value: String, limit: Int = 320) -> String {
+        let oneLine = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        guard oneLine.count > limit else {
+            return oneLine
+        }
+        let endIndex = oneLine.index(oneLine.startIndex, offsetBy: limit)
+        return String(oneLine[..<endIndex]) + "..."
     }
 }
 
