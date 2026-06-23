@@ -43,6 +43,10 @@ final class LocalProxyServer: @unchecked Sendable {
         var bytesForwarded = 0
         var chunksForwarded = 0
         var linesObserved = 0
+        var firstByteLatencyMilliseconds: Int?
+        var lastChunkForwardedAt: Date?
+        var upstreamErrorSinceLastChunkMilliseconds: Int?
+        var sseFailureSinceLastChunkMilliseconds: Int?
         var sawSSEFailure = false
         var sseFailureDetail: String?
     }
@@ -287,6 +291,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 phase: "upstream-start",
                 message: "method=POST timeoutSeconds=\(Int(Self.upstreamRequestTimeout)) \(Self.resolvedContext(for: resolved))"
             )
+            let upstreamStartedAt = Date()
             let (bytes, response) = try await URLSession.shared.bytes(for: upstreamRequest)
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 502
@@ -347,7 +352,8 @@ final class LocalProxyServer: @unchecked Sendable {
             let stats = try await streamResponse(
                 bytes: bytes,
                 to: connection,
-                requestID: requestID
+                requestID: requestID,
+                upstreamStartedAt: upstreamStartedAt
             )
             let sseFailure = stats.sseFailureDetail
                 ?? (stats.sawSSEFailure ? "response.failed event received without data" : nil)
@@ -373,7 +379,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 level: completedProviderFailure ? .error : .info,
                 requestID: requestID,
                 phase: "stream-complete",
-                message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) lines=\(stats.linesObserved) sseFailed=\(sseFailure != nil) \(Self.resolvedContext(for: resolved))"
+                message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) lines=\(stats.linesObserved) sseFailed=\(sseFailure != nil) sseFailureSinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(Self.resolvedContext(for: resolved))"
             )
             connection.cancel()
         } catch let error as ProxyResolverError {
@@ -418,7 +424,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 await recordProxyLog(
                     requestID: requestID,
                     phase: "downstream-disconnected",
-                    message: "status=\(statusCode.map(String.init) ?? "-") durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(sendError)) error=\(Self.logSafeError(sendError)) \(resolvedContext ?? "unresolved")"
+                    message: "status=\(statusCode.map(String.init) ?? "-") durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(sendError)) error=\(Self.logSafeError(sendError)) \(resolvedContext ?? "unresolved")"
                 )
                 connection.cancel()
             case let .upstream(streamError, stats):
@@ -444,7 +450,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     level: .error,
                     requestID: requestID,
                     phase: "upstream-stream-error",
-                    message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(streamError)) error=\(Self.logSafeError(streamError)) \(resolvedContext ?? "unresolved")"
+                    message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.upstreamErrorSinceLastChunkMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(streamError)) error=\(Self.logSafeError(streamError)) \(resolvedContext ?? "unresolved")"
                 )
                 connection.cancel()
             }
@@ -494,7 +500,8 @@ final class LocalProxyServer: @unchecked Sendable {
     private func streamResponse(
         bytes: URLSession.AsyncBytes,
         to connection: NWConnection,
-        requestID: String
+        requestID: String,
+        upstreamStartedAt: Date
     ) async throws -> ProxyStreamStats {
         var stats = ProxyStreamStats()
         var buffer = Data()
@@ -503,6 +510,10 @@ final class LocalProxyServer: @unchecked Sendable {
 
         do {
             for try await byte in bytes {
+                let now = Date()
+                if stats.firstByteLatencyMilliseconds == nil {
+                    stats.firstByteLatencyMilliseconds = Int(max(now.timeIntervalSince(upstreamStartedAt) * 1000, 0))
+                }
                 buffer.append(byte)
                 if byte == 10 {
                     stats.linesObserved += 1
@@ -510,11 +521,12 @@ final class LocalProxyServer: @unchecked Sendable {
                 if let failureDetail = inspector.append(byte) {
                     stats.sawSSEFailure = true
                     stats.sseFailureDetail = failureDetail
+                    stats.sseFailureSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: now)
                     await recordProxyLog(
                         level: .error,
                         requestID: requestID,
                         phase: "sse-response-failed",
-                        message: failureDetail
+                        message: "firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(failureDetail)"
                     )
                 }
                 if buffer.count >= 8_192 || byte == 10 {
@@ -525,12 +537,14 @@ final class LocalProxyServer: @unchecked Sendable {
                     }
                     stats.bytesForwarded += buffer.count
                     stats.chunksForwarded += 1
+                    stats.lastChunkForwardedAt = Date()
                     buffer.removeAll(keepingCapacity: true)
                 }
             }
         } catch let error as ProxyTransferError {
             throw error
         } catch {
+            stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
             throw ProxyTransferError.upstream(error, stats: stats)
         }
 
@@ -542,6 +556,7 @@ final class LocalProxyServer: @unchecked Sendable {
             }
             stats.bytesForwarded += buffer.count
             stats.chunksForwarded += 1
+            stats.lastChunkForwardedAt = Date()
         }
         return stats
     }
@@ -557,6 +572,17 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private static func elapsedMilliseconds(since startedAt: Date) -> Double {
         max(Date().timeIntervalSince(startedAt) * 1000, 0)
+    }
+
+    private static func milliseconds(from startedAt: Date?, to endedAt: Date) -> Int? {
+        guard let startedAt else {
+            return nil
+        }
+        return Int(max(endedAt.timeIntervalSince(startedAt) * 1000, 0))
+    }
+
+    private static func optionalMilliseconds(_ value: Int?) -> String {
+        value.map(String.init) ?? "-"
     }
 
     private func recordProxyLog(
