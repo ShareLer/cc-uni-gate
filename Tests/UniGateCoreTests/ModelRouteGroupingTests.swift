@@ -163,25 +163,137 @@ struct ModelRouteGroupingTests {
         ])
     }
 
+    @Test
+    func visibleConfiguredBaseRouteKeysUseSameEntryPointForAllApps() {
+        let codexProvider = ProviderRef(appType: "codex", id: "codex")
+        let claudeProvider = ProviderRef(appType: "claude", id: "claude")
+        let desktopProvider = ProviderRef(appType: "claude-desktop", id: "desktop")
+        let catalog = ProviderCatalog(providers: [], candidates: [
+            candidate(
+                logicalModel: "gpt-5.5",
+                upstreamModel: "gpt-5.5",
+                providerRef: codexProvider,
+                appType: "codex"
+            ),
+            candidate(
+                logicalModel: "deepseek-v4-pro",
+                upstreamModel: "deepseek-v4-pro",
+                providerRef: claudeProvider,
+                appType: "claude"
+            ),
+            candidate(
+                logicalModel: "claude-opus-4-8",
+                upstreamModel: "union-model",
+                providerRef: desktopProvider
+            )
+        ])
+        let scope = UniGateModelScope(modelsByApp: [
+            "codex": ["gpt-5.5"],
+            "claude": ["deepseek-v4-pro"],
+            "claude-desktop": ["union-model"]
+        ])
+
+        let routeKeys = ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: catalog,
+            customModels: CustomModelState(),
+            uniGateModelScope: scope,
+            preferences: AppPreferences()
+        )
+
+        #expect(Set(routeKeys.map(\.description)) == [
+            "codex:gpt-5.5",
+            "claude:deepseek-v4-pro",
+            "claude-desktop:claude-opus-4-8"
+        ])
+    }
+
+    @Test
+    func visibleConfiguredBaseRouteKeysMatchDesktopScopeByUpstreamModel() {
+        let providerRef = ProviderRef(appType: "claude-desktop", id: "desktop")
+        let catalog = ProviderCatalog(providers: [], candidates: [
+            candidate(
+                logicalModel: "claude-opus-4-8",
+                upstreamModel: "union-model",
+                providerRef: providerRef
+            ),
+            candidate(
+                logicalModel: "claude-sonnet-4-6",
+                upstreamModel: "deepseek-v4-pro",
+                providerRef: providerRef
+            )
+        ])
+        let scope = UniGateModelScope(modelsByApp: [
+            "claude-desktop": ["union-model"]
+        ])
+
+        let routeKeys = ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: catalog,
+            customModels: CustomModelState(),
+            uniGateModelScope: scope,
+            preferences: AppPreferences()
+        )
+
+        #expect(routeKeys.map(\.description) == [
+            "claude-desktop:claude-opus-4-8"
+        ])
+    }
+
+    @Test
+    func visibleConfiguredBaseRouteKeysExcludeDiscoveredModels() {
+        let providerRef = ProviderRef(appType: "codex", id: "codex")
+        let catalog = ProviderCatalog(providers: [], candidates: [
+            candidate(
+                logicalModel: "gpt-5.5",
+                upstreamModel: "gpt-5.5",
+                providerRef: providerRef,
+                appType: "codex"
+            ),
+            candidate(
+                logicalModel: "qwen3.6",
+                upstreamModel: "qwen3.6",
+                providerRef: providerRef,
+                appType: "codex",
+                source: .discovered
+            )
+        ])
+        let scope = UniGateModelScope(modelsByApp: [
+            "codex": ["gpt-5.5", "qwen3.6"]
+        ])
+
+        let routeKeys = ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: catalog,
+            customModels: CustomModelState(),
+            uniGateModelScope: scope,
+            preferences: AppPreferences()
+        )
+
+        #expect(routeKeys.map(\.description) == [
+            "codex:gpt-5.5"
+        ])
+    }
+
     private func candidate(
         logicalModel: String,
         upstreamModel: String,
         providerRef: ProviderRef,
         appType: String = "claude-desktop",
-        supportsLongContext: Bool = false
+        supportsLongContext: Bool = false,
+        source: ModelCandidateSource = .configured
     ) -> ModelCandidate {
-        ModelCandidate(
+        let isCodex = appType == "codex"
+        return ModelCandidate(
             logicalModel: logicalModel,
             providerRef: providerRef,
             providerName: "DeepSeek",
             appType: appType,
-            clientProtocol: .anthropicMessages,
-            apiFormat: .anthropic,
+            clientProtocol: isCodex ? .codexResponses : .anthropicMessages,
+            apiFormat: isCodex ? .openaiResponses : .anthropic,
             upstreamModel: upstreamModel,
             baseURL: "https://api.deepseek.example",
             requiresTransform: false,
             label: nil,
-            supportsLongContext: supportsLongContext
+            supportsLongContext: supportsLongContext,
+            source: source
         )
     }
 }

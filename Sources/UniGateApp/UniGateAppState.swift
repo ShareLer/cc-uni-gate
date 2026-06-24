@@ -148,19 +148,12 @@ final class UniGateAppState: ObservableObject {
     }
 
     var visibleRouteKeys: [ModelRouteKey] {
-        let candidates = scopedBaseCandidates()
-        let configuredCandidates = candidates.filter { $0.source == .configured }
-        let scopedRouteKeys = Set(configuredCandidates.map(\.routeKey))
-        let configuredRouteKeys = catalog.routeKeys.filter {
-            $0.appType != "claude-desktop" && scopedRouteKeys.contains($0)
-        }
-        let desktopRouteKeys = ModelRouteVisibility.claudeDesktopVisibleModelKeys(
-            candidates: configuredCandidates,
+        ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: catalog,
             customModels: customModels,
-            uniGateModelScope: uniGateModelScope
+            uniGateModelScope: uniGateModelScope,
+            preferences: preferences
         )
-        return preferences.visibleRouteKeyList(allRouteKeys: configuredRouteKeys)
-            + preferences.visibleRouteKeyList(allRouteKeys: desktopRouteKeys)
     }
 
     var displayRouteKeys: [ModelRouteKey] {

@@ -284,62 +284,24 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    private func baseModelCandidates() -> [ModelCandidate] {
-        candidates.filter { candidate in
-            candidate.providerRef == candidate.upstreamProviderRef
-                &&
-            !customModels.models.contains {
-                $0.appType == candidate.appType && $0.name == candidate.logicalModel
-            }
-        }
-    }
-
     private func modelRouteKeys() -> [ModelRouteKey] {
-        let candidates = scopedBaseModelCandidates()
-        let baseRouteKeys = candidates
-            .filter { $0.appType != "claude-desktop" }
-            .map(\.routeKey)
-        let desktopRouteKeys = ModelRouteVisibility.claudeDesktopVisibleModelKeys(
-            candidates: candidates,
-            customModels: customModels,
-            uniGateModelScope: uniGateModelScope
+        ModelRouteVisibility.addingCustomModelRouteKeys(
+            to: ModelRouteVisibility.configuredBaseRouteKeys(
+                catalog: ProviderCatalog(providers: providers, candidates: candidates),
+                customModels: customModels,
+                uniGateModelScope: uniGateModelScope
+            ),
+            customModels: customModels
         )
-        return Self.modelRouteKeys(routeKeys: baseRouteKeys, customModels: customModels)
-            + desktopRouteKeys
     }
 
     private func visibleRouteKeys() -> [ModelRouteKey] {
-        let keys = modelRouteKeys()
-        let selectableKeys = keys.filter {
-            ModelRouteVisibility.isModelSelectable($0, customModels: customModels, uniGateModelScope: uniGateModelScope)
-        }
-        guard preferences.visibleModels != nil else {
-            return selectableKeys
-        }
-        let visibleSet = Set(preferences.visibleRouteKeyList(allRouteKeys: keys))
-        return selectableKeys.filter { visibleSet.contains($0) }
-    }
-
-    private func scopedBaseModelCandidates() -> [ModelCandidate] {
-        baseModelCandidates().filter {
-            ModelRouteVisibility.isCandidateSelectable($0, uniGateModelScope: uniGateModelScope)
-        }
-    }
-
-    private static func modelRouteKeys(
-        routeKeys: [ModelRouteKey],
-        customModels: CustomModelState
-    ) -> [ModelRouteKey] {
-        Array(Set(routeKeys).union(customModels.models.map {
-            ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
-        })).sorted { lhs, rhs in
-            let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)
-                .localizedStandardCompare(ProviderDisplay.appTypeLabel(rhs.appType))
-            if appCompare != .orderedSame {
-                return appCompare == .orderedAscending
-            }
-            return lhs.logicalModel.localizedStandardCompare(rhs.logicalModel) == .orderedAscending
-        }
+        ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: ProviderCatalog(providers: providers, candidates: candidates),
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope,
+            preferences: preferences
+        )
     }
 
 }
