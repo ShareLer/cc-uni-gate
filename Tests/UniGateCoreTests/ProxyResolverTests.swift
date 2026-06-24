@@ -93,7 +93,7 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func modelListingUsesProxyScopedCatalog() throws {
+    func modelListingUsesFullCatalogWhileProxyUsesScopedCatalog() throws {
         let configured = ImportedProvider(
             id: "configured",
             appType: "codex",

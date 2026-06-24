@@ -875,7 +875,7 @@ extension AppDelegate: LocalProxyRuntime {
     }
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
-        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes, networkPolicy: preferences.networkPolicy)
+        ProxyRuntimeSnapshot(catalog: catalog, routes: routes, networkPolicy: preferences.networkPolicy)
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
