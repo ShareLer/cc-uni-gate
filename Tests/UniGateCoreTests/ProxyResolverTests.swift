@@ -93,60 +93,57 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func modelListingUsesFullCatalogWhileProxyUsesScopedCatalog() throws {
-        let configured = ImportedProvider(
-            id: "configured",
-            appType: "codex",
-            name: "Configured Provider",
-            category: nil,
-            sortIndex: 1,
-            isCurrent: false,
-            apiFormat: .openaiResponses,
-            baseURL: "https://configured.example.com",
-            hasSecret: true,
-            settings: ["auth": .object(["OPENAI_API_KEY": .string("configured-key")])],
-            meta: [:]
-        )
-        let discovered = ImportedProvider(
-            id: "discovered",
-            appType: "codex",
-            name: "Discovered Provider",
-            category: nil,
-            sortIndex: 2,
-            isCurrent: false,
-            apiFormat: .openaiResponses,
-            baseURL: "https://discovered.example.com",
-            hasSecret: true,
-            settings: ["auth": .object(["OPENAI_API_KEY": .string("discovered-key")])],
-            meta: [:]
-        )
-        let fullCatalog = ProviderCatalog(providers: [configured, discovered], candidates: [
-            candidate(provider: configured, logicalModel: "gpt-5.5"),
-            ModelCandidate(
-                logicalModel: "qwen3.6",
-                providerRef: discovered.ref,
-                providerName: discovered.name,
-                appType: discovered.appType,
-                clientProtocol: .codexResponses,
-                apiFormat: discovered.apiFormat,
-                upstreamModel: "qwen3.6",
-                baseURL: discovered.baseURL,
-                requiresTransform: false,
-                label: nil,
-                supportsLongContext: false,
-                source: .discovered
-            )
-        ])
-        let scopedCatalog = fullCatalog.scopedForProxy(
-            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
-            customModels: CustomModelState()
-        )
+    func modelListingUsesFullCatalogWhileProxyUsesScopedCatalogForEveryApp() throws {
+        let appCases: [(appType: String, configuredModel: String, discoveredModel: String, apiFormat: ApiFormat)] = [
+            ("codex", "gpt-5.5", "qwen3.6", .openaiResponses),
+            ("claude", "deepseek-v4-pro", "deepseek-v4-flash", .anthropic),
+            ("claude-desktop", "union-model", "auto", .anthropic)
+        ]
 
-        #expect(ProviderModelListing.routeKeys(from: fullCatalog, appType: "codex").map(\.logicalModel) == [
-            "gpt-5.5",
-            "qwen3.6"
-        ])
-        #expect(scopedCatalog.routeKeys.map(\.logicalModel) == ["gpt-5.5"])
+        for appCase in appCases {
+            let configured = ImportedProvider(
+                id: "\(appCase.appType)-configured",
+                appType: appCase.appType,
+                name: "Configured Provider",
+                category: nil,
+                sortIndex: 1,
+                isCurrent: false,
+                apiFormat: appCase.apiFormat,
+                baseURL: "https://configured.example.com",
+                hasSecret: true,
+                settings: ["auth": .object(["OPENAI_API_KEY": .string("configured-key")])],
+                meta: [:]
+            )
+            let discovered = ImportedProvider(
+                id: "\(appCase.appType)-discovered",
+                appType: appCase.appType,
+                name: "Discovered Provider",
+                category: nil,
+                sortIndex: 2,
+                isCurrent: false,
+                apiFormat: appCase.apiFormat,
+                baseURL: "https://discovered.example.com",
+                hasSecret: true,
+                settings: ["auth": .object(["OPENAI_API_KEY": .string("discovered-key")])],
+                meta: [:]
+            )
+            let fullCatalog = ProviderCatalog(providers: [configured, discovered], candidates: [
+                candidate(provider: configured, logicalModel: appCase.configuredModel),
+                discoveredCandidate(provider: discovered, logicalModel: appCase.discoveredModel)
+            ])
+            let scopedCatalog = fullCatalog.scopedForProxy(
+                uniGateModelScope: UniGateModelScope(modelsByApp: [
+                    appCase.appType: [appCase.configuredModel]
+                ]),
+                customModels: CustomModelState()
+            )
+
+            #expect(
+                ProviderModelListing.routeKeys(from: fullCatalog, appType: appCase.appType).map(\.logicalModel)
+                    == [appCase.configuredModel, appCase.discoveredModel].sorted()
+            )
+            #expect(scopedCatalog.routeKeys.map(\.logicalModel) == [appCase.configuredModel])
+        }
     }
 
     @Test
@@ -765,7 +762,7 @@ struct ProxyResolverTests {
             providerRef: provider.ref,
             providerName: provider.name,
             appType: provider.appType,
-            clientProtocol: .codexResponses,
+            clientProtocol: clientProtocol(for: provider.appType),
             apiFormat: .openaiResponses,
             upstreamModel: "real-gpt-5.5",
             baseURL: provider.baseURL,
@@ -1225,5 +1222,36 @@ struct ProxyResolverTests {
             label: nil,
             supportsLongContext: false
         )
+    }
+
+    private func discoveredCandidate(
+        provider: ImportedProvider,
+        logicalModel: String
+    ) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: clientProtocol(for: provider.appType),
+            apiFormat: provider.apiFormat,
+            upstreamModel: logicalModel,
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .discovered
+        )
+    }
+
+    private func clientProtocol(for appType: String) -> ClientProtocolKind {
+        switch appType {
+        case "claude", "claude-desktop":
+            return .anthropicMessages
+        case "codex":
+            return .codexResponses
+        default:
+            return .openaiChat
+        }
     }
 }
