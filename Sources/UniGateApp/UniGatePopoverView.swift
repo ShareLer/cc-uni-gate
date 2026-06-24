@@ -860,16 +860,30 @@ struct UniGatePopoverRootView: View {
                     Spacer(minLength: 8)
 
                     if let routeStatusText {
-                        routeStatusTag(routeStatusText, isError: hasRouteIssue)
-                    } else if isOperable {
-                        if isForceEnabledModel {
-                            forceEnabledTag()
+                        HStack(spacing: 6) {
+                            routeStatusTag(routeStatusText, isError: hasRouteIssue)
+                            if isForceEnabledModel {
+                                forceEnabledTag()
+                            }
+                            if isOperable {
+                                providerTag(
+                                    active?.providerName ?? "未选择",
+                                    isExpanded: showsExpandedProviders,
+                                    canSwitchProvider: canSwitchProvider
+                                )
+                            }
                         }
-                        providerTag(
-                            active?.providerName ?? "未选择",
-                            isExpanded: showsExpandedProviders,
-                            canSwitchProvider: canSwitchProvider
-                        )
+                    } else if isOperable {
+                        HStack(spacing: 6) {
+                            if isForceEnabledModel {
+                                forceEnabledTag()
+                            }
+                            providerTag(
+                                active?.providerName ?? "未选择",
+                                isExpanded: showsExpandedProviders,
+                                canSwitchProvider: canSwitchProvider
+                            )
+                        }
                     } else {
                         routeStatusTag("不可用", isError: false)
                     }
@@ -1626,7 +1640,16 @@ private struct InlineSettingsPanel: View {
                 Divider()
                 VStack(spacing: 8) {
                     ForEach(model.sortedProviders, id: \.ref.description) { provider in
-                        providerNetworkPolicyRow(provider)
+                        let override = model.providerNetworkOverride(for: provider.ref)
+                        let inheritedMode = model.inheritedNetworkPolicy(for: provider)
+                        let effectiveMode = model.effectiveNetworkPolicy(for: provider)
+                        providerNetworkPolicyRow(
+                            provider,
+                            override: override,
+                            inheritedMode: inheritedMode,
+                            effectiveMode: effectiveMode
+                        )
+                        .id("\(provider.ref.description)-\(override.rawValue)-\(inheritedMode.rawValue)-\(effectiveMode.rawValue)")
                     }
                 }
             }
@@ -1708,26 +1731,31 @@ private struct InlineSettingsPanel: View {
         }
     }
 
-    private func providerNetworkPolicyRow(_ provider: ImportedProvider) -> some View {
+    private func providerNetworkPolicyRow(
+        _ provider: ImportedProvider,
+        override: ProviderNetworkPolicyOverride,
+        inheritedMode: NetworkPolicyMode,
+        effectiveMode: NetworkPolicyMode
+    ) -> some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(provider.name)
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(ProviderDisplay.appTypeLabel(provider.appType)) · 当前：\(networkPolicyLabel(model.effectiveNetworkPolicy(for: provider)))")
+                Text("\(ProviderDisplay.appTypeLabel(provider.appType)) · \(networkPolicyStatusText(override: override, effectiveMode: effectiveMode))")
                     .font(.caption2)
                     .foregroundStyle(UGPopoverStyle.textSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
             Picker("", selection: providerNetworkPolicyBinding(for: provider.ref)) {
-                Text("跟随全局").tag(ProviderNetworkPolicyOverride.inherit)
+                Text("跟随全局 · \(networkPolicyShortLabel(inheritedMode))").tag(ProviderNetworkPolicyOverride.inherit)
                 Text("系统代理").tag(ProviderNetworkPolicyOverride.system)
                 Text("直连").tag(ProviderNetworkPolicyOverride.direct)
             }
             .pickerStyle(.menu)
-            .frame(width: 104)
+            .frame(width: 122)
         }
     }
 
@@ -1745,6 +1773,27 @@ private struct InlineSettingsPanel: View {
             return "跟随系统代理"
         case .direct:
             return "直连"
+        }
+    }
+
+    private func networkPolicyShortLabel(_ mode: NetworkPolicyMode) -> String {
+        switch mode {
+        case .system:
+            return "系统"
+        case .direct:
+            return "直连"
+        }
+    }
+
+    private func networkPolicyStatusText(
+        override: ProviderNetworkPolicyOverride,
+        effectiveMode: NetworkPolicyMode
+    ) -> String {
+        switch override {
+        case .inherit:
+            return "跟随全局：\(networkPolicyLabel(effectiveMode))"
+        case .system, .direct:
+            return "固定：\(networkPolicyLabel(effectiveMode))"
         }
     }
 

@@ -126,6 +126,19 @@ final class SettingsViewModel: ObservableObject {
         )
     }
 
+    func inheritedNetworkPolicy(for provider: ImportedProvider) -> NetworkPolicyMode {
+        let preferences = NetworkPolicyPreferences(
+            globalMode: networkGlobalMode,
+            providerOverrides: [:],
+            directDomainRules: NetworkPolicyPreferences.parseDomainRulesText(directDomainRulesText)
+        )
+        return NetworkPolicyResolver.effectiveMode(
+            preferences: preferences,
+            providerRef: provider.ref,
+            host: provider.baseURL.flatMap { URL(string: $0)?.host }
+        )
+    }
+
     var sortedProviders: [ImportedProvider] {
         providers.sorted { lhs, rhs in
             let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)

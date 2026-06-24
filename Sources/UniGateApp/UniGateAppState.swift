@@ -364,14 +364,12 @@ final class UniGateAppState: ObservableObject {
     func routeStatusText(for routeGroup: ModelRouteGroup) -> String? {
         if let availability = customModelAvailability(for: routeGroup.routeKey) {
             switch availability {
-            case .configured:
-                return nil
-            case .forceEnabled:
-                return nil
             case .unconfigured:
                 return "未配置"
             case .missingTarget:
                 return "目标失效"
+            case .configured, .forceEnabled:
+                break
             }
         }
 
