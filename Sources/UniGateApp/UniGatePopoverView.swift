@@ -1302,6 +1302,7 @@ private struct InlineSettingsPanel: View {
     private enum Field {
         case port
         case databasePath
+        case directDomainRules
     }
 
     var body: some View {
@@ -1312,6 +1313,7 @@ private struct InlineSettingsPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     healthCheckCard
                     generalSettingsCard
+                    networkPolicyCard
                     endpointCard
                     diagnosticsCard
                     backupRestoreCard
@@ -1343,6 +1345,17 @@ private struct InlineSettingsPanel: View {
         }
         .onChange(of: model.launchAtLoginEnabled) { _, _ in
             _ = model.applyGeneralSettings(commitDatabasePath: false)
+        }
+        .onChange(of: model.networkGlobalMode) { _, _ in
+            _ = model.applyGeneralSettings(commitDatabasePath: false)
+        }
+        .onChange(of: model.directDomainRulesText) { _, _ in
+            scheduleApply()
+        }
+        .onChange(of: focusedField) { oldValue, newValue in
+            if oldValue == .directDomainRules, newValue != .directDomainRules {
+                applyNow()
+            }
         }
         .onChange(of: focusedField) { oldValue, newValue in
             if oldValue == .databasePath, newValue != .databasePath {
@@ -1413,6 +1426,7 @@ private struct InlineSettingsPanel: View {
             }
 
             requestMetricsSummary
+            networkDiagnosticsSummary
         }
     }
 
@@ -1448,6 +1462,42 @@ private struct InlineSettingsPanel: View {
             metricPill(title: "请求", value: "\(total)")
             metricPill(title: "失败", value: "\(failures)")
             metricPill(title: "平均", value: total == 0 ? "-" : "\(Int(avg))ms")
+        }
+    }
+
+    private var networkDiagnosticsSummary: some View {
+        let diagnostics = state.networkDiagnostics.values.sorted {
+            $0.providerName.localizedStandardCompare($1.providerName) == .orderedAscending
+        }
+        return VStack(alignment: .leading, spacing: 7) {
+            if diagnostics.isEmpty {
+                EmptyView()
+            } else {
+                Divider()
+                    .padding(.vertical, 2)
+                ForEach(diagnostics) { diagnostic in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "network.badge.shield.half.filled")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.orange)
+                            .frame(width: 16)
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(diagnostic.providerName)：系统代理失败，直连可用")
+                                .font(.system(size: 11, weight: .medium))
+                                .lineLimit(1)
+                            Text(diagnostic.systemError)
+                                .font(.caption2)
+                                .foregroundStyle(UGPopoverStyle.textSecondary)
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 6)
+                        compactAction("设为直连", systemImage: "bolt.horizontal") {
+                            state.setProviderNetworkPolicy(providerRef: diagnostic.providerRef, override: .direct)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1543,6 +1593,46 @@ private struct InlineSettingsPanel: View {
         }
     }
 
+    private var networkPolicyCard: some View {
+        settingsCard(spacing: 12) {
+            HStack(spacing: 8) {
+                Text("网络策略")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Picker("", selection: $model.networkGlobalMode) {
+                    Text("跟随系统代理").tag(NetworkPolicyMode.system)
+                    Text("直连").tag(NetworkPolicyMode.direct)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 174)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("直连域名规则")
+                    .font(.system(size: 12, weight: .medium))
+                TextField("*.intra.example.com 或 DOMAIN-SUFFIX,intra.example.com,DIRECT", text: $model.directDomainRulesText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(2...4)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 7)
+                    .focused($focusedField, equals: .directDomainRules)
+                    .background(fieldFill(isFocused: focusedField == .directDomainRules), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(fieldBorder(isFocused: focusedField == .directDomainRules, cornerRadius: 6))
+                    .onSubmit(applyNow)
+            }
+
+            if !model.sortedProviders.isEmpty {
+                Divider()
+                VStack(spacing: 8) {
+                    ForEach(model.sortedProviders, id: \.ref.description) { provider in
+                        providerNetworkPolicyRow(provider)
+                    }
+                }
+            }
+        }
+    }
+
     private var endpointCard: some View {
         settingsCard(spacing: 0) {
             endpointRow(title: "Codex", path: "/codex", canImport: true)
@@ -1615,6 +1705,46 @@ private struct InlineSettingsPanel: View {
             }
             .disabled(model.generalSettingsValidationText != nil)
             .opacity(model.generalSettingsValidationText == nil ? 1 : 0.45)
+        }
+    }
+
+    private func providerNetworkPolicyRow(_ provider: ImportedProvider) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(provider.name)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("\(ProviderDisplay.appTypeLabel(provider.appType)) · 当前：\(networkPolicyLabel(model.effectiveNetworkPolicy(for: provider)))")
+                    .font(.caption2)
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Picker("", selection: providerNetworkPolicyBinding(for: provider.ref)) {
+                Text("跟随全局").tag(ProviderNetworkPolicyOverride.inherit)
+                Text("系统代理").tag(ProviderNetworkPolicyOverride.system)
+                Text("直连").tag(ProviderNetworkPolicyOverride.direct)
+            }
+            .pickerStyle(.menu)
+            .frame(width: 104)
+        }
+    }
+
+    private func providerNetworkPolicyBinding(for providerRef: ProviderRef) -> Binding<ProviderNetworkPolicyOverride> {
+        Binding {
+            model.providerNetworkOverride(for: providerRef)
+        } set: { nextValue in
+            model.setProviderNetworkOverride(nextValue, for: providerRef)
+        }
+    }
+
+    private func networkPolicyLabel(_ mode: NetworkPolicyMode) -> String {
+        switch mode {
+        case .system:
+            return "跟随系统代理"
+        case .direct:
+            return "直连"
         }
     }
 

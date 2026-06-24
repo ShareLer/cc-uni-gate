@@ -26,6 +26,7 @@ protocol LocalProxyRuntime: AnyObject {
 struct ProxyRuntimeSnapshot: Sendable {
     let catalog: ProviderCatalog
     let routes: RouteState
+    let networkPolicy: NetworkPolicyPreferences
 }
 
 enum ProxyListenerState: Sendable {
@@ -240,6 +241,7 @@ final class LocalProxyServer: @unchecked Sendable {
         var metricKey: RequestMetricKey?
         var statusCode: Int?
         var responseHeadersSent = false
+        var networkPolicyLog = "networkPolicy=-"
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
             guard let route = proxyRoute(for: request.path) else {
@@ -264,13 +266,19 @@ final class LocalProxyServer: @unchecked Sendable {
             providerFailureContext = resolved.providerName
             resolvedContext = Self.resolvedContext(for: resolved)
             metricKey = Self.metricKey(for: resolved)
+            let networkPolicy = NetworkPolicyResolver.effectiveMode(
+                preferences: snapshot.networkPolicy,
+                providerRef: resolved.candidate.upstreamProviderRef,
+                host: resolved.upstreamURL.host
+            )
+            networkPolicyLog = "networkPolicy=\(networkPolicy.rawValue)"
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
             }
             await recordProxyLog(
                 requestID: requestID,
                 phase: "resolved",
-                message: "\(Self.resolvedContext(for: resolved))"
+                message: "\(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
             )
 
             var upstreamRequest = URLRequest(url: resolved.upstreamURL)
@@ -289,10 +297,11 @@ final class LocalProxyServer: @unchecked Sendable {
             await recordProxyLog(
                 requestID: requestID,
                 phase: "upstream-start",
-                message: "method=POST timeoutSeconds=\(Int(Self.upstreamRequestTimeout)) \(Self.resolvedContext(for: resolved))"
+                message: "method=POST timeoutSeconds=\(Int(Self.upstreamRequestTimeout)) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
             )
             let upstreamStartedAt = Date()
-            let (bytes, response) = try await URLSession.shared.bytes(for: upstreamRequest)
+            let upstreamSession = NetworkPolicySession.makeSession(for: networkPolicy)
+            let (bytes, response) = try await upstreamSession.bytes(for: upstreamRequest)
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 502
             statusCode = status
@@ -301,7 +310,7 @@ final class LocalProxyServer: @unchecked Sendable {
             await recordProxyLog(
                 requestID: requestID,
                 phase: "upstream-headers",
-                message: "status=\(status) providerFailure=\(providerFailure) contentType=\(Self.headerValue(headers, name: "content-type") ?? "-") \(Self.resolvedContext(for: resolved))"
+                message: "status=\(status) providerFailure=\(providerFailure) contentType=\(Self.headerValue(headers, name: "content-type") ?? "-") \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
             )
             await MainActor.run {
                 if providerFailure {
@@ -335,7 +344,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     level: providerFailure ? .error : .info,
                     requestID: requestID,
                     phase: "transform-complete",
-                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) \(Self.resolvedContext(for: resolved))"
+                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
                 )
                 return
             }
@@ -353,7 +362,8 @@ final class LocalProxyServer: @unchecked Sendable {
                 bytes: bytes,
                 to: connection,
                 requestID: requestID,
-                upstreamStartedAt: upstreamStartedAt
+                upstreamStartedAt: upstreamStartedAt,
+                networkPolicyLog: networkPolicyLog
             )
             let sseFailure = stats.sseFailureDetail
                 ?? (stats.sawSSEFailure ? "response.failed event received without data" : nil)
@@ -379,7 +389,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 level: completedProviderFailure ? .error : .info,
                 requestID: requestID,
                 phase: "stream-complete",
-                message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) lines=\(stats.linesObserved) sseFailed=\(sseFailure != nil) sseFailureSinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(Self.resolvedContext(for: resolved))"
+                message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) lines=\(stats.linesObserved) sseFailed=\(sseFailure != nil) sseFailureSinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
             )
             connection.cancel()
         } catch let error as ProxyResolverError {
@@ -424,7 +434,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 await recordProxyLog(
                     requestID: requestID,
                     phase: "downstream-disconnected",
-                    message: "status=\(statusCode.map(String.init) ?? "-") durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(sendError)) error=\(Self.logSafeError(sendError)) \(resolvedContext ?? "unresolved")"
+                    message: "status=\(statusCode.map(String.init) ?? "-") durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(sendError)) error=\(Self.logSafeError(sendError)) \(networkPolicyLog) \(resolvedContext ?? "unresolved")"
                 )
                 connection.cancel()
             case let .upstream(streamError, stats):
@@ -450,7 +460,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     level: .error,
                     requestID: requestID,
                     phase: "upstream-stream-error",
-                    message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.upstreamErrorSinceLastChunkMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(streamError)) error=\(Self.logSafeError(streamError)) \(resolvedContext ?? "unresolved")"
+                    message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.upstreamErrorSinceLastChunkMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(streamError)) error=\(Self.logSafeError(streamError)) \(networkPolicyLog) \(resolvedContext ?? "unresolved")"
                 )
                 connection.cancel()
             }
@@ -469,7 +479,7 @@ final class LocalProxyServer: @unchecked Sendable {
                         message: Self.issueMessage(
                             appType: requestAppType,
                             group: "代理异常",
-                            detail: "requestId=\(requestID) phase=proxy-error path=\(request.path) \(resolvedContext ?? "unresolved") errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error))"
+                            detail: "requestId=\(requestID) phase=proxy-error path=\(request.path) \(networkPolicyLog) \(resolvedContext ?? "unresolved") errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error))"
                         )
                     )
                 }
@@ -487,7 +497,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 level: .error,
                 requestID: requestID,
                 phase: "upstream-request-error",
-                message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) headersSent=\(responseHeadersSent) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error)) \(resolvedContext ?? "unresolved")"
+                message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) headersSent=\(responseHeadersSent) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error)) \(networkPolicyLog) \(resolvedContext ?? "unresolved")"
             )
             if responseHeadersSent {
                 connection.cancel()
@@ -501,7 +511,8 @@ final class LocalProxyServer: @unchecked Sendable {
         bytes: URLSession.AsyncBytes,
         to connection: NWConnection,
         requestID: String,
-        upstreamStartedAt: Date
+        upstreamStartedAt: Date,
+        networkPolicyLog: String
     ) async throws -> ProxyStreamStats {
         var stats = ProxyStreamStats()
         var buffer = Data()
@@ -526,7 +537,7 @@ final class LocalProxyServer: @unchecked Sendable {
                         level: .error,
                         requestID: requestID,
                         phase: "sse-response-failed",
-                        message: "firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(failureDetail)"
+                        message: "firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(networkPolicyLog) \(failureDetail)"
                     )
                 }
                 if buffer.count >= 8_192 || byte == 10 {

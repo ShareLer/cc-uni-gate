@@ -31,6 +31,7 @@ final class UniGateAppState: ObservableObject {
     @Published var integrationSnapshot: CcSwitchIntegrationSnapshot?
     @Published var requestMetrics = RequestMetricsState()
     @Published var discoveryState = ProviderModelDiscoveryState()
+    @Published var networkDiagnostics: [String: NetworkPolicyDiagnostic] = [:]
     @Published var selectedAppType: String?
     @Published var expandedRouteKeyDescription: String?
     @Published var loadError: String?
@@ -48,6 +49,7 @@ final class UniGateAppState: ObservableObject {
     var onExportConfiguration: (() -> Void)?
     var onImportConfiguration: (() -> Void)?
     var onResetConfiguration: (() -> Void)?
+    var onSetProviderNetworkPolicy: ((ProviderRef, ProviderNetworkPolicyOverride) -> Void)?
 
     private var toastToken = UUID()
     private var settingsViewModel: SettingsViewModel?
@@ -99,6 +101,10 @@ final class UniGateAppState: ObservableObject {
 
     func updateDiscoveryState(_ state: ProviderModelDiscoveryState) {
         discoveryState = state
+    }
+
+    func updateNetworkDiagnostics(_ diagnostics: [String: NetworkPolicyDiagnostic]) {
+        networkDiagnostics = diagnostics
     }
 
     func updateModelDiscoveryRefreshing(_ isRefreshing: Bool) {
@@ -467,6 +473,7 @@ final class UniGateAppState: ObservableObject {
         }
         let settingsViewModel = SettingsViewModel(
             candidates: catalog.candidates,
+            providers: catalog.providers,
             customModels: customModels,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences,
@@ -506,6 +513,10 @@ final class UniGateAppState: ObservableObject {
         onResetConfiguration?()
     }
 
+    func setProviderNetworkPolicy(providerRef: ProviderRef, override: ProviderNetworkPolicyOverride) {
+        onSetProviderNetworkPolicy?(providerRef, override)
+    }
+
     func quit() {
         onQuit?()
     }
@@ -539,7 +550,10 @@ final class UniGateAppState: ObservableObject {
             healthReport: healthReport,
             recentEvents: recentEvents.map { DiagnosticEvent(date: $0.date, level: $0.level.rawValue, message: $0.message) },
             requestMetrics: requestMetrics,
-            discoveryState: discoveryState
+            discoveryState: discoveryState,
+            networkDiagnostics: networkDiagnostics.values.sorted {
+                $0.providerName.localizedStandardCompare($1.providerName) == .orderedAscending
+            }
         ))
     }
 
@@ -581,6 +595,7 @@ final class UniGateAppState: ObservableObject {
     private func updateSettingsViewModel() {
         settingsViewModel?.update(
             candidates: catalog.candidates,
+            providers: catalog.providers,
             customModels: customModels,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences

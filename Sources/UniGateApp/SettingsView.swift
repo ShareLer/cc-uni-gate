@@ -5,6 +5,7 @@ import UniGateCore
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var candidates: [ModelCandidate]
+    @Published var providers: [ImportedProvider]
     @Published var customModels: CustomModelState
     @Published var preferences: AppPreferences
     @Published var portText: String
@@ -12,6 +13,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var brandColor: BrandColorPreset
     @Published var bubbleNotificationsEnabled: Bool
     @Published var launchAtLoginEnabled: Bool
+    @Published var networkGlobalMode: NetworkPolicyMode
+    @Published var providerNetworkOverrides: [String: ProviderNetworkPolicyOverride]
+    @Published var directDomainRulesText: String
     @Published var toast: String?
 
     private var uniGateModelScope: UniGateModelScope
@@ -20,12 +24,14 @@ final class SettingsViewModel: ObservableObject {
 
     init(
         candidates: [ModelCandidate],
+        providers: [ImportedProvider],
         customModels: CustomModelState,
         uniGateModelScope: UniGateModelScope,
         preferences: AppPreferences,
         onApply: @escaping (AppPreferences, CustomModelState) -> Void
     ) {
         self.candidates = candidates
+        self.providers = providers
         self.customModels = customModels
         self.uniGateModelScope = uniGateModelScope
         self.preferences = preferences
@@ -34,16 +40,21 @@ final class SettingsViewModel: ObservableObject {
         self.brandColor = preferences.brandColor
         self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
         self.launchAtLoginEnabled = preferences.launchAtLoginEnabled
+        self.networkGlobalMode = preferences.networkPolicy.globalMode
+        self.providerNetworkOverrides = preferences.networkPolicy.providerOverrides
+        self.directDomainRulesText = preferences.networkPolicy.directDomainRules.joined(separator: "\n")
         self.onApply = onApply
     }
 
     func update(
         candidates: [ModelCandidate],
+        providers: [ImportedProvider],
         customModels: CustomModelState,
         uniGateModelScope: UniGateModelScope,
         preferences: AppPreferences
     ) {
         self.candidates = candidates
+        self.providers = providers
         self.customModels = customModels
         self.uniGateModelScope = uniGateModelScope
         self.preferences = preferences
@@ -52,6 +63,9 @@ final class SettingsViewModel: ObservableObject {
         self.brandColor = preferences.brandColor
         self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
         self.launchAtLoginEnabled = preferences.launchAtLoginEnabled
+        self.networkGlobalMode = preferences.networkPolicy.globalMode
+        self.providerNetworkOverrides = preferences.networkPolicy.providerOverrides
+        self.directDomainRulesText = preferences.networkPolicy.directDomainRules.joined(separator: "\n")
     }
 
     var generalSettingsValidationText: String? {
@@ -89,6 +103,38 @@ final class SettingsViewModel: ObservableObject {
             return
         }
         onApply(nextPreferences, customModels)
+    }
+
+    func providerNetworkOverride(for providerRef: ProviderRef) -> ProviderNetworkPolicyOverride {
+        providerNetworkOverrides[providerRef.description] ?? .inherit
+    }
+
+    func setProviderNetworkOverride(_ override: ProviderNetworkPolicyOverride, for providerRef: ProviderRef) {
+        if override == .inherit {
+            providerNetworkOverrides.removeValue(forKey: providerRef.description)
+        } else {
+            providerNetworkOverrides[providerRef.description] = override
+        }
+        _ = applyGeneralSettings(commitDatabasePath: false)
+    }
+
+    func effectiveNetworkPolicy(for provider: ImportedProvider) -> NetworkPolicyMode {
+        NetworkPolicyResolver.effectiveMode(
+            preferences: currentNetworkPolicyPreferences(),
+            providerRef: provider.ref,
+            host: provider.baseURL.flatMap { URL(string: $0)?.host }
+        )
+    }
+
+    var sortedProviders: [ImportedProvider] {
+        providers.sorted { lhs, rhs in
+            let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)
+                .localizedStandardCompare(ProviderDisplay.appTypeLabel(rhs.appType))
+            if appCompare != .orderedSame {
+                return appCompare == .orderedAscending
+            }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     func copyBaseURL(path: String) {
@@ -145,7 +191,16 @@ final class SettingsViewModel: ObservableObject {
                 : preferences.ccSwitchDBPath,
             brandColor: brandColor,
             bubbleNotificationsEnabled: bubbleNotificationsEnabled,
-            launchAtLoginEnabled: launchAtLoginEnabled
+            launchAtLoginEnabled: launchAtLoginEnabled,
+            networkPolicy: currentNetworkPolicyPreferences()
+        )
+    }
+
+    private func currentNetworkPolicyPreferences() -> NetworkPolicyPreferences {
+        NetworkPolicyPreferences(
+            globalMode: networkGlobalMode,
+            providerOverrides: providerNetworkOverrides,
+            directDomainRules: NetworkPolicyPreferences.parseDomainRulesText(directDomainRulesText)
         )
     }
 
@@ -174,6 +229,7 @@ final class SettingsViewModel: ObservableObject {
             || preferences.brandColor != nextPreferences.brandColor
             || preferences.bubbleNotificationsEnabled != nextPreferences.bubbleNotificationsEnabled
             || preferences.launchAtLoginEnabled != nextPreferences.launchAtLoginEnabled
+            || preferences.networkPolicy != nextPreferences.networkPolicy
     }
 
     private func normalizedPath(_ path: String?) -> String {

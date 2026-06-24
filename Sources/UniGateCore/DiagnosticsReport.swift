@@ -14,6 +14,7 @@ public struct DiagnosticsReportInput: Sendable {
     public var recentEvents: [DiagnosticEvent]
     public var requestMetrics: RequestMetricsState
     public var discoveryState: ProviderModelDiscoveryState
+    public var networkDiagnostics: [NetworkPolicyDiagnostic]
     public var generatedAt: Date
 
     public init(
@@ -30,6 +31,7 @@ public struct DiagnosticsReportInput: Sendable {
         recentEvents: [DiagnosticEvent],
         requestMetrics: RequestMetricsState,
         discoveryState: ProviderModelDiscoveryState,
+        networkDiagnostics: [NetworkPolicyDiagnostic] = [],
         generatedAt: Date = Date()
     ) {
         self.databasePath = databasePath
@@ -45,6 +47,7 @@ public struct DiagnosticsReportInput: Sendable {
         self.recentEvents = recentEvents
         self.requestMetrics = requestMetrics
         self.discoveryState = discoveryState
+        self.networkDiagnostics = networkDiagnostics
         self.generatedAt = generatedAt
     }
 }
@@ -132,6 +135,30 @@ public enum DiagnosticsReportGenerator {
         }
         lines.append("")
 
+        lines.append("[Network Policy]")
+        lines.append("Global: \(input.preferences.networkPolicy.globalMode.rawValue)")
+        if input.preferences.networkPolicy.directDomainRules.isEmpty {
+            lines.append("Direct domains: none")
+        } else {
+            lines.append("Direct domains: \(input.preferences.networkPolicy.directDomainRules.joined(separator: ", "))")
+        }
+        for override in input.preferences.networkPolicy.providerOverrides.sorted(by: { $0.key < $1.key }).prefix(80) {
+            lines.append("- \(override.key): \(override.value.rawValue)")
+        }
+        if input.preferences.networkPolicy.providerOverrides.isEmpty {
+            lines.append("- provider overrides: none")
+        }
+        lines.append("")
+
+        lines.append("[Network Diagnostics]")
+        for diagnostic in input.networkDiagnostics.prefix(80) {
+            lines.append("- \(ProviderDisplay.appTypeLabel(diagnostic.appType)) / \(diagnostic.providerName): system failed (\(redact(diagnostic.systemError))), direct HTTP \(diagnostic.directStatusCode), url=\(redact(diagnostic.url)), at \(formatter.string(from: diagnostic.checkedAt))")
+        }
+        if input.networkDiagnostics.isEmpty {
+            lines.append("- none")
+        }
+        lines.append("")
+
         lines.append("[Recent Events]")
         for event in input.recentEvents.prefix(30) {
             lines.append("- \(formatter.string(from: event.date)) [\(event.level)] \(redact(event.message))")
@@ -160,4 +187,3 @@ public enum DiagnosticsReportGenerator {
         return redacted
     }
 }
-

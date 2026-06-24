@@ -20,6 +20,7 @@ public struct AppPreferences: Codable, Sendable {
     public var brandColor: BrandColorPreset
     public var bubbleNotificationsEnabled: Bool
     public var launchAtLoginEnabled: Bool
+    public var networkPolicy: NetworkPolicyPreferences
 
     public init(
         visibleModels: Set<String>? = nil,
@@ -28,7 +29,8 @@ public struct AppPreferences: Codable, Sendable {
         ccSwitchDBPath: String? = nil,
         brandColor: BrandColorPreset = .ember,
         bubbleNotificationsEnabled: Bool = true,
-        launchAtLoginEnabled: Bool = true
+        launchAtLoginEnabled: Bool = true,
+        networkPolicy: NetworkPolicyPreferences = NetworkPolicyPreferences()
     ) {
         self.visibleModels = visibleModels
         self.protocolOverrides = protocolOverrides
@@ -37,6 +39,7 @@ public struct AppPreferences: Codable, Sendable {
         self.brandColor = brandColor
         self.bubbleNotificationsEnabled = bubbleNotificationsEnabled
         self.launchAtLoginEnabled = launchAtLoginEnabled
+        self.networkPolicy = networkPolicy
     }
 
     enum CodingKeys: String, CodingKey {
@@ -47,6 +50,7 @@ public struct AppPreferences: Codable, Sendable {
         case brandColor
         case bubbleNotificationsEnabled
         case launchAtLoginEnabled
+        case networkPolicy
     }
 
     public init(from decoder: Decoder) throws {
@@ -65,6 +69,10 @@ public struct AppPreferences: Codable, Sendable {
             Bool.self,
             forKey: .launchAtLoginEnabled
         ) ?? true
+        self.networkPolicy = try container.decodeIfPresent(
+            NetworkPolicyPreferences.self,
+            forKey: .networkPolicy
+        ) ?? NetworkPolicyPreferences()
     }
 
     public func visibleModelList(allModels: [String]) -> [String] {

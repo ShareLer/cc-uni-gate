@@ -74,6 +74,9 @@ struct PreferencesStoreTests {
         #expect(loaded.brandColor == .ember)
         #expect(loaded.bubbleNotificationsEnabled)
         #expect(loaded.launchAtLoginEnabled)
+        #expect(loaded.networkPolicy.globalMode == .system)
+        #expect(loaded.networkPolicy.providerOverrides.isEmpty)
+        #expect(loaded.networkPolicy.directDomainRules.isEmpty)
     }
 
     @Test
@@ -152,6 +155,26 @@ struct PreferencesStoreTests {
         let loaded = try store.load()
 
         #expect(!loaded.launchAtLoginEnabled)
+    }
+
+    @Test
+    func persistsNetworkPolicy() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        let store = PreferencesStore(fileURL: tmp)
+        let ref = ProviderRef(appType: "claude", id: "p1")
+        try store.save(AppPreferences(networkPolicy: NetworkPolicyPreferences(
+            globalMode: .direct,
+            providerOverrides: [ref.description: .system],
+            directDomainRules: ["*.intra.example.com", "DOMAIN-SUFFIX,corp.example.com,DIRECT"]
+        )))
+
+        let loaded = try store.load()
+
+        #expect(loaded.networkPolicy.globalMode == .direct)
+        #expect(loaded.networkPolicy.providerOverrides[ref.description] == .system)
+        #expect(loaded.networkPolicy.directDomainRules == ["*.intra.example.com", "corp.example.com"])
     }
 
     @Test

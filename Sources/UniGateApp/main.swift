@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var customModels = CustomModelState()
     private var requestMetrics = RequestMetricsState()
     private var discoveryState = ProviderModelDiscoveryState()
+    private var networkDiagnostics: [String: NetworkPolicyDiagnostic] = [:]
     private lazy var routeStore = RouteStore(fileURL: defaultRouteStoreURL())
     private lazy var preferencesStore = PreferencesStore(fileURL: defaultPreferencesStoreURL())
     private lazy var customModelStore = CustomModelStore()
@@ -161,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let previousPort = currentProxyPort()
             self.preferences = preferences
             self.customModels = customModels
+            pruneNetworkDiagnostics(for: preferences.networkPolicy)
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             syncLaunchAtLoginPreference()
@@ -175,6 +177,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             showError(error.localizedDescription)
         }
+    }
+
+    private func setProviderNetworkPolicy(
+        providerRef: ProviderRef,
+        override: ProviderNetworkPolicyOverride
+    ) {
+        var nextPreferences = preferences
+        var overrides = nextPreferences.networkPolicy.providerOverrides
+        if override == .inherit {
+            overrides.removeValue(forKey: providerRef.description)
+        } else {
+            overrides[providerRef.description] = override
+        }
+        nextPreferences.networkPolicy.providerOverrides = overrides
+        if override == .direct {
+            clearNetworkDiagnostic(providerRef: providerRef)
+        }
+        persistSettings(nextPreferences, customModels: customModels, closeAfterSave: false)
+        appState.showToast(override == .direct ? "已设为直连" : "网络策略已更新")
+    }
+
+    private func pruneNetworkDiagnostics(for networkPolicy: NetworkPolicyPreferences) {
+        let providersByRef = Dictionary(uniqueKeysWithValues: catalog.providers.map { ($0.ref, $0) })
+        let nextDiagnostics = networkDiagnostics.filter { _, diagnostic in
+            let provider = providersByRef[diagnostic.providerRef]
+            let host = provider?.baseURL.flatMap { URL(string: $0)?.host }
+                ?? URL(string: diagnostic.url)?.host
+            return NetworkPolicyResolver.effectiveMode(
+                preferences: networkPolicy,
+                providerRef: diagnostic.providerRef,
+                host: host
+            ) == .system
+        }
+        guard nextDiagnostics != networkDiagnostics else {
+            return
+        }
+        networkDiagnostics = nextDiagnostics
+        appState.updateNetworkDiagnostics(networkDiagnostics)
     }
 
     private func openAppFolder() {
@@ -250,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences = backup.preferences
             routes = backup.routes
             customModels = backup.customModels
+            networkDiagnostics.removeAll()
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             try routeStore.save(routes)
@@ -281,6 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             preferences = AppPreferences()
             customModels = CustomModelState()
+            networkDiagnostics.removeAll()
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             catalog = try loadExpandedCatalog()
@@ -450,10 +492,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 request.setValue(userAgent, forHTTPHeaderField: "user-agent")
             }
 
+            let networkPolicy = NetworkPolicyResolver.effectiveMode(
+                preferences: preferences.networkPolicy,
+                providerRef: provider.ref,
+                host: url.host
+            )
+            let session = NetworkPolicySession.makeSession(for: networkPolicy)
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await session.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if (200..<300).contains(status) {
+                    clearNetworkDiagnostic(providerRef: provider.ref)
                     let ids = ProviderModelDiscovery.modelIDs(from: data)
                     return ProviderModelDiscoveryResult(
                         providerRef: provider.ref,
@@ -466,13 +515,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         configurationFingerprint: fingerprint
                     )
                 }
-                lastFailure = "HTTP \(status)"
+                lastFailure = "networkPolicy=\(networkPolicy.rawValue) HTTP \(status)"
                 if status == 404 || status == 405 {
                     continue
                 }
                 break
             } catch {
-                lastFailure = error.localizedDescription
+                lastFailure = "networkPolicy=\(networkPolicy.rawValue) \(error.localizedDescription)"
+                if networkPolicy == .system {
+                    await updateSystemProxyDiagnosticIfDirectSucceeds(
+                        provider: provider,
+                        request: request,
+                        url: url,
+                        systemError: error.localizedDescription
+                    )
+                }
                 break
             }
         }
@@ -487,6 +544,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updatedAt: now,
             configurationFingerprint: fingerprint
         )
+    }
+
+    private func updateSystemProxyDiagnosticIfDirectSucceeds(
+        provider: ImportedProvider,
+        request: URLRequest,
+        url: URL,
+        systemError: String
+    ) async {
+        do {
+            let session = NetworkPolicySession.makeSession(for: .direct)
+            let (_, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status > 0 else {
+                clearNetworkDiagnostic(providerRef: provider.ref)
+                return
+            }
+            let previous = networkDiagnostics[provider.ref.description]
+            networkDiagnostics[provider.ref.description] = NetworkPolicyDiagnostic(
+                providerRef: provider.ref,
+                appType: provider.appType,
+                providerName: provider.name,
+                url: url.absoluteString,
+                systemError: systemError,
+                directStatusCode: status
+            )
+            appState.updateNetworkDiagnostics(networkDiagnostics)
+            if previous == nil || previous?.systemError != systemError || previous?.directStatusCode != status {
+                recordEvent(.error, formattedIssueMessage(
+                    appName: ProviderDisplay.appTypeLabel(provider.appType),
+                    group: "网络诊断",
+                    detail: "\(provider.name)：networkPolicy=system 请求失败，但 networkPolicy=direct 可连通 HTTP \(status)。url=\(url.absoluteString) error=\(systemError)"
+                ))
+            }
+        } catch {
+            clearNetworkDiagnostic(providerRef: provider.ref)
+        }
+    }
+
+    private func clearNetworkDiagnostic(providerRef: ProviderRef) {
+        guard networkDiagnostics.removeValue(forKey: providerRef.description) != nil else {
+            return
+        }
+        appState.updateNetworkDiagnostics(networkDiagnostics)
     }
 
     private func quit() {
@@ -589,10 +689,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pruneDiscoveryState(for catalog: ProviderCatalog) {
         let nextState = discoveryState.pruning(validProviders: catalog.providers)
         guard nextState != discoveryState else {
+            pruneNetworkDiagnostics(for: catalog)
             return
         }
         discoveryState = nextState
         try? discoveryStore.save(nextState)
+        pruneNetworkDiagnostics(for: catalog)
+    }
+
+    private func pruneNetworkDiagnostics(for catalog: ProviderCatalog) {
+        let validRefs = Set(catalog.providers.map(\.ref.description))
+        let nextDiagnostics = networkDiagnostics.filter { validRefs.contains($0.key) }
+        guard nextDiagnostics != networkDiagnostics else {
+            return
+        }
+        networkDiagnostics = nextDiagnostics
+        appState.updateNetworkDiagnostics(networkDiagnostics)
     }
 
     private func defaultProxyPort() -> UInt16 {
@@ -663,6 +775,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.onResetConfiguration = { [weak self] in
             self?.resetConfiguration()
         }
+        appState.onSetProviderNetworkPolicy = { [weak self] providerRef, override in
+            self?.setProviderNetworkPolicy(providerRef: providerRef, override: override)
+        }
     }
 
     private func publishState() {
@@ -681,6 +796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.updateForwardedRequestCounts(forwardedRequestCounts)
         appState.updateRequestMetrics(requestMetrics)
         appState.updateDiscoveryState(discoveryState)
+        appState.updateNetworkDiagnostics(networkDiagnostics)
     }
 
     private func publishError(_ error: Error, notify: Bool = true) {
@@ -755,11 +871,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: LocalProxyRuntime {
     func proxySnapshot() -> ProxyRuntimeSnapshot {
-        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes)
+        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes, networkPolicy: preferences.networkPolicy)
     }
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
-        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes)
+        ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes, networkPolicy: preferences.networkPolicy)
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
