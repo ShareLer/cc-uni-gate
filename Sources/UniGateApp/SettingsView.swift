@@ -105,35 +105,29 @@ final class SettingsViewModel: ObservableObject {
         onApply(nextPreferences, customModels)
     }
 
-    func providerNetworkOverride(for providerRef: ProviderRef) -> ProviderNetworkPolicyOverride {
-        providerNetworkOverrides[providerRef.description] ?? .inherit
+    func providerNetworkMode(for provider: ImportedProvider) -> NetworkPolicyMode {
+        providerNetworkOverrides[provider.ref.description]?.effectiveMode
+            ?? effectiveNetworkPolicy(for: provider)
     }
 
-    func setProviderNetworkOverride(_ override: ProviderNetworkPolicyOverride, for providerRef: ProviderRef) {
-        if override == .inherit {
-            providerNetworkOverrides.removeValue(forKey: providerRef.description)
-        } else {
-            providerNetworkOverrides[providerRef.description] = override
-        }
+    func setProviderNetworkMode(_ mode: NetworkPolicyMode, for providerRef: ProviderRef) {
+        providerNetworkOverrides[providerRef.description] = providerOverride(for: mode)
+        _ = applyGeneralSettings(commitDatabasePath: false)
+    }
+
+    func setNetworkGlobalModeForAll(_ mode: NetworkPolicyMode) {
+        networkGlobalMode = mode
+        providerNetworkOverrides = Dictionary(
+            uniqueKeysWithValues: providers.map {
+                ($0.ref.description, providerOverride(for: mode))
+            }
+        )
         _ = applyGeneralSettings(commitDatabasePath: false)
     }
 
     func effectiveNetworkPolicy(for provider: ImportedProvider) -> NetworkPolicyMode {
         NetworkPolicyResolver.effectiveMode(
             preferences: currentNetworkPolicyPreferences(),
-            providerRef: provider.ref,
-            host: provider.baseURL.flatMap { URL(string: $0)?.host }
-        )
-    }
-
-    func inheritedNetworkPolicy(for provider: ImportedProvider) -> NetworkPolicyMode {
-        let preferences = NetworkPolicyPreferences(
-            globalMode: networkGlobalMode,
-            providerOverrides: [:],
-            directDomainRules: NetworkPolicyPreferences.parseDomainRulesText(directDomainRulesText)
-        )
-        return NetworkPolicyResolver.effectiveMode(
-            preferences: preferences,
             providerRef: provider.ref,
             host: provider.baseURL.flatMap { URL(string: $0)?.host }
         )
@@ -215,6 +209,15 @@ final class SettingsViewModel: ObservableObject {
             providerOverrides: providerNetworkOverrides,
             directDomainRules: NetworkPolicyPreferences.parseDomainRulesText(directDomainRulesText)
         )
+    }
+
+    private func providerOverride(for mode: NetworkPolicyMode) -> ProviderNetworkPolicyOverride {
+        switch mode {
+        case .system:
+            return .system
+        case .direct:
+            return .direct
+        }
     }
 
     private func showToast(_ message: String) {

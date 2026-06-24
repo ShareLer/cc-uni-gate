@@ -103,6 +103,16 @@ public struct CustomModelState: Codable, Sendable {
         "\(target.routeKey.description)|\(target.providerRef.description)"
     }
 
+    public static func syntheticProviderRef(
+        appType: String,
+        target: CustomModelTarget
+    ) -> ProviderRef {
+        ProviderRef(
+            appType: appType,
+            id: "\(target.providerRef.description)|\(target.routeKey.description)"
+        )
+    }
+
     public func definition(for routeKey: ModelRouteKey) -> CustomModelDefinition? {
         models.first {
             $0.appType == routeKey.appType && $0.name == routeKey.logicalModel
@@ -156,10 +166,10 @@ public struct CustomModelState: Codable, Sendable {
             matchedTargets.insert(preferred, at: 0)
         }
 
-        return matchedTargets.map { _, candidate in
+        return matchedTargets.map { target, candidate in
             ModelCandidate(
                 logicalModel: definition.name,
-                providerRef: ProviderRef(appType: definition.appType, id: "\(candidate.providerRef.description)|\(candidate.routeKey.description)"),
+                providerRef: Self.syntheticProviderRef(appType: definition.appType, target: target),
                 providerName: candidate.providerName,
                 appType: definition.appType,
                 clientProtocol: candidate.clientProtocol,
@@ -173,6 +183,25 @@ public struct CustomModelState: Codable, Sendable {
                 source: candidate.source
             )
         }
+    }
+
+    public func displayCandidates(
+        for definition: CustomModelDefinition,
+        from catalog: ProviderCatalog
+    ) -> [ModelCandidate] {
+        var candidates = expandedCandidates(for: definition, from: catalog)
+        let candidateProviderRefs = Set(candidates.map(\.providerRef))
+        let missingTargets = definition.targets
+            .filter { $0.routeKey.appType == definition.appType }
+            .compactMap { target -> ModelCandidate? in
+                let providerRef = Self.syntheticProviderRef(appType: definition.appType, target: target)
+                guard !candidateProviderRefs.contains(providerRef) else {
+                    return nil
+                }
+                return missingTargetCandidate(definition: definition, target: target, catalog: catalog)
+            }
+        candidates.append(contentsOf: missingTargets)
+        return candidates
     }
 
     public static func deduplicatedTargetCandidates(
@@ -225,6 +254,56 @@ public struct CustomModelState: Codable, Sendable {
         }
 
         return candidate.logicalModel.localizedStandardCompare(existing.logicalModel) == .orderedAscending
+    }
+
+    private func missingTargetCandidate(
+        definition: CustomModelDefinition,
+        target: CustomModelTarget,
+        catalog: ProviderCatalog
+    ) -> ModelCandidate {
+        let provider = catalog.providers.first(where: { $0.ref == target.providerRef })
+        let apiFormat = provider?.apiFormat ?? .unknown
+        return ModelCandidate(
+            logicalModel: definition.name,
+            providerRef: Self.syntheticProviderRef(appType: definition.appType, target: target),
+            providerName: provider?.name ?? target.providerRef.description,
+            appType: definition.appType,
+            clientProtocol: clientProtocol(for: target.routeKey.appType),
+            apiFormat: apiFormat,
+            upstreamModel: target.routeKey.logicalModel,
+            baseURL: provider?.baseURL,
+            requiresTransform: requiresTransform(appType: target.routeKey.appType, apiFormat: apiFormat),
+            label: target.routeKey.logicalModel,
+            supportsLongContext: false,
+            upstreamProviderRef: target.providerRef,
+            source: .staleDiscovered
+        )
+    }
+
+    private func clientProtocol(for appType: String) -> ClientProtocolKind {
+        switch appType {
+        case "claude", "claude-desktop":
+            return .anthropicMessages
+        case "codex":
+            return .codexResponses
+        case "gemini":
+            return .geminiNative
+        default:
+            return .openaiChat
+        }
+    }
+
+    private func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool {
+        switch appType {
+        case "claude", "claude-desktop":
+            return apiFormat != .anthropic
+        case "codex":
+            return apiFormat != .openaiResponses && apiFormat != .openaiChat
+        case "gemini":
+            return apiFormat != .geminiNative
+        default:
+            return false
+        }
     }
 }
 

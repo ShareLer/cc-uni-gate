@@ -1360,9 +1360,6 @@ private struct InlineSettingsPanel: View {
         .onChange(of: model.launchAtLoginEnabled) { _, _ in
             _ = model.applyGeneralSettings(commitDatabasePath: false)
         }
-        .onChange(of: model.networkGlobalMode) { _, _ in
-            _ = model.applyGeneralSettings(commitDatabasePath: false)
-        }
         .onChange(of: model.directDomainRulesText) { _, _ in
             scheduleApply()
         }
@@ -1612,13 +1609,20 @@ private struct InlineSettingsPanel: View {
             HStack(spacing: 8) {
                 Text("网络策略")
                     .font(.system(size: 12, weight: .semibold))
+                Text("一键切换")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .background(UGPopoverStyle.disabledTagFill, in: RoundedRectangle(cornerRadius: 5))
                 Spacer()
-                Picker("", selection: $model.networkGlobalMode) {
-                    Text("跟随系统代理").tag(NetworkPolicyMode.system)
-                    Text("直连").tag(NetworkPolicyMode.direct)
+                HStack(spacing: 4) {
+                    networkPolicyBulkButton("跟随系统代理", mode: .system, width: 82)
+                    networkPolicyBulkButton("直连", mode: .direct)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 174)
+                .padding(2)
+                .background(UGPopoverStyle.tabFill, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.tabBorder))
             }
 
             VStack(alignment: .leading, spacing: 7) {
@@ -1640,16 +1644,12 @@ private struct InlineSettingsPanel: View {
                 Divider()
                 VStack(spacing: 8) {
                     ForEach(model.sortedProviders, id: \.ref.description) { provider in
-                        let override = model.providerNetworkOverride(for: provider.ref)
-                        let inheritedMode = model.inheritedNetworkPolicy(for: provider)
-                        let effectiveMode = model.effectiveNetworkPolicy(for: provider)
+                        let mode = model.providerNetworkMode(for: provider)
                         providerNetworkPolicyRow(
                             provider,
-                            override: override,
-                            inheritedMode: inheritedMode,
-                            effectiveMode: effectiveMode
+                            mode: mode
                         )
-                        .id("\(provider.ref.description)-\(override.rawValue)-\(inheritedMode.rawValue)-\(effectiveMode.rawValue)")
+                        .id("\(provider.ref.description)-\(mode.rawValue)")
                     }
                 }
             }
@@ -1733,9 +1733,7 @@ private struct InlineSettingsPanel: View {
 
     private func providerNetworkPolicyRow(
         _ provider: ImportedProvider,
-        override: ProviderNetworkPolicyOverride,
-        inheritedMode: NetworkPolicyMode,
-        effectiveMode: NetworkPolicyMode
+        mode: NetworkPolicyMode
     ) -> some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -1743,28 +1741,41 @@ private struct InlineSettingsPanel: View {
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(ProviderDisplay.appTypeLabel(provider.appType)) · \(networkPolicyStatusText(override: override, effectiveMode: effectiveMode))")
+                Text("\(ProviderDisplay.appTypeLabel(provider.appType)) · 当前：\(networkPolicyLabel(mode))")
                     .font(.caption2)
                     .foregroundStyle(UGPopoverStyle.textSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            Picker("", selection: providerNetworkPolicyBinding(for: provider.ref)) {
-                Text("跟随全局 · \(networkPolicyShortLabel(inheritedMode))").tag(ProviderNetworkPolicyOverride.inherit)
-                Text("系统代理").tag(ProviderNetworkPolicyOverride.system)
-                Text("直连").tag(ProviderNetworkPolicyOverride.direct)
+            Picker("", selection: providerNetworkModeBinding(for: provider)) {
+                Text("系统代理").tag(NetworkPolicyMode.system)
+                Text("直连").tag(NetworkPolicyMode.direct)
             }
             .pickerStyle(.menu)
-            .frame(width: 122)
+            .frame(width: 92)
         }
     }
 
-    private func providerNetworkPolicyBinding(for providerRef: ProviderRef) -> Binding<ProviderNetworkPolicyOverride> {
+    private func providerNetworkModeBinding(for provider: ImportedProvider) -> Binding<NetworkPolicyMode> {
         Binding {
-            model.providerNetworkOverride(for: providerRef)
+            model.providerNetworkMode(for: provider)
         } set: { nextValue in
-            model.setProviderNetworkOverride(nextValue, for: providerRef)
+            model.setProviderNetworkMode(nextValue, for: provider.ref)
         }
+    }
+
+    private func networkPolicyBulkButton(_ title: String, mode: NetworkPolicyMode, width: CGFloat = 58) -> some View {
+        let selected = model.networkGlobalMode == mode
+        return Button {
+            model.setNetworkGlobalModeForAll(mode)
+        } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(selected ? brand : UGPopoverStyle.textSecondary)
+                .frame(width: width, height: 22)
+                .background(selected ? UGPopoverStyle.brandSelectionFill(brand) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
     }
 
     private func networkPolicyLabel(_ mode: NetworkPolicyMode) -> String {
@@ -1773,27 +1784,6 @@ private struct InlineSettingsPanel: View {
             return "跟随系统代理"
         case .direct:
             return "直连"
-        }
-    }
-
-    private func networkPolicyShortLabel(_ mode: NetworkPolicyMode) -> String {
-        switch mode {
-        case .system:
-            return "系统"
-        case .direct:
-            return "直连"
-        }
-    }
-
-    private func networkPolicyStatusText(
-        override: ProviderNetworkPolicyOverride,
-        effectiveMode: NetworkPolicyMode
-    ) -> String {
-        switch override {
-        case .inherit:
-            return "跟随全局：\(networkPolicyLabel(effectiveMode))"
-        case .system, .direct:
-            return "固定：\(networkPolicyLabel(effectiveMode))"
         }
     }
 

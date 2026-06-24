@@ -486,4 +486,102 @@ struct CustomModelStoreTests {
         #expect(baseCandidates.map(\.logicalModel) == ["qwen3.6"])
         #expect(baseCandidates.first?.source == .discovered)
     }
+
+    @Test
+    func displayCandidatesPreserveSavedTargetsMissingFromCurrentCatalog() throws {
+        let dcc = ImportedProvider(
+            id: "dcc",
+            appType: "claude-desktop",
+            name: "DCC",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://dcc.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("dcc-key")])],
+            meta: [:]
+        )
+        let deepseek = ImportedProvider(
+            id: "deepseek",
+            appType: "claude-desktop",
+            name: "DeepSeek",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://deepseek.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("deepseek-key")])],
+            meta: [:]
+        )
+        let autoTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "claude-desktop", logicalModel: "auto"),
+            providerRef: dcc.ref
+        )
+        let flashTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "claude-desktop", logicalModel: "deepseek-v4-flash"),
+            providerRef: deepseek.ref
+        )
+        let proTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "claude-desktop", logicalModel: "deepseek-v4-pro"),
+            providerRef: deepseek.ref
+        )
+        let definition = CustomModelDefinition(
+            appType: "claude-desktop",
+            name: "union-model",
+            targets: [autoTarget, flashTarget, proTarget],
+            selectedTargetID: autoTarget.id
+        )
+        let catalog = ProviderCatalog(
+            providers: [dcc, deepseek],
+            candidates: [
+                ModelCandidate(
+                    logicalModel: "deepseek-v4-flash",
+                    providerRef: deepseek.ref,
+                    providerName: deepseek.name,
+                    appType: deepseek.appType,
+                    clientProtocol: .anthropicMessages,
+                    apiFormat: .anthropic,
+                    upstreamModel: "deepseek-v4-flash",
+                    baseURL: deepseek.baseURL,
+                    requiresTransform: false,
+                    label: nil,
+                    supportsLongContext: false
+                ),
+                ModelCandidate(
+                    logicalModel: "deepseek-v4-pro",
+                    providerRef: deepseek.ref,
+                    providerName: deepseek.name,
+                    appType: deepseek.appType,
+                    clientProtocol: .anthropicMessages,
+                    apiFormat: .anthropic,
+                    upstreamModel: "deepseek-v4-pro",
+                    baseURL: deepseek.baseURL,
+                    requiresTransform: false,
+                    label: nil,
+                    supportsLongContext: false
+                )
+            ]
+        )
+        let state = CustomModelState(models: [definition])
+
+        let proxyCandidates = state.expandedCandidates(for: definition, from: catalog)
+        let displayCandidates = state.displayCandidates(for: definition, from: catalog)
+
+        #expect(proxyCandidates.map(\.upstreamModelDisplayName).sorted() == [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro"
+        ])
+        #expect(displayCandidates.map(\.upstreamModelDisplayName).sorted() == [
+            "auto",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro"
+        ])
+        #expect(displayCandidates.first { $0.upstreamModelDisplayName == "auto" }?.source == .staleDiscovered)
+        #expect(displayCandidates.first { $0.upstreamModelDisplayName == "auto" }?.providerRef == CustomModelState.syntheticProviderRef(
+            appType: "claude-desktop",
+            target: autoTarget
+        ))
+    }
 }
