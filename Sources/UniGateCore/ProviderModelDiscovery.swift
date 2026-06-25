@@ -162,25 +162,11 @@ public enum ProviderModelDiscovery {
     }
 
     private static func clientProtocol(for appType: String) -> ClientProtocolKind {
-        switch appType {
-        case "claude", "claude-desktop":
-            return .anthropicMessages
-        case "codex":
-            return .codexResponses
-        default:
-            return .openaiChat
-        }
+        UniGateAppRegistry.clientProtocol(for: appType) ?? .openaiChat
     }
 
     private static func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool {
-        switch appType {
-        case "claude", "claude-desktop":
-            return apiFormat != .anthropic
-        case "codex":
-            return apiFormat != .openaiResponses && apiFormat != .openaiChat
-        default:
-            return false
-        }
+        UniGateAppRegistry.requiresTransform(appType: appType, apiFormat: apiFormat) ?? false
     }
 
     private static func modelsURLOverride(for provider: ImportedProvider) -> String? {

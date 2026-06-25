@@ -15,6 +15,46 @@ public enum ClientProtocolKind: String, Codable, Sendable {
     case geminiNative = "gemini_native"
 }
 
+public enum UniGateAppRegistry {
+    public static let codex = "codex"
+    public static let claudeCode = "claude"
+    public static let claudeDesktop = "claude-desktop"
+
+    public static let uniGateScopedAppTypes: [String] = [
+        codex,
+        claudeCode,
+        claudeDesktop
+    ]
+
+    public static func isUniGateScoped(_ appType: String) -> Bool {
+        uniGateScopedAppTypes.contains(appType)
+    }
+
+    public static func isClaudeLike(_ appType: String) -> Bool {
+        appType == claudeCode || appType == claudeDesktop
+    }
+
+    public static func clientProtocol(for appType: String) -> ClientProtocolKind? {
+        if appType == codex {
+            return .codexResponses
+        }
+        if isClaudeLike(appType) {
+            return .anthropicMessages
+        }
+        return nil
+    }
+
+    public static func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool? {
+        if appType == codex {
+            return apiFormat != .openaiResponses && apiFormat != .openaiChat
+        }
+        if isClaudeLike(appType) {
+            return apiFormat != .anthropic
+        }
+        return nil
+    }
+}
+
 public enum ProxyResponseTransform: String, Codable, Sendable {
     case none
     case openAIChatToCodexResponse = "openai_chat_to_codex_response"
@@ -39,11 +79,11 @@ public enum ProxyRequestPath: Equatable, Sendable {
         if Self.modelPaths.contains(path) {
             self = .models(appType: scoped.appType)
         } else if Self.claudePaths.contains(path) {
-            self = .proxy(protocolKind: .anthropicMessages, appType: scoped.appType ?? "claude")
+            self = .proxy(protocolKind: .anthropicMessages, appType: scoped.appType ?? UniGateAppRegistry.claudeCode)
         } else if Self.codexResponsesPaths.contains(path) {
-            self = .proxy(protocolKind: .codexResponses, appType: scoped.appType ?? "codex")
+            self = .proxy(protocolKind: .codexResponses, appType: scoped.appType ?? UniGateAppRegistry.codex)
         } else if Self.openAIChatPaths.contains(path) {
-            self = .proxy(protocolKind: .openaiChat, appType: scoped.appType ?? "codex")
+            self = .proxy(protocolKind: .openaiChat, appType: scoped.appType ?? UniGateAppRegistry.codex)
         } else {
             self = .unsupported
         }
@@ -62,12 +102,12 @@ public enum ProxyRequestPath: Equatable, Sendable {
     }
 
     private static let appPrefixes: [(String, String)] = [
-        ("/claude-desktop", "claude-desktop"),
-        ("/claude-code", "claude"),
-        ("/claude", "claude"),
-        ("/anthropic", "claude"),
-        ("/codex", "codex"),
-        ("/openai", "codex")
+        ("/claude-desktop", UniGateAppRegistry.claudeDesktop),
+        ("/claude-code", UniGateAppRegistry.claudeCode),
+        ("/claude", UniGateAppRegistry.claudeCode),
+        ("/anthropic", UniGateAppRegistry.claudeCode),
+        ("/codex", UniGateAppRegistry.codex),
+        ("/openai", UniGateAppRegistry.codex)
     ]
 
     private static let modelPaths: Set<String> = [
@@ -216,11 +256,11 @@ public struct ImportedProvider: Identifiable, Sendable {
 public enum ProviderDisplay {
     public static func appTypeLabel(_ appType: String) -> String {
         switch appType {
-        case "codex":
+        case UniGateAppRegistry.codex:
             return "Codex"
-        case "claude":
+        case UniGateAppRegistry.claudeCode:
             return "Claude Code"
-        case "claude-desktop":
+        case UniGateAppRegistry.claudeDesktop:
             return "Claude Desktop"
         case "gemini":
             return "Gemini"
@@ -310,13 +350,7 @@ public struct ModelCandidate: Identifiable, Sendable {
     }
 
     private func requiresTransform(for appType: String, apiFormat: ApiFormat) -> Bool {
-        if appType == "codex" {
-            return apiFormat != .openaiResponses && apiFormat != .openaiChat
-        }
-        if appType == "claude" || appType == "claude-desktop" {
-            return apiFormat != .anthropic
-        }
-        return requiresTransform
+        UniGateAppRegistry.requiresTransform(appType: appType, apiFormat: apiFormat) ?? requiresTransform
     }
 
     public static func stripOneMSuffix(_ model: String) -> String {
@@ -456,7 +490,7 @@ public struct UniGateModelScope: Sendable {
         guard let models = normalizedModelsByApp[candidate.appType] else {
             return false
         }
-        if candidate.appType == "claude-desktop" {
+        if candidate.appType == UniGateAppRegistry.claudeDesktop {
             return models.contains(Self.normalizedModel(candidate.upstreamModel))
         }
         return models.contains(Self.normalizedModel(candidate.logicalModel))

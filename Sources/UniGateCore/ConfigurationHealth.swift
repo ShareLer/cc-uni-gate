@@ -136,7 +136,7 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
             actionTitle: proxyAction
         ))
 
-        for appType in ["codex", "claude", "claude-desktop"] {
+        for appType in UniGateAppRegistry.uniGateScopedAppTypes {
             let appName = ProviderDisplay.appTypeLabel(appType)
             if let provider = integration?.uniGateProvider(appType: appType) {
                 let severity: ConfigurationHealthSeverity = provider.configuredModels.isEmpty ? .warning : .ok
@@ -164,21 +164,21 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
             } else {
                 items.append(ConfigurationHealthItem(
                     id: "unigate-provider-missing-\(appType)",
-                    severity: appType == "claude-desktop" ? .warning : .error,
+                    severity: appType == UniGateAppRegistry.claudeDesktop ? .warning : .error,
                     appType: appType,
                     title: "\(appName) 未导入 Uni Gate",
                     detail: "cc-switch 中没有检测到指向 Uni Gate 本地代理的供应商。",
-                    actionTitle: appType == "claude-desktop" ? "查看说明" : "导入"
+                    actionTitle: appType == UniGateAppRegistry.claudeDesktop ? "查看说明" : "导入"
                 ))
             }
         }
 
-        let desktopProviders = integration?.providers(appType: "claude-desktop") ?? []
+        let desktopProviders = integration?.providers(appType: UniGateAppRegistry.claudeDesktop) ?? []
         if desktopProviders.contains(where: \.hasClaudeDesktopRoutes) {
             items.append(ConfigurationHealthItem(
                 id: "desktop-routes",
                 severity: .ok,
-                appType: "claude-desktop",
+                appType: UniGateAppRegistry.claudeDesktop,
                 title: "Claude Desktop 已开启模型映射",
                 detail: "已检测到 claudeDesktopModelRoutes。"
             ))
@@ -186,7 +186,7 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
             items.append(ConfigurationHealthItem(
                 id: "desktop-routes-missing",
                 severity: .warning,
-                appType: "claude-desktop",
+                appType: UniGateAppRegistry.claudeDesktop,
                 title: "Claude Desktop 需开启模型映射",
                 detail: "未检测到 claudeDesktopModelRoutes，Uni Gate 无法稳定按真实模型路由。",
                 actionTitle: "查看说明"
@@ -203,7 +203,7 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
             ))
         }
 
-        for appType in ["codex", "claude", "claude-desktop"] where !uniGateModelScope.hasModels(for: appType) {
+        for appType in UniGateAppRegistry.uniGateScopedAppTypes where !uniGateModelScope.hasModels(for: appType) {
             items.append(ConfigurationHealthItem(
                 id: "scope-empty-\(appType)",
                 severity: .warning,

@@ -193,7 +193,7 @@ public enum ProxyResolver {
             return match
         }
 
-        guard appType == "claude" else {
+        guard appType == UniGateAppRegistry.claudeCode else {
             return exactKey
         }
         guard let role = ClaudeRouteRole.role(in: normalizedRequest) else {
@@ -221,9 +221,9 @@ public enum ProxyResolver {
     private static func defaultAppType(for protocolKind: ClientProtocolKind) -> String {
         switch protocolKind {
         case .codexResponses, .openaiChat:
-            return "codex"
+            return UniGateAppRegistry.codex
         case .anthropicMessages:
-            return "claude"
+            return UniGateAppRegistry.claudeCode
         case .geminiNative:
             return "gemini"
         }
@@ -256,11 +256,11 @@ public enum ProxyResolver {
         )
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let raw: String
-        if provider.appType == "codex",
+        if provider.appType == UniGateAppRegistry.codex,
            apiFormat == .openaiChat,
            base.lowercased().hasSuffix("/chat/completions") {
             raw = base
-        } else if provider.appType == "codex", isOriginOnlyURL(baseURL) {
+        } else if provider.appType == UniGateAppRegistry.codex, isOriginOnlyURL(baseURL) {
             raw = "\(base)/v1/\(endpoint)"
         } else {
             raw = "\(base)/\(endpoint)"
@@ -280,14 +280,14 @@ public enum ProxyResolver {
     ) -> String {
         let path = inboundPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? inboundPath
 
-        if provider.appType == "codex" {
+        if provider.appType == UniGateAppRegistry.codex {
             if protocolKind == .codexResponses, apiFormat == .openaiChat {
                 return "/v1/chat/completions"
             }
             return stripManagerPrefixes(path, prefixes: ["/openai", "/codex"])
         }
 
-        if provider.appType == "claude" || provider.appType == "claude-desktop" {
+        if UniGateAppRegistry.isClaudeLike(provider.appType) {
             return stripManagerPrefixes(path, prefixes: ["/anthropic", "/claude-code", "/claude", "/claude-desktop"])
         }
 

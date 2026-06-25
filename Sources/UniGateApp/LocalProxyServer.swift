@@ -899,7 +899,7 @@ final class LocalProxyServer: @unchecked Sendable {
         let routeKeys = ProviderModelListing.routeKeys(from: snapshot.catalog, appType: appType)
         let modelIDs = Array(Set(routeKeys.map(\.logicalModel))).sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }
-        let models: Any = appType == "codex"
+        let models: Any = appType == UniGateAppRegistry.codex
             ? codexModelCatalog(routeKeys: routeKeys, candidates: snapshot.catalog.candidates)
             : modelIDs
         return .json(status: 200, body: [

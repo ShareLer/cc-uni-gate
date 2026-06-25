@@ -282,27 +282,19 @@ public struct CustomModelState: Codable, Sendable {
 
     private func clientProtocol(for appType: String) -> ClientProtocolKind {
         switch appType {
-        case "claude", "claude-desktop":
-            return .anthropicMessages
-        case "codex":
-            return .codexResponses
         case "gemini":
             return .geminiNative
         default:
-            return .openaiChat
+            return UniGateAppRegistry.clientProtocol(for: appType) ?? .openaiChat
         }
     }
 
     private func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool {
         switch appType {
-        case "claude", "claude-desktop":
-            return apiFormat != .anthropic
-        case "codex":
-            return apiFormat != .openaiResponses && apiFormat != .openaiChat
         case "gemini":
             return apiFormat != .geminiNative
         default:
-            return false
+            return UniGateAppRegistry.requiresTransform(appType: appType, apiFormat: apiFormat) ?? false
         }
     }
 }

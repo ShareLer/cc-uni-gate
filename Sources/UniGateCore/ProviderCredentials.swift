@@ -59,9 +59,9 @@ enum ProviderCredentials {
 
     private static func secretPaths(appType: String) -> [[String]] {
         switch appType {
-        case "codex":
+        case UniGateAppRegistry.codex:
             return [["auth", "OPENAI_API_KEY"], ["env", "OPENAI_API_KEY"]]
-        case "claude", "claude-desktop":
+        case UniGateAppRegistry.claudeCode, UniGateAppRegistry.claudeDesktop:
             return [
                 ["env", "ANTHROPIC_AUTH_TOKEN"],
                 ["env", "ANTHROPIC_API_KEY"],
@@ -77,6 +77,6 @@ enum ProviderCredentials {
     }
 
     private static func isAnthropicApp(_ appType: String) -> Bool {
-        appType == "claude" || appType == "claude-desktop"
+        UniGateAppRegistry.isClaudeLike(appType)
     }
 }

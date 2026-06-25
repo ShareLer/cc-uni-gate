@@ -53,6 +53,44 @@
    - 由于 `main.swift` 含顶层 `NSApplication.run()`，直接测试 app target 不方便。建议后续把启动入口拆到单独文件或把状态模型迁到可测试 target。
 
 ---
+## 2026-06-25 - UniGate 三类 App 逻辑统一复核
+
+## 重构逻辑一致性报告
+
+### 修改概览
+- `Sources/UniGateCore/Models.swift`: 新增 `UniGateAppRegistry`，统一 `codex` / `claude` / `claude-desktop` 的 appType 常量、UniGate scope 列表、Claude-like 判定、默认 client protocol、transform 判定。
+- `Sources/UniGateCore/ModelRoutingUtilities.swift`: 可见性判断改为委托 `UniGateAppRegistry`。
+- `Sources/UniGateCore/CcSwitchImporter.swift`: 四处重复 provider SQL 查询统一到 `loadProviderRows()`，查询 app 范围由 registry 驱动；保留 Codex / Claude Code / Claude Desktop 各自配置解析函数。
+- `Sources/UniGateCore/ProviderModelDiscovery.swift`、`Sources/UniGateCore/CustomModelStore.swift`、`Sources/UniGateCore/ProviderCredentials.swift`、`Sources/UniGateCore/ProxyResolver.swift`: 共享协议、transform、Claude-like、默认 app 判定改为使用 registry。
+- `Sources/UniGateCore/ConfigurationHealth.swift`、`Sources/UniGateCore/DiagnosticsReport.swift`、`Sources/UniGateApp/LocalProxyServer.swift`: 健康检查/诊断 app 循环与 Codex 判断改为使用 registry。
+- `Tests/UniGateCoreTests/UniGateAppRegistryTests.swift`: 新增 registry 契约测试，覆盖 scope、protocol、transform、路径默认 app。
+
+### 改动对照表
+
+| 修改点 | 重构前逻辑行为 | 重构后逻辑行为 | 逻辑分支等价性 | 测试验证 | 依据 | 结论 |
+| --- | --- | --- | --- | --- | --- | --- |
+| UniGate scoped app 列表 | `["codex", "claude", "claude-desktop"]` 在健康检查、诊断、SQL 过滤、可见性判断中分散硬编码 | `UniGateAppRegistry.uniGateScopedAppTypes` 作为统一来源 | 等价 | `UniGateAppRegistryTests.scopedAppsDriveRouteVisibility`；`swift test` 111 个测试通过 | 纯去重，集合仍为 codex/claude/claude-desktop | ✅ 完全一致 (PASS) |
+| Claude-like 判定 | 多处写 `appType == "claude" || appType == "claude-desktop"` | 统一为 `UniGateAppRegistry.isClaudeLike` | 等价 | `claudeLikeAppsShareProtocolAndTransformRules`；既有 Claude Desktop/Claude Code 路由测试通过 | 两个 Claude app 的协议与 transform 规则相同 | ✅ 完全一致 (PASS) |
+| 默认 client protocol | `ProviderModelDiscovery`、`CustomModelStore` 各自 switch：Codex -> responses，Claude 系 -> anthropic | registry 提供同一映射；Gemini/default fallback 保留在调用方 | 等价 | `claudeLikeAppsShareProtocolAndTransformRules`、`codexUsesResponsesProtocolAndOpenAITransformRules`；`swift test` 通过 | 共享规则只覆盖 UniGate 三类 app，非 scoped app 不继承 | ✅ 完全一致 (PASS) |
+| transform 判定 | `ModelCandidate.withApiFormat`、discovery、custom missing target 各自实现相同规则 | registry 提供统一 transform 判定；未知 app 仍返回原 fallback | 等价 | 新 registry tests + 既有 bridge/route tests 通过 | 纯函数规则一致：Codex 接受 responses/chat，Claude 系仅接受 anthropic | ✅ 完全一致 (PASS) |
+| cc-switch provider 查询 | 四个 load 方法重复相同 SQL，过滤 `claude` / `claude-desktop` / `codex` | 抽成 `loadProviderRows()`，SQL 字段、order by、readonly 配置相同，过滤集合来自 registry | 等价 | `CcSwitchImporterTests` 全部通过；`swift test` 通过 | 去重，不改变查询列、排序或过滤集合 | ✅ 完全一致 (PASS) |
+| Proxy path 默认 app | 未带 app prefix 的 Anthropic path 默认 `claude`，Responses/OpenAI Chat 默认 `codex` | 默认值改用 registry 常量 | 等价 | `proxyRequestPathsUseSharedAppTypeDefaults`；既有 proxy path tests 通过 | 常量替换，不改变路径分类 | ✅ 完全一致 (PASS) |
+| Claude Code role fallback | 角色兜底只在 `appType == "claude"` 时触发 | 条件改为 `appType == UniGateAppRegistry.claudeCode`，Desktop 仍不触发 | 等价 | 既有 `rejectsClaudeDesktopRequestWhenRealModelRouteIsNotConfigured`、`rejectsClaudeRoleFallbackWhenFableRouteIsAbsentForClaudeCode` 通过 | Desktop 依赖真实 upstream model routes，不能套 Claude Code 角色兜底 | ✅ 完全一致 (PASS) |
+| Claude Desktop scope 匹配 | Desktop `UniGateModelScope.contains(candidate)` 按 upstream model 判断；其他 app 按 logical model | 保留该差异，仅替换 Desktop 常量 | 等价 | `visibleConfiguredBaseRouteKeysMatchDesktopScopeByUpstreamModel` 通过 | Desktop cc-switch 模型映射里可见模型是真实 upstream model | ✅ 完全一致 (PASS) |
+| Codex `/models` 响应 | Codex 返回扩展 model catalog；Claude 系返回字符串数组 | 仍保留输出差异，仅把 Codex 判断改用 registry 常量 | 等价 | 既有 `modelListingUsesFullCatalogWhileProxyUsesScopedCatalogForEveryApp` 通过 | 客户端协议差异，不应统一输出结构 | ✅ 完全一致 (PASS) |
+| 三类 app 配置解析 | Codex 从 config/modelCatalog；Claude Code 从 env；Claude Desktop 从 `claudeDesktopModelRoutes` | 保留三套解析函数，只统一 app 常量和共享推导 | 等价 | `CcSwitchImporterTests` 覆盖三类导入行为并通过 | 数据来源不同，合并会是假统一 | ✅ 完全一致 (PASS) |
+| Desktop 健康检查 | Desktop 缺 UniGate provider 降级 warning，额外检查 `claudeDesktopModelRoutes` | 仍保留该差异，仅替换常量 | 等价 | `reportsMissingDesktopRoutesAndCustomModelIssues` 通过 | Desktop 需要额外模型映射配置 | ✅ 完全一致 (PASS) |
+
+### 整体结论
+- **PASS**：无 ❌ 存疑差异。
+- 已统一的部分是共享 app 属性和纯判定逻辑；保留的分叉都有明确依据，来自客户端协议、cc-switch 配置结构或 Claude Desktop 的真实模型映射机制。
+- 验证：`swift test` 111 个测试通过；`git diff --check` 通过。
+
+### 复核说明
+- 未启动独立 subagent code review：当前工具约束要求只有用户明确要求 subagent/并行代理时才可 spawn，因此本次采用当前线程只读 diff 自审。
+- `docs/bug-reflection/fix_reports.md` 是进入本轮前已存在的未提交改动，本次未修改。
+
+---
 ## 2026-06-20 - Remove Legacy Settings UI
 
 ## 重构逻辑一致性报告

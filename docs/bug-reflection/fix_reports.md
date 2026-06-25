@@ -202,3 +202,123 @@ Claude Desktop 适配里至少有三层模型身份：Desktop 请求模型、UI 
 
 ## 经验教训
 “基础模型行”和“自定义路由行”的产品语义不同：前者代表一个真实模型，后者代表一个用户可切换的路由别名。共享 UI 组件时，候选过滤规则必须显式表达这个差异。
+
+# Fix Report - Custom Model Target Fallback Under Discovery Loss
+
+## Bug 描述
+当某个自定义模型已经绑定到指定目标后，如果 VPN 或探测变化导致该目标从当前 catalog 中消失，路由会静默切到同一自定义模型下仍然可用的其他目标，用户看不到明确失败。
+
+## 根因
+问题不是单点，而是三层都带了兜底：
+`CustomModelDefinition.selectedTarget` 会在选中目标缺失时退回到第一个目标；`RouteStore.merge` 会把失效路由用默认路由补上；`ProxyResolver` 只把这类情况当成普通 noRoute。结果是“目标失效”被一路包装成“还有别的可用模型”。
+
+## 尝试记录
+- 尝试 1：只修路由存储合并逻辑。结果：能阻止已有 route 被默认值覆盖，但还不足以表达“选中目标失效”。
+- 尝试 2：把自定义模型的选中目标改成严格匹配，不再自动回退到第一个目标。结果：health 和 UI 都能感知到失效选中项。
+- 尝试 3：在代理层显式区分“路由不存在”和“路由目标失效”。结果：请求会返回明确错误，不再被静默兜底。
+
+## 最终方案
+保留失效 route，让代理请求直接失败；健康检查把“selected target 不存在”标成 warning；UI 把这类自定义模型视为不可操作。
+
+## 参考资料
+- `Tests/UniGateCoreTests/RouteStoreTests.swift`
+- `Tests/UniGateCoreTests/ConfigurationHealthTests.swift`
+- `Tests/UniGateCoreTests/ProxyResolverTests.swift`
+
+## 经验教训
+只要某个状态需要“失败可见”，就不能把缺失信息自动补成默认值。路由、健康检查、请求错误三层必须对同一个失效状态保持一致语义。
+
+# Fix Report - Claude Cross-Role Fallback
+
+## Bug 描述
+Claude 路由在请求模型属于 `fable` 但当前没有 `fable` 路由时，会静默回退到 `opus` 路由。这个行为会把“缺少明确配置”伪装成“正常可用”，用户无法及时发现路由已经偏移。
+
+## 根因
+`ProxyResolver.resolveRouteKey` 在同角色精确匹配失败后，额外实现了跨角色的 `fable -> opus` 兜底。这个分支和同角色别名匹配混在一起，容易把兼容 alias 和真正 fallback 混为一谈。
+
+## 尝试记录
+- 尝试 1：直接移除所有 Claude 角色匹配。结果：会误伤同角色但带版本后缀的合法请求。
+
+# Fix Report - Custom Model Target Availability Compared Against Wrong Layer
+
+## Bug 描述
+没开 VPN 时，模型探测页能看到模型已经被探测到，但自定义模型行仍然显示“自定义模型目标失效”。
+
+## 根因
+`UniGateAppState.customModelAvailability` 之前拿自定义模型自己的 synthetic candidates 去校验 `selectedTarget`，而 `selectedTarget` 存的是真实上游目标。两者不在同一层，结果是只要进入自定义模型行，就会把真实存在的目标误判成失效。`ConfigurationHealth` 里虽然是按真实候选校验，但 UI 行和健康检查口径不一致，导致探测结果和可用性状态对不上。
+
+## 尝试记录
+- 尝试 1：只看模型探测结果。结果：探测页确实能拿到目标模型，说明不是探测失败。
+- 尝试 2：检查自定义模型行的可用性判定。结果：发现它比较的是 synthetic candidate，而不是基础 catalog 里的真实目标。
+- 尝试 3：抽一个 `hasSelectedTarget(in:)` helper 统一校验。结果：UI 和健康检查口径对齐，问题消失。
+
+## 最终方案
+- 新增 `CustomModelDefinition.hasSelectedTarget(in:)`。
+- `UniGateAppState` 和 `ConfigurationHealth` 都改为基于真实 catalog 候选判断 selected target 是否存在。
+- 保留自定义模型的 synthetic route 逻辑，不改路由行为本身。
+
+## 经验教训
+自定义路由通常会同时存在“真实上游目标”和“UI/代理包装层”两套身份。只要判定层混用，就会出现“看得见但被判无效”的错觉。
+
+# Fix Report - Missing Target Should Stay Clickable
+
+## Bug 描述
+自定义模型的默认目标失效后，主模型行会直接置灰，导致用户无法点击去切换路由。
+
+## 根因
+`missingTarget` 被当成了“不可交互状态”，但它其实只是“当前选中的目标不存在”。只要该自定义模型还有其他可选 candidates，用户就应该还能展开并切换到别的目标。之前的 UI 把可用性和错误展示绑在一起，导致失效状态不仅提示错误，还把切换入口一起关掉了。
+
+## 尝试记录
+- 尝试 1：只把错误文案改成红色。结果：视觉更明显，但点击仍然被禁掉。
+- 尝试 2：把 `missingTarget` 的 operable 语义改成“有候选就可操作”。结果：可以继续切换路由，错误状态也保留。
+- 尝试 3：给错误状态单独上红色填充和边框。结果：既能提示异常，也不会把用户锁死在当前行里。
+
+## 最终方案
+- `missingTarget` 在还有候选时保持可交互。
+- UI 用红色填充/边框和红色 tag 表示异常。
+- 只有真正没有候选时，才退回不可交互。
+
+## 经验教训
+错误提示和交互禁用是两回事。只要用户还有修复路径，就不要把入口一起关掉。
+- 尝试 2：保留同角色别名匹配，只删跨角色 `fable -> opus` 兜底。结果：版本化别名仍可路由，跨角色静默切换被去掉。
+
+## 最终方案
+`resolveRouteKey` 仅保留 exact / normalized / 同角色匹配，不再允许 `fable` 失配时自动退到 `opus`。
+
+## 参考资料
+- `Sources/UniGateCore/ProxyResolver.swift`
+- `Tests/UniGateCoreTests/ProxyResolverTests.swift`
+
+## 经验教训
+兼容 alias 和默认兜底必须分开处理。前者是在同一语义域里找同一个目标，后者是在目标不存在时偷偷换目标，产品上应该完全不同。
+
+# Fix Report - Discovery Failure Should Not Delete Provider Models
+
+## Bug 描述
+模型探测失败后，之前由探测得到的模型会从供应商候选列表和 Claude Desktop 模型目录中消失。用户看到的结果像是供应商被删了，而不是“供应商还在但当前探测失败”。
+
+## 根因
+失败探测会用 `modelIDs = []` 覆盖上一轮成功结果，`discoveredCandidates` 又只从无错误结果生成候选；同时 Claude Desktop `/models` 请求还会现场探测供应商，网络异常时会直接返回变少的模型目录。
+
+## 尝试记录
+- 尝试 1：只给当前选中的自定义目标补 missing 占位。结果：只能保住 selected target，其他候选仍会被探测失败删掉。
+- 尝试 2：失败探测保留上一轮成功模型，并标记为 stale。结果：候选不再消失，UI 可以显示失效状态。
+- 尝试 3：把 RouteStore 切换校验改成拒绝 stale 候选，同时保留已有路由解析。结果：不能切到失效目标，但历史选中目标不会被自动移除或兜底。
+- 尝试 4：移除 Claude Desktop `/models` 的现场探测。结果：客户端模型目录改为读取稳定 catalog，不再受单次请求探测失败影响。
+
+## 最终方案
+- `ProviderModelDiscoveryState.upsert` 在同一供应商配置指纹下，失败结果保留上一轮成功的 `modelIDs`。
+- `ProviderModelDiscovery.discoveredCandidates` 将失败缓存产物标记为 `staleDiscovered`。
+- UI 和健康检查显示 stale 为“探测失效/目标失效”。
+- `RouteStore` 禁止切换到 stale 候选，但保留已有 route。
+- `/models` 统一读取 catalog，不再对 Claude Desktop 做实时供应商探测。
+
+## 参考资料
+- `Sources/UniGateCore/ProviderModelDiscoveryStore.swift`
+- `Sources/UniGateCore/RouteStore.swift`
+- `Sources/UniGateApp/LocalProxyServer.swift`
+- `Tests/UniGateCoreTests/ProviderModelDiscoveryTests.swift`
+- `Tests/UniGateCoreTests/RouteStoreTests.swift`
+
+## 经验教训
+“临时探测失败”和“供应商被删除”是两个不同产品状态。前者应保留上下文并禁用切换，后者才应该清理候选。

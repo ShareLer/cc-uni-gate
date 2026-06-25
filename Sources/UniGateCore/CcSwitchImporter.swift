@@ -9,45 +9,13 @@ public struct CcSwitchImporter: Sendable {
     }
 
     public func loadConfigurationFingerprint() throws -> CcSwitchConfigurationFingerprint {
-        var configuration = Configuration()
-        configuration.readonly = true
-        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
-
-        let providers = try dbQueue.read { db in
-            try ProviderRow.fetchAll(
-                db,
-                sql: """
-                select id, app_type, name, settings_config, category, sort_index, meta, is_current
-                from providers
-                where app_type in ('claude', 'claude-desktop', 'codex')
-                order by app_type, coalesce(sort_index, 999999), name, id
-                """
-            )
-        }
-
         return CcSwitchConfigurationFingerprint(
-            providers: providers.map(CcSwitchConfigurationProviderFingerprint.init(row:))
+            providers: try loadProviderRows().map(CcSwitchConfigurationProviderFingerprint.init(row:))
         )
     }
 
     public func loadCatalog() throws -> ProviderCatalog {
-        var configuration = Configuration()
-        configuration.readonly = true
-        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
-
-        let providers = try dbQueue.read { db in
-            try ProviderRow.fetchAll(
-                db,
-                sql: """
-                select id, app_type, name, settings_config, category, sort_index, meta, is_current
-                from providers
-                where app_type in ('claude', 'claude-desktop', 'codex')
-                order by app_type, coalesce(sort_index, 999999), name, id
-                """
-            )
-        }
-
-        let imported = providers.map(importProvider).filter { !isUniGateProvider($0) }
+        let imported = try loadProviderRows().map(importProvider).filter { !isUniGateProvider($0) }
         return ProviderCatalog(
             providers: imported,
             candidates: imported.flatMap(extractCandidates)
@@ -55,23 +23,7 @@ public struct CcSwitchImporter: Sendable {
     }
 
     public func loadUniGateModelScope() throws -> UniGateModelScope {
-        var configuration = Configuration()
-        configuration.readonly = true
-        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
-
-        let providers = try dbQueue.read { db in
-            try ProviderRow.fetchAll(
-                db,
-                sql: """
-                select id, app_type, name, settings_config, category, sort_index, meta, is_current
-                from providers
-                where app_type in ('claude', 'claude-desktop', 'codex')
-                order by app_type, coalesce(sort_index, 999999), name, id
-                """
-            )
-        }
-
-        let modelsByApp = providers
+        let modelsByApp = try loadProviderRows()
             .map(importProvider)
             .filter(isUniGateProvider)
             .reduce(into: [String: Set<String>]()) { result, provider in
@@ -85,23 +37,7 @@ public struct CcSwitchImporter: Sendable {
     }
 
     public func loadIntegrationSnapshot() throws -> CcSwitchIntegrationSnapshot {
-        var configuration = Configuration()
-        configuration.readonly = true
-        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
-
-        let providers = try dbQueue.read { db in
-            try ProviderRow.fetchAll(
-                db,
-                sql: """
-                select id, app_type, name, settings_config, category, sort_index, meta, is_current
-                from providers
-                where app_type in ('claude', 'claude-desktop', 'codex')
-                order by app_type, coalesce(sort_index, 999999), name, id
-                """
-            )
-        }
-
-        let summaries = providers.map(importProvider).map { provider in
+        let summaries = try loadProviderRows().map(importProvider).map { provider in
             CcSwitchProviderSummary(
                 id: provider.id,
                 appType: provider.appType,
@@ -118,6 +54,30 @@ public struct CcSwitchImporter: Sendable {
 
         return CcSwitchIntegrationSnapshot(databasePath: dbPath, providers: summaries)
     }
+
+    private func loadProviderRows() throws -> [ProviderRow] {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let dbQueue = try DatabaseQueue(path: dbPath, configuration: configuration)
+
+        return try dbQueue.read { db in
+            try ProviderRow.fetchAll(
+                db,
+                sql: """
+                select id, app_type, name, settings_config, category, sort_index, meta, is_current
+                from providers
+                where app_type in (\(Self.providerAppTypeSQL))
+                order by app_type, coalesce(sort_index, 999999), name, id
+                """
+            )
+        }
+    }
+
+    private static let providerAppTypeSQL: String = UniGateAppRegistry.uniGateScopedAppTypes
+        .map { appType in
+            "'\(appType.replacingOccurrences(of: "'", with: "''"))'"
+        }
+        .joined(separator: ", ")
 
     private func importProvider(_ row: ProviderRow) -> ImportedProvider {
         let settings = JSONValueParser.parseObject(row.settingsConfig)
@@ -139,11 +99,11 @@ public struct CcSwitchImporter: Sendable {
 
     private func extractCandidates(_ provider: ImportedProvider) -> [ModelCandidate] {
         switch provider.appType {
-        case "codex":
+        case UniGateAppRegistry.codex:
             return extractCodexCandidates(provider)
-        case "claude":
+        case UniGateAppRegistry.claudeCode:
             return extractClaudeCandidates(provider, protocolKind: .anthropicMessages)
-        case "claude-desktop":
+        case UniGateAppRegistry.claudeDesktop:
             return extractClaudeDesktopCandidates(provider)
         default:
             return []
@@ -166,16 +126,16 @@ public struct CcSwitchImporter: Sendable {
 
     private func uniGateConfiguredModels(_ provider: ImportedProvider) -> Set<String> {
         switch provider.appType {
-        case "codex":
+        case UniGateAppRegistry.codex:
             let catalogModels = extractCodexCatalogModels(provider)
             if !catalogModels.isEmpty {
                 return catalogModels
             }
             let parsed = CodexConfigParser.parse(JSONValueParser.string(provider.settings, ["config"]))
             return parsed.model.map { [$0] } ?? []
-        case "claude":
+        case UniGateAppRegistry.claudeCode:
             return extractClaudeConfiguredModels(provider)
-        case "claude-desktop":
+        case UniGateAppRegistry.claudeDesktop:
             return extractClaudeDesktopConfiguredModels(provider)
         default:
             return []
@@ -391,7 +351,7 @@ public struct CcSwitchImporter: Sendable {
         settings: [String: SendableValue],
         meta: [String: SendableValue]
     ) -> ApiFormat {
-        if appType == "codex" {
+        if appType == UniGateAppRegistry.codex {
             let parsed = CodexConfigParser.parse(JSONValueParser.string(settings, ["config"]))
             let wireFormat = normalizeApiFormat(parsed.wireAPI)
             if wireFormat != .unknown {
@@ -411,7 +371,7 @@ public struct CcSwitchImporter: Sendable {
             return settingsFormat
         }
 
-        if appType == "claude" || appType == "claude-desktop" {
+        if UniGateAppRegistry.isClaudeLike(appType) {
             return .anthropic
         }
 
@@ -434,13 +394,13 @@ public struct CcSwitchImporter: Sendable {
     }
 
     private func extractBaseURL(appType: String, settings: [String: SendableValue]) -> String? {
-        if appType == "codex" {
+        if appType == UniGateAppRegistry.codex {
             return JSONValueParser.string(settings, ["base_url"])
                 ?? JSONValueParser.string(settings, ["baseURL"])
                 ?? CodexConfigParser.parse(JSONValueParser.string(settings, ["config"])).baseURL
         }
 
-        if appType == "claude" || appType == "claude-desktop" {
+        if UniGateAppRegistry.isClaudeLike(appType) {
             return JSONValueParser.string(settings, ["env", "ANTHROPIC_BASE_URL"])
                 ?? JSONValueParser.string(settings, ["base_url"])
                 ?? JSONValueParser.string(settings, ["baseURL"])

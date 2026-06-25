@@ -72,11 +72,11 @@ public enum ClaudeRouteRole: String, Sendable {
 
 public enum ModelRouteVisibility {
     public static func isUniGateScopedApp(_ appType: String) -> Bool {
-        appType == "claude" || appType == "claude-desktop" || appType == "codex"
+        UniGateAppRegistry.isUniGateScoped(appType)
     }
 
     public static func isClaudeLikeApp(_ appType: String) -> Bool {
-        appType == "claude" || appType == "claude-desktop"
+        UniGateAppRegistry.isClaudeLike(appType)
     }
 
     public static func isCandidateSelectable(

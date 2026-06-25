@@ -109,7 +109,7 @@ public enum DiagnosticsReportGenerator {
         lines.append("")
 
         lines.append("[Visible Scope]")
-        for appType in ["codex", "claude", "claude-desktop"] {
+        for appType in UniGateAppRegistry.uniGateScopedAppTypes {
             let models = input.uniGateModelScope.models(for: appType)
             lines.append("- \(ProviderDisplay.appTypeLabel(appType)): \(models.prefix(30).joined(separator: ", "))")
         }
