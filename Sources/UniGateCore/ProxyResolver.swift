@@ -109,6 +109,8 @@ public enum ProxyResolver {
         outboundBody["model"] = ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel)
         if responseTransform == .openAIChatToCodexResponse {
             outboundBody = try CodexChatBridge.chatRequest(from: outboundBody)
+        } else if responseTransform == .openAIChatToAnthropicMessages {
+            outboundBody = try AnthropicChatBridge.chatRequest(from: outboundBody)
         }
         let outboundData = try JSONSerialization.data(withJSONObject: outboundBody, options: [])
         let upstreamURL = try buildUpstreamURL(
@@ -138,17 +140,20 @@ public enum ProxyResolver {
         provider: ImportedProvider,
         body: [String: Any]
     ) throws -> ProxyResponseTransform {
-        guard protocolKind == .codexResponses, candidate.apiFormat == .openaiChat else {
-            return .none
+        if protocolKind == .anthropicMessages, candidate.apiFormat == .openaiChat {
+            return .openAIChatToAnthropicMessages
         }
-        if (body["stream"] as? Bool) == true {
-            throw ProxyResolverError.streamingTransformUnsupported(
-                model: requestedModel,
-                provider: provider.name,
-                apiFormat: candidate.apiFormat
-            )
+        if protocolKind == .codexResponses, candidate.apiFormat == .openaiChat {
+            if (body["stream"] as? Bool) == true {
+                throw ProxyResolverError.streamingTransformUnsupported(
+                    model: requestedModel,
+                    provider: provider.name,
+                    apiFormat: candidate.apiFormat
+                )
+            }
+            return .openAIChatToCodexResponse
         }
-        return .openAIChatToCodexResponse
+        return .none
     }
 
     private static func unsupportedProtocolPair(protocolKind: ClientProtocolKind, apiFormat: ApiFormat) -> Bool {
@@ -260,6 +265,10 @@ public enum ProxyResolver {
            apiFormat == .openaiChat,
            base.lowercased().hasSuffix("/chat/completions") {
             raw = base
+        } else if UniGateAppRegistry.isClaudeLike(provider.appType),
+                  apiFormat == .openaiChat,
+                  base.lowercased().hasSuffix("/chat/completions") {
+            raw = base
         } else if provider.appType == UniGateAppRegistry.codex, isOriginOnlyURL(baseURL) {
             raw = "\(base)/v1/\(endpoint)"
         } else {
@@ -288,6 +297,9 @@ public enum ProxyResolver {
         }
 
         if UniGateAppRegistry.isClaudeLike(provider.appType) {
+            if protocolKind == .anthropicMessages, apiFormat == .openaiChat {
+                return "/v1/chat/completions"
+            }
             return stripManagerPrefixes(path, prefixes: ["/anthropic", "/claude-code", "/claude", "/claude-desktop"])
         }
 

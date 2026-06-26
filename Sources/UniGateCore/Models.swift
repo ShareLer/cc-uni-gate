@@ -58,6 +58,7 @@ public enum UniGateAppRegistry {
 public enum ProxyResponseTransform: String, Codable, Sendable {
     case none
     case openAIChatToCodexResponse = "openai_chat_to_codex_response"
+    case openAIChatToAnthropicMessages = "openai_chat_to_anthropic_messages"
 }
 
 public enum ModelCandidateSource: String, Sendable {

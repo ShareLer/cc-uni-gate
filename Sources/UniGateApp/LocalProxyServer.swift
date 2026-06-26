@@ -280,6 +280,26 @@ final class LocalProxyServer: @unchecked Sendable {
                 phase: "resolved",
                 message: "\(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
             )
+            if resolved.responseTransform == .openAIChatToAnthropicMessages,
+               Self.isAnthropicCountTokensPath(request.path) {
+                let body = try jsonObject(resolved.body)
+                send(.json(status: 200, body: AnthropicChatBridge.countTokensBody(fromOpenAIChatRequest: body)), on: connection)
+                await MainActor.run {
+                    runtime.recordRequestMetric(
+                        key: Self.metricKey(for: resolved),
+                        statusCode: 200,
+                        latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                        errorMessage: nil,
+                        providerFailure: false
+                    )
+                }
+                await recordProxyLog(
+                    requestID: requestID,
+                    phase: "token-count-estimate",
+                    message: "durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) \(Self.resolvedContext(for: resolved))"
+                )
+                return
+            }
 
             var upstreamRequest = URLRequest(url: resolved.upstreamURL)
             upstreamRequest.httpMethod = "POST"
@@ -287,7 +307,7 @@ final class LocalProxyServer: @unchecked Sendable {
             upstreamRequest.timeoutInterval = Self.upstreamRequestTimeout
             upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
 
-            for (key, value) in copyAllowedHeaders(request.headers) {
+            for (key, value) in copyAllowedHeaders(request.headers, responseTransform: resolved.responseTransform) {
                 upstreamRequest.setValue(value, forHTTPHeaderField: key)
             }
             for (key, value) in resolved.headers {
@@ -319,6 +339,45 @@ final class LocalProxyServer: @unchecked Sendable {
                         message: "\(providerFailureContext ?? resolved.providerName) 返回 HTTP \(status)"
                     )
                 }
+            }
+            if resolved.responseTransform == .openAIChatToAnthropicMessages,
+               status >= 200 && status < 300,
+               Self.isEventStream(headers) {
+                var responseHeaders = headers
+                removeEntityHeaders(from: &responseHeaders)
+                responseHeaders["content-type"] = "text/event-stream; charset=utf-8"
+                responseHeaders["cache-control"] = "no-cache"
+                do {
+                    try await sendHead(HTTPResponseHead(status: status, headers: responseHeaders), on: connection)
+                } catch {
+                    throw ProxyTransferError.downstream(error, stats: ProxyStreamStats())
+                }
+                responseHeadersSent = true
+                let stats = try await streamOpenAIChatAsAnthropicSSE(
+                    bytes: bytes,
+                    resolved: resolved,
+                    to: connection,
+                    upstreamStartedAt: upstreamStartedAt
+                )
+                await MainActor.run {
+                    if !providerFailure {
+                        runtime.proxyProviderDidSucceed()
+                    }
+                    runtime.recordRequestMetric(
+                        key: Self.metricKey(for: resolved),
+                        statusCode: status,
+                        latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                        errorMessage: nil,
+                        providerFailure: false
+                    )
+                }
+                await recordProxyLog(
+                    requestID: requestID,
+                    phase: "transform-stream-complete",
+                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                )
+                connection.cancel()
+                return
             }
             if resolved.responseTransform != .none {
                 try await sendTransformedResponse(
@@ -572,6 +631,95 @@ final class LocalProxyServer: @unchecked Sendable {
         return stats
     }
 
+    private func streamOpenAIChatAsAnthropicSSE(
+        bytes: URLSession.AsyncBytes,
+        resolved: ResolvedRoute,
+        to connection: NWConnection,
+        upstreamStartedAt: Date
+    ) async throws -> ProxyStreamStats {
+        var stats = ProxyStreamStats()
+        var state = AnthropicChatStreamState()
+        var lineBuffer = Data()
+        var blockLines: [String] = []
+
+        do {
+            for try await byte in bytes {
+                let now = Date()
+                if stats.firstByteLatencyMilliseconds == nil {
+                    stats.firstByteLatencyMilliseconds = Int(max(now.timeIntervalSince(upstreamStartedAt) * 1000, 0))
+                }
+
+                if byte == 10 {
+                    stats.linesObserved += 1
+                    let line = Self.sseLine(from: lineBuffer)
+                    lineBuffer.removeAll(keepingCapacity: true)
+                    if line.isEmpty {
+                        if let data = Self.sseDataPayload(from: blockLines) {
+                            let events = try state.events(forOpenAIChatStreamData: data, fallbackModel: resolved.outboundModel)
+                            for event in events {
+                                let payload = try event.sseData()
+                                do {
+                                    try await send(payload, on: connection)
+                                } catch {
+                                    throw ProxyTransferError.downstream(error, stats: stats)
+                                }
+                                stats.bytesForwarded += payload.count
+                                stats.chunksForwarded += 1
+                                stats.lastChunkForwardedAt = Date()
+                            }
+                        }
+                        blockLines.removeAll(keepingCapacity: true)
+                    } else {
+                        blockLines.append(line)
+                    }
+                } else {
+                    lineBuffer.append(byte)
+                    if lineBuffer.count > 1_048_576 {
+                        throw AnthropicChatBridgeError.invalidChatStreamChunk
+                    }
+                }
+            }
+
+            if !lineBuffer.isEmpty {
+                blockLines.append(Self.sseLine(from: lineBuffer))
+            }
+            if let data = Self.sseDataPayload(from: blockLines) {
+                let events = try state.events(forOpenAIChatStreamData: data, fallbackModel: resolved.outboundModel)
+                for event in events {
+                    let payload = try event.sseData()
+                    do {
+                        try await send(payload, on: connection)
+                    } catch {
+                        throw ProxyTransferError.downstream(error, stats: stats)
+                    }
+                    stats.bytesForwarded += payload.count
+                    stats.chunksForwarded += 1
+                    stats.lastChunkForwardedAt = Date()
+                }
+            }
+
+            let finishEvents = state.finishEvents()
+            for event in finishEvents {
+                let payload = try event.sseData()
+                do {
+                    try await send(payload, on: connection)
+                } catch {
+                    throw ProxyTransferError.downstream(error, stats: stats)
+                }
+                stats.bytesForwarded += payload.count
+                stats.chunksForwarded += 1
+                stats.lastChunkForwardedAt = Date()
+            }
+        } catch let error as ProxyTransferError {
+            throw error
+        } catch {
+            stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
+            throw ProxyTransferError.upstream(error, stats: stats)
+        }
+
+        return stats
+    }
+
     private static func metricKey(for resolved: ResolvedRoute) -> RequestMetricKey {
         RequestMetricKey(
             appType: resolved.routeKey.appType,
@@ -814,6 +962,20 @@ final class LocalProxyServer: @unchecked Sendable {
             responseHeaders["content-type"] = "application/json; charset=utf-8"
             let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
             send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
+        case .openAIChatToAnthropicMessages:
+            let value = try JSONSerialization.jsonObject(with: body)
+            guard let object = value as? [String: Any] else {
+                throw AnthropicChatBridgeError.invalidChatResponse
+            }
+            let transformed = try AnthropicChatBridge.anthropicBody(
+                from: object,
+                fallbackModel: resolved.outboundModel
+            )
+            var responseHeaders = headers
+            removeEntityHeaders(from: &responseHeaders)
+            responseHeaders["content-type"] = "application/json; charset=utf-8"
+            let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
+            send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
         }
     }
 
@@ -956,14 +1118,59 @@ final class LocalProxyServer: @unchecked Sendable {
         return (protocolKind, appType)
     }
 
-    private func copyAllowedHeaders(_ headers: [String: String]) -> [String: String] {
+    private func copyAllowedHeaders(
+        _ headers: [String: String],
+        responseTransform: ProxyResponseTransform
+    ) -> [String: String] {
         var copied: [String: String] = [:]
-        for key in ["accept", "anthropic-version", "anthropic-beta", "user-agent"] {
+        let allowed = responseTransform == .openAIChatToAnthropicMessages
+            ? ["accept", "user-agent"]
+            : ["accept", "anthropic-version", "anthropic-beta", "user-agent"]
+        for key in allowed {
             if let value = headers[key] {
                 copied[key] = value
             }
         }
         return copied
+    }
+
+    private static func isAnthropicCountTokensPath(_ path: String) -> Bool {
+        let normalized = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        return normalized == "/v1/messages/count_tokens"
+            || normalized.hasSuffix("/v1/messages/count_tokens")
+    }
+
+    private static func isEventStream(_ headers: [String: String]) -> Bool {
+        headerValue(headers, name: "content-type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+    }
+
+    private static func sseLine(from data: Data) -> String {
+        var line = data
+        if line.last == 13 {
+            line.removeLast()
+        }
+        return String(data: line, encoding: .utf8) ?? ""
+    }
+
+    private static func sseDataPayload(from lines: [String]) -> String? {
+        var dataLines: [String] = []
+        for line in lines {
+            if line.hasPrefix(":") {
+                continue
+            }
+            let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let rawField = parts.first, rawField == "data" else {
+                continue
+            }
+            var value = parts.count > 1 ? String(parts[1]) : ""
+            if value.first == " " {
+                value.removeFirst()
+            }
+            dataLines.append(value)
+        }
+        return dataLines.isEmpty ? nil : dataLines.joined(separator: "\n")
     }
 
     private func forwardResponseHeaders(_ response: HTTPURLResponse?) -> [String: String] {

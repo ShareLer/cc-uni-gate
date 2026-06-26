@@ -36,7 +36,7 @@ enum ProviderCredentials {
         guard let secret = secret(for: provider) else {
             return [:]
         }
-        return proxyAuthHeaders(appType: provider.appType, secret: secret)
+        return proxyAuthHeaders(appType: provider.appType, apiFormat: provider.apiFormat, secret: secret)
     }
 
     static func modelFetchHeaders(for provider: ImportedProvider) -> [String: String]? {
@@ -49,9 +49,10 @@ enum ProviderCredentials {
 
     private static func proxyAuthHeaders(
         appType: String,
+        apiFormat: ApiFormat,
         secret: ProviderSecret
     ) -> [String: String] {
-        if isAnthropicApp(appType), secret.name == "ANTHROPIC_API_KEY" {
+        if isAnthropicApp(appType), apiFormat == .anthropic, secret.name == "ANTHROPIC_API_KEY" {
             return ["x-api-key": secret.value]
         }
         return ["authorization": "Bearer \(secret.value)"]

@@ -51,6 +51,27 @@ struct ProviderCredentialsTests {
     }
 
     @Test
+    func usesBearerProxyHeaderForClaudeOpenAIChatProviders() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "claude",
+            name: "OpenAI Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://api.example.com/v1/chat/completions",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_API_KEY": .string("api-key")])],
+            meta: [:]
+        )
+
+        #expect(ProviderCredentials.proxyAuthHeaders(for: provider) == [
+            "authorization": "Bearer api-key"
+        ])
+    }
+
+    @Test
     func usesBearerHeaderForModelFetchEvenWithAnthropicApiKey() {
         let provider = ImportedProvider(
             id: "p1",

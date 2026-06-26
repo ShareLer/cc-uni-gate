@@ -319,6 +319,113 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func bridgesClaudeMessagesRequestToOpenAIChatUpstream() throws {
+        let provider = ImportedProvider(
+            id: "luban-glm",
+            appType: "claude",
+            name: "luban-glm",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "http://tokenservice-offline-test.intra.xiaojukeji.com/v1/chat/completions",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_API_KEY": .string("luban-key")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "luban-glm",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .openaiChat,
+            upstreamModel: "luban-glm",
+            baseURL: provider.baseURL,
+            requiresTransform: true,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .anthropicMessages,
+            appType: "claude",
+            path: "/claude-code/v1/messages?beta=true",
+            body: Data(#"{"model":"luban-glm","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":true}"#.utf8)
+        )
+
+        #expect(resolved.upstreamURL.absoluteString == "http://tokenservice-offline-test.intra.xiaojukeji.com/v1/chat/completions")
+        #expect(resolved.responseTransform == .openAIChatToAnthropicMessages)
+        #expect(resolved.headers["authorization"] == "Bearer luban-key")
+        #expect(resolved.headers["x-api-key"] == nil)
+
+        let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
+        #expect(outbound?["model"] as? String == "luban-glm")
+        #expect(outbound?["max_tokens"] as? Int == 8)
+        let messages = try #require(outbound?["messages"] as? [[String: Any]])
+        #expect(messages.first?["role"] as? String == "user")
+        #expect(messages.first?["content"] as? String == "hello")
+        let streamOptions = try #require(outbound?["stream_options"] as? [String: Any])
+        #expect(streamOptions["include_usage"] as? Bool == true)
+    }
+
+    @Test
+    func normalizesClaudeOpenAIChatBaseURLs() throws {
+        let cases = [
+            ("https://chat.example.com", "https://chat.example.com/v1/chat/completions"),
+            ("https://chat.example.com/v1", "https://chat.example.com/v1/chat/completions"),
+            ("https://chat.example.com/v1/chat/completions", "https://chat.example.com/v1/chat/completions")
+        ]
+
+        for (baseURL, expectedURL) in cases {
+            let provider = ImportedProvider(
+                id: "p1",
+                appType: "claude",
+                name: "OpenAI Chat Provider",
+                category: nil,
+                sortIndex: 1,
+                isCurrent: false,
+                apiFormat: .openaiChat,
+                baseURL: baseURL,
+                hasSecret: false,
+                settings: [:],
+                meta: [:]
+            )
+            let candidate = ModelCandidate(
+                logicalModel: "luban-glm",
+                providerRef: provider.ref,
+                providerName: provider.name,
+                appType: provider.appType,
+                clientProtocol: .anthropicMessages,
+                apiFormat: .openaiChat,
+                upstreamModel: "luban-glm",
+                baseURL: provider.baseURL,
+                requiresTransform: true,
+                label: nil,
+                supportsLongContext: false
+            )
+            let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+            let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+            let resolved = try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .anthropicMessages,
+                appType: "claude",
+                path: "/claude-code/v1/messages",
+                body: Data(#"{"model":"luban-glm","messages":[{"role":"user","content":"hello"}]}"#.utf8)
+            )
+
+            #expect(resolved.upstreamURL.absoluteString == expectedURL)
+            #expect(resolved.responseTransform == .openAIChatToAnthropicMessages)
+        }
+    }
+
+    @Test
     func convertsOpenAIChatResponseToCodexResponsesShape() throws {
         let response = try CodexChatBridge.responsesBody(
             from: [
