@@ -77,6 +77,7 @@ struct PreferencesStoreTests {
         #expect(loaded.networkPolicy.globalMode == .system)
         #expect(loaded.networkPolicy.providerOverrides.isEmpty)
         #expect(loaded.networkPolicy.directDomainRules.isEmpty)
+        #expect(loaded.modelDiscoveryDisabledProviders.isEmpty)
     }
 
     @Test
@@ -175,6 +176,27 @@ struct PreferencesStoreTests {
         #expect(loaded.networkPolicy.globalMode == .direct)
         #expect(loaded.networkPolicy.providerOverrides[ref.description] == .system)
         #expect(loaded.networkPolicy.directDomainRules == ["*.intra.example.com", "corp.example.com"])
+    }
+
+    @Test
+    func persistsModelDiscoveryDisabledProviders() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        let store = PreferencesStore(fileURL: tmp)
+        let ref = ProviderRef(appType: "codex", id: "p1")
+        var preferences = AppPreferences()
+        preferences.setModelDiscoveryEnabled(false, for: ref)
+        try store.save(preferences)
+
+        let loaded = try store.load()
+
+        #expect(!loaded.isModelDiscoveryEnabled(for: ref))
+        #expect(loaded.modelDiscoveryDisabledProviders == [ref.description])
+        var reenabled = loaded
+        reenabled.setModelDiscoveryEnabled(true, for: ref)
+        #expect(reenabled.isModelDiscoveryEnabled(for: ref))
+        #expect(reenabled.modelDiscoveryDisabledProviders.isEmpty)
     }
 
     @Test

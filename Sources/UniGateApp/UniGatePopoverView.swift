@@ -456,14 +456,14 @@ struct UniGatePopoverRootView: View {
 
     @ViewBuilder
     private var modelDiscoveryContent: some View {
-        if state.currentDiscoveryResults.isEmpty {
+        if state.currentModelDiscoveryItems.isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: "list.bullet.rectangle")
                     .font(.system(size: 28))
                     .foregroundStyle(UGPopoverStyle.textSecondary)
-                Text("暂无探测结果")
+                Text("暂无供应商")
                     .font(.system(size: 13, weight: .medium))
-                Text("点击右上角刷新当前应用供应商的模型接口。")
+                Text("当前应用没有可探测的供应商。")
                     .font(.system(size: 11))
                     .foregroundStyle(UGPopoverStyle.textSecondary)
             }
@@ -471,8 +471,8 @@ struct UniGatePopoverRootView: View {
         } else {
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(state.currentDiscoveryResults) { result in
-                        discoveryResultRow(result)
+                    ForEach(state.currentModelDiscoveryItems) { item in
+                        discoveryProviderRow(item)
                     }
                 }
                 .padding(2)
@@ -480,46 +480,65 @@ struct UniGatePopoverRootView: View {
         }
     }
 
-    private func discoveryResultRow(_ result: ProviderModelDiscoveryResult) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+    private func discoveryProviderRow(_ item: ModelDiscoveryProviderItem) -> some View {
+        let provider = item.provider
+        let result = item.result
+        return VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(result.providerName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Text(resultStatusText(result))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(result.errorMessage == nil ? Color.green : Color.orange)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(provider.name)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    Text(discoveryProviderSummaryText(item))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(item.isEnabled ? UGPopoverStyle.textSecondary : .orange)
+                        .lineLimit(1)
+                }
                 Spacer()
-                Text(shortDateTime(result.updatedAt))
-                    .font(.caption2)
-                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                Toggle(isOn: discoveryEnabledBinding(for: provider.ref)) {
+                    Text("启用探测")
+                }
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .help(item.isEnabled ? "关闭该供应商的探测" : "开启该供应商的探测")
             }
 
-            if let error = result.errorMessage {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(error)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if !result.modelIDs.isEmpty {
-                        Text("保留上次成功的 \(result.modelIDs.count) 个模型")
-                            .font(.system(size: 10))
-                            .foregroundStyle(UGPopoverStyle.textSecondary)
+            if !item.isEnabled {
+                Text("已关闭探测，不参与自动刷新。")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let result {
+                if let error = result.errorMessage {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(error)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !result.modelIDs.isEmpty {
+                            Text("保留上次成功的 \(result.modelIDs.count) 个模型")
+                                .font(.system(size: 10))
+                                .foregroundStyle(UGPopoverStyle.textSecondary)
+                        }
                     }
+                } else {
+                    Text(result.modelIDs.prefix(8).joined(separator: ", "))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .lineLimit(3)
+                }
+
+                if let sourceURL = result.sourceURL {
+                    Text(sourceURL)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             } else {
-                Text(result.modelIDs.prefix(8).joined(separator: ", "))
-                    .font(.system(size: 11, design: .monospaced))
+                Text("尚未探测。")
+                    .font(.system(size: 11))
                     .foregroundStyle(UGPopoverStyle.textSecondary)
-                    .lineLimit(3)
-            }
-
-            if let sourceURL = result.sourceURL {
-                Text(sourceURL)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(UGPopoverStyle.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
         .padding(12)
@@ -528,11 +547,25 @@ struct UniGatePopoverRootView: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
     }
 
-    private func resultStatusText(_ result: ProviderModelDiscoveryResult) -> String {
+    private func discoveryProviderSummaryText(_ item: ModelDiscoveryProviderItem) -> String {
+        guard item.isEnabled else {
+            return "已关闭探测"
+        }
+        guard let result = item.result else {
+            return "尚未探测"
+        }
         if result.errorMessage != nil {
-            return "失败"
+            return "探测失败"
         }
         return "\(result.modelIDs.count) 个模型"
+    }
+
+    private func discoveryEnabledBinding(for providerRef: ProviderRef) -> Binding<Bool> {
+        Binding {
+            state.preferences.isModelDiscoveryEnabled(for: providerRef)
+        } set: { nextValue in
+            state.setModelDiscoveryEnabled(nextValue, for: providerRef)
+        }
     }
 
     private func shortDateTime(_ date: Date) -> String {
@@ -1188,14 +1221,6 @@ struct UniGatePopoverRootView: View {
             parts.append(candidate.upstreamModelDisplayName)
         }
         parts.append(candidate.requiresTransform ? "需要转换" : candidate.apiFormat.rawValue)
-        switch candidate.source {
-        case .discovered:
-            parts.append("探测到")
-        case .staleDiscovered:
-            parts.append("探测失效")
-        case .configured:
-            break
-        }
         return parts.joined(separator: " · ")
     }
 
@@ -2355,14 +2380,6 @@ private struct InlineCustomModelEditorView: View {
             parts.append("需要转换")
         } else {
             parts.append(candidate.apiFormat.rawValue)
-        }
-        switch candidate.source {
-        case .discovered:
-            parts.append("探测到")
-        case .staleDiscovered:
-            parts.append("探测失效")
-        case .configured:
-            break
         }
         return parts.joined(separator: " · ")
     }

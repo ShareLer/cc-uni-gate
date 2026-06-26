@@ -45,6 +45,7 @@ final class UniGateAppState: ObservableObject {
     var onSaveSettings: ((AppPreferences, CustomModelState) -> Void)?
     var onApplySettings: ((AppPreferences, CustomModelState) -> Void)?
     var onRefreshModelDiscovery: ((String?) -> Void)?
+    var onSetModelDiscoveryEnabled: ((ProviderRef, Bool) -> Void)?
     var onCopyDiagnostics: (() -> Void)?
     var onExportConfiguration: (() -> Void)?
     var onImportConfiguration: (() -> Void)?
@@ -239,9 +240,6 @@ final class UniGateAppState: ObservableObject {
     }
 
     func isUnavailableCandidate(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
-        if candidate.isDiscoveryStale(in: catalog) {
-            return true
-        }
         guard customModelAvailability(for: routeGroup.routeKey) == .missingTarget else {
             return false
         }
@@ -276,14 +274,6 @@ final class UniGateAppState: ObservableObject {
             parts.append("需要转换")
         } else {
             parts.append(candidate.apiFormat.rawValue)
-        }
-        switch candidate.source {
-        case .discovered:
-            parts.append("探测到")
-        case .staleDiscovered:
-            parts.append("探测失效")
-        case .configured:
-            break
         }
         return parts.joined(separator: " · ")
     }
@@ -357,10 +347,6 @@ final class UniGateAppState: ObservableObject {
             case .configured, .forceEnabled:
                 break
             }
-        }
-
-        if let active = activeCandidate(for: routeGroup), active.isDiscoveryStale(in: catalog) {
-            return "目标失效"
         }
 
         guard routes.routes[routeGroup.routeKey.description] != nil else {
@@ -481,6 +467,10 @@ final class UniGateAppState: ObservableObject {
         onRefreshModelDiscovery?(currentAppType)
     }
 
+    func setModelDiscoveryEnabled(_ enabled: Bool, for providerRef: ProviderRef) {
+        onSetModelDiscoveryEnabled?(providerRef, enabled)
+    }
+
     func copyDiagnostics() {
         onCopyDiagnostics?()
     }
@@ -546,6 +536,27 @@ final class UniGateAppState: ObservableObject {
             return requestMetrics.records.sorted { $0.key.description.localizedStandardCompare($1.key.description) == .orderedAscending }
         }
         return requestMetrics.records(appType: appType)
+    }
+
+    var currentModelDiscoveryItems: [ModelDiscoveryProviderItem] {
+        let providers = catalog.providers
+            .filter { currentAppType == nil || $0.appType == currentAppType }
+            .sorted {
+                let appCompare = ProviderDisplay.appTypeLabel($0.appType)
+                    .localizedStandardCompare(ProviderDisplay.appTypeLabel($1.appType))
+                if appCompare != .orderedSame {
+                    return appCompare == .orderedAscending
+                }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        let results = discoveryState.results
+        return providers.map { provider in
+            ModelDiscoveryProviderItem(
+                provider: provider,
+                result: results[provider.ref.description],
+                isEnabled: preferences.isModelDiscoveryEnabled(for: provider.ref)
+            )
+        }
     }
 
     var currentDiscoveryResults: [ProviderModelDiscoveryResult] {
@@ -638,6 +649,16 @@ final class UniGateAppState: ObservableObject {
         return candidate.upstreamModelDisplayName
     }
 
+}
+
+struct ModelDiscoveryProviderItem: Identifiable {
+    let provider: ImportedProvider
+    let result: ProviderModelDiscoveryResult?
+    let isEnabled: Bool
+
+    var id: String {
+        provider.ref.description
+    }
 }
 
 private extension ProxyStatus {

@@ -21,6 +21,7 @@ public struct AppPreferences: Codable, Sendable {
     public var bubbleNotificationsEnabled: Bool
     public var launchAtLoginEnabled: Bool
     public var networkPolicy: NetworkPolicyPreferences
+    public var modelDiscoveryDisabledProviders: Set<String>
 
     public init(
         visibleModels: Set<String>? = nil,
@@ -30,7 +31,8 @@ public struct AppPreferences: Codable, Sendable {
         brandColor: BrandColorPreset = .ember,
         bubbleNotificationsEnabled: Bool = true,
         launchAtLoginEnabled: Bool = true,
-        networkPolicy: NetworkPolicyPreferences = NetworkPolicyPreferences()
+        networkPolicy: NetworkPolicyPreferences = NetworkPolicyPreferences(),
+        modelDiscoveryDisabledProviders: Set<String> = []
     ) {
         self.visibleModels = visibleModels
         self.protocolOverrides = protocolOverrides
@@ -40,6 +42,7 @@ public struct AppPreferences: Codable, Sendable {
         self.bubbleNotificationsEnabled = bubbleNotificationsEnabled
         self.launchAtLoginEnabled = launchAtLoginEnabled
         self.networkPolicy = networkPolicy
+        self.modelDiscoveryDisabledProviders = modelDiscoveryDisabledProviders
     }
 
     enum CodingKeys: String, CodingKey {
@@ -51,6 +54,7 @@ public struct AppPreferences: Codable, Sendable {
         case bubbleNotificationsEnabled
         case launchAtLoginEnabled
         case networkPolicy
+        case modelDiscoveryDisabledProviders
     }
 
     public init(from decoder: Decoder) throws {
@@ -73,6 +77,10 @@ public struct AppPreferences: Codable, Sendable {
             NetworkPolicyPreferences.self,
             forKey: .networkPolicy
         ) ?? NetworkPolicyPreferences()
+        self.modelDiscoveryDisabledProviders = try container.decodeIfPresent(
+            Set<String>.self,
+            forKey: .modelDiscoveryDisabledProviders
+        ) ?? []
     }
 
     public func visibleModelList(allModels: [String]) -> [String] {
@@ -93,6 +101,18 @@ public struct AppPreferences: Codable, Sendable {
 
     public func protocolOverride(for providerRef: ProviderRef) -> ApiFormat? {
         protocolOverrides[providerRef.description]
+    }
+
+    public func isModelDiscoveryEnabled(for providerRef: ProviderRef) -> Bool {
+        !modelDiscoveryDisabledProviders.contains(providerRef.description)
+    }
+
+    public mutating func setModelDiscoveryEnabled(_ enabled: Bool, for providerRef: ProviderRef) {
+        if enabled {
+            modelDiscoveryDisabledProviders.remove(providerRef.description)
+        } else {
+            modelDiscoveryDisabledProviders.insert(providerRef.description)
+        }
     }
 
     public var normalizedPort: UInt16 {
