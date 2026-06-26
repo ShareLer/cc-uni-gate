@@ -191,7 +191,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             overrides[providerRef.description] = override
         }
         nextPreferences.networkPolicy.providerOverrides = overrides
-        if override == .direct {
+        if let mode = override.effectiveMode,
+           networkDiagnostics[providerRef.description]?.fallbackMode == mode {
             clearNetworkDiagnostic(providerRef: providerRef)
         }
         persistSettings(nextPreferences, customModels: customModels, closeAfterSave: false)
@@ -208,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 preferences: networkPolicy,
                 providerRef: diagnostic.providerRef,
                 host: host
-            ) == .system
+            ) == diagnostic.failedMode
         }
         guard nextDiagnostics != networkDiagnostics else {
             return
@@ -522,14 +523,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 break
             } catch {
                 lastFailure = "networkPolicy=\(networkPolicy.rawValue) \(error.localizedDescription)"
-                if networkPolicy == .system {
-                    await updateSystemProxyDiagnosticIfDirectSucceeds(
-                        provider: provider,
-                        request: request,
-                        url: url,
-                        systemError: error.localizedDescription
-                    )
-                }
+                await updateNetworkPolicyDiagnosticIfAlternateResponds(
+                    provider: provider,
+                    request: request,
+                    url: url,
+                    failedMode: networkPolicy,
+                    failedError: error.localizedDescription
+                )
                 break
             }
         }
@@ -546,14 +546,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func updateSystemProxyDiagnosticIfDirectSucceeds(
+    private func updateNetworkPolicyDiagnosticIfAlternateResponds(
         provider: ImportedProvider,
         request: URLRequest,
         url: URL,
-        systemError: String
+        failedMode: NetworkPolicyMode,
+        failedError: String
     ) async {
+        let fallbackMode = failedMode.alternate
         do {
-            let session = NetworkPolicySession.makeSession(for: .direct)
+            let session = NetworkPolicySession.makeSession(for: fallbackMode)
             let (_, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status > 0 else {
@@ -566,15 +568,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 appType: provider.appType,
                 providerName: provider.name,
                 url: url.absoluteString,
-                systemError: systemError,
-                directStatusCode: status
+                failedMode: failedMode,
+                failedError: failedError,
+                fallbackMode: fallbackMode,
+                fallbackStatusCode: status
             )
             appState.updateNetworkDiagnostics(networkDiagnostics)
-            if previous == nil || previous?.systemError != systemError || previous?.directStatusCode != status {
+            if previous == nil
+                || previous?.failedMode != failedMode
+                || previous?.failedError != failedError
+                || previous?.fallbackMode != fallbackMode
+                || previous?.fallbackStatusCode != status {
                 recordEvent(.error, formattedIssueMessage(
                     appName: ProviderDisplay.appTypeLabel(provider.appType),
                     group: "网络诊断",
-                    detail: "\(provider.name)：networkPolicy=system 请求失败，但 networkPolicy=direct 可连通 HTTP \(status)。url=\(url.absoluteString) error=\(systemError)"
+                    detail: "\(provider.name)：networkPolicy=\(failedMode.rawValue) 请求失败，但 networkPolicy=\(fallbackMode.rawValue) 可连通 HTTP \(status)。url=\(url.absoluteString) error=\(failedError)"
                 ))
             }
         } catch {

@@ -178,6 +178,44 @@ struct ProductizationStoreTests {
         #expect(!text.contains("abc123456789"))
     }
 
+    @Test
+    func diagnosticsReportIncludesBidirectionalNetworkPolicyDiagnostic() {
+        let providerRef = ProviderRef(appType: "claude", id: "provider")
+        let text = DiagnosticsReportGenerator.text(DiagnosticsReportInput(
+            databasePath: "/tmp/cc-switch.db",
+            proxyStatus: "running",
+            proxyPort: 17888,
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(),
+            preferences: AppPreferences(),
+            customModels: CustomModelState(),
+            uniGateModelScope: UniGateModelScope(),
+            integration: nil,
+            healthReport: ConfigurationHealthReport(generatedAt: Date(timeIntervalSince1970: 1), items: []),
+            recentEvents: [],
+            requestMetrics: RequestMetricsState(),
+            discoveryState: ProviderModelDiscoveryState(),
+            networkDiagnostics: [
+                NetworkPolicyDiagnostic(
+                    providerRef: providerRef,
+                    appType: "claude",
+                    providerName: "Provider",
+                    url: "https://api.example.com/v1/models",
+                    failedMode: .direct,
+                    failedError: "The request timed out.",
+                    fallbackMode: .system,
+                    fallbackStatusCode: 200,
+                    checkedAt: Date(timeIntervalSince1970: 1)
+                )
+            ],
+            generatedAt: Date(timeIntervalSince1970: 2)
+        ))
+
+        #expect(text.contains("direct failed"))
+        #expect(text.contains("system HTTP 200"))
+        #expect(text.contains("The request timed out."))
+    }
+
     private func discoveryProvider(
         id: String,
         baseURL: String,

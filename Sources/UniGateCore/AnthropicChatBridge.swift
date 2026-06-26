@@ -5,6 +5,7 @@ public enum AnthropicChatBridgeError: Error, LocalizedError, Equatable {
     case missingMessages
     case invalidChatResponse
     case invalidChatStreamChunk
+    case truncatedChatStream
 
     public var errorDescription: String? {
         switch self {
@@ -16,6 +17,8 @@ public enum AnthropicChatBridgeError: Error, LocalizedError, Equatable {
             return "Upstream OpenAI Chat response must be a JSON object"
         case .invalidChatStreamChunk:
             return "Upstream OpenAI Chat stream chunk must be a JSON object"
+        case .truncatedChatStream:
+            return "Upstream OpenAI Chat stream ended before a terminal chunk"
         }
     }
 }
@@ -66,7 +69,7 @@ public enum AnthropicChatBridge {
             "messages": messages
         ]
         if let maxTokens = anthropicRequest["max_tokens"] {
-            chat["max_tokens"] = maxTokens
+            chat[Self.isOpenAIOSeries(model) ? "max_completion_tokens" : "max_tokens"] = maxTokens
         }
         for key in ["temperature", "top_p", "stream"] {
             if let value = anthropicRequest[key] {
@@ -81,6 +84,9 @@ public enum AnthropicChatBridge {
         }
         if let toolChoice = anthropicRequest["tool_choice"] {
             chat["tool_choice"] = openAIChatToolChoice(from: toolChoice)
+        }
+        if Self.supportsReasoningEffort(model), let effort = reasoningEffort(from: anthropicRequest) {
+            chat["reasoning_effort"] = effort
         }
         if (chat["stream"] as? Bool) == true {
             chat["stream_options"] = mergedStreamOptions(anthropicRequest["stream_options"])
@@ -112,6 +118,23 @@ public enum AnthropicChatBridge {
     public static func countTokensBody(fromOpenAIChatRequest chatRequest: [String: Any]) -> [String: Any] {
         let estimated = max(Int(ceil(Double(serializedText(chatRequest).count) / 4.0)), 1)
         return ["input_tokens": estimated]
+    }
+
+    public static func anthropicErrorBody(fromOpenAIError object: [String: Any], fallbackMessage: String) -> [String: Any] {
+        let errorObject = object["error"] as? [String: Any]
+        let message = trimmedString(errorObject?["message"])
+            ?? trimmedString(object["message"])
+            ?? fallbackMessage
+        let type = trimmedString(errorObject?["type"])
+            ?? trimmedString(errorObject?["code"])
+            ?? "api_error"
+        return [
+            "type": "error",
+            "error": [
+                "type": anthropicErrorType(type),
+                "message": message
+            ]
+        ]
     }
 
     private static func systemMessages(from value: Any?) -> [[String: Any]] {
@@ -283,13 +306,14 @@ public enum AnthropicChatBridge {
         if let reasoning = trimmedString(message["reasoning_content"] ?? message["reasoning"]) {
             content.append(["type": "thinking", "thinking": reasoning])
         }
+        appendReasoningDetails(message["reasoning_details"], to: &content)
         appendTextBlocks(message["content"], to: &content)
         if let refusal = trimmedString(message["refusal"]) {
             content.append(["type": "text", "text": refusal])
         }
         if let toolCalls = message["tool_calls"] as? [[String: Any]] {
-            for call in toolCalls {
-                content.append(toolUseBlock(from: call))
+            for (index, call) in toolCalls.enumerated() {
+                content.append(toolUseBlock(from: call, index: index))
             }
         } else if let functionCall = message["function_call"] as? [String: Any] {
             content.append(toolUseBlock(fromFunctionCall: functionCall))
@@ -314,12 +338,27 @@ public enum AnthropicChatBridge {
         }
     }
 
-    private static func toolUseBlock(from call: [String: Any]) -> [String: Any] {
+    private static func appendReasoningDetails(_ value: Any?, to content: inout [[String: Any]]) {
+        guard let details = value as? [[String: Any]] else {
+            return
+        }
+        for detail in details {
+            if let text = trimmedString(detail["text"] ?? detail["reasoning"] ?? detail["content"]) {
+                var block: [String: Any] = ["type": "thinking", "thinking": text]
+                if let signature = trimmedString(detail["signature"]) {
+                    block["signature"] = signature
+                }
+                content.append(block)
+            }
+        }
+    }
+
+    private static func toolUseBlock(from call: [String: Any], index: Int) -> [String: Any] {
         let function = call["function"] as? [String: Any] ?? [:]
         let arguments = trimmedString(function["arguments"]) ?? "{}"
         return [
             "type": "tool_use",
-            "id": trimmedString(call["id"]) ?? "",
+            "id": toolCallID(call["id"], name: trimmedString(function["name"]), arguments: arguments, index: index),
             "name": trimmedString(function["name"]) ?? "",
             "input": jsonObject(arguments)
         ]
@@ -329,10 +368,96 @@ public enum AnthropicChatBridge {
         let arguments = trimmedString(functionCall["arguments"]) ?? "{}"
         return [
             "type": "tool_use",
-            "id": trimmedString(functionCall["id"]) ?? "",
+            "id": toolCallID(functionCall["id"], name: trimmedString(functionCall["name"]), arguments: arguments),
             "name": trimmedString(functionCall["name"]) ?? "",
             "input": jsonObject(arguments)
         ]
+    }
+
+    private static func toolCallID(_ value: Any?, name: String?, arguments: String, index: Int? = nil) -> String {
+        if let id = trimmedString(value) {
+            return id
+        }
+        let seed = "\(index.map(String.init) ?? "function"):\(name ?? "function"):\(arguments)"
+        return "call_\(stableHash(seed))"
+    }
+
+    private static func stableHash(_ value: String) -> String {
+        var hash: UInt64 = 5381
+        for byte in value.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt64(byte)
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static func anthropicErrorType(_ value: String) -> String {
+        switch value.lowercased() {
+        case "invalid_request_error", "bad_request", "invalid_request":
+            return "invalid_request_error"
+        case "authentication_error", "unauthorized":
+            return "authentication_error"
+        case "permission_error", "forbidden":
+            return "permission_error"
+        case "not_found_error", "not_found":
+            return "not_found_error"
+        case "rate_limit_error", "rate_limit_exceeded":
+            return "rate_limit_error"
+        case "overloaded_error", "service_unavailable":
+            return "overloaded_error"
+        default:
+            return "api_error"
+        }
+    }
+
+    private static func reasoningEffort(from request: [String: Any]) -> String? {
+        if let outputConfig = request["output_config"] as? [String: Any],
+           let effort = trimmedString(outputConfig["effort"]) {
+            switch effort {
+            case "low", "medium", "high":
+                return effort
+            case "max":
+                return "xhigh"
+            default:
+                return nil
+            }
+        }
+        guard let thinking = request["thinking"] as? [String: Any] else {
+            return nil
+        }
+        switch trimmedString(thinking["type"]) {
+        case "adaptive":
+            return "xhigh"
+        case "enabled":
+            guard let budget = intValue(thinking["budget_tokens"]) else {
+                return "high"
+            }
+            if budget < 4_000 { return "low" }
+            if budget < 16_000 { return "medium" }
+            return "high"
+        default:
+            return nil
+        }
+    }
+
+    private static func isOpenAIOSeries(_ model: String) -> Bool {
+        guard model.count > 1, model.first == "o" else {
+            return false
+        }
+        return model.dropFirst().first?.isNumber == true
+    }
+
+    private static func supportsReasoningEffort(_ model: String) -> Bool {
+        if isOpenAIOSeries(model) {
+            return true
+        }
+        let lower = model.lowercased()
+        guard lower.hasPrefix("gpt-") else {
+            return false
+        }
+        guard let version = lower.dropFirst(4).first else {
+            return false
+        }
+        return version.isNumber && version >= "5"
     }
 
     fileprivate static func anthropicUsage(from value: Any?) -> [String: Any] {
@@ -494,6 +619,12 @@ public struct AnthropicChatStreamState {
     private var latestUsage: [String: Any]?
     private var pendingStopReason: String?
     private var sentMessageStop = false
+    private var sawDone = false
+    private var sawStreamError = false
+
+    public var hasTerminalChunk: Bool {
+        sawDone || sawStreamError || pendingStopReason != nil || sentMessageStop
+    }
 
     public init() {}
 
@@ -503,6 +634,7 @@ public struct AnthropicChatStreamState {
             return []
         }
         if trimmed == "[DONE]" {
+            sawDone = true
             return finishEvents()
         }
         guard
@@ -515,6 +647,9 @@ public struct AnthropicChatStreamState {
     }
 
     public mutating func finishEvents() -> [AnthropicChatStreamEvent] {
+        guard !sawStreamError else {
+            return []
+        }
         guard !sentMessageStop else {
             return []
         }
@@ -544,6 +679,13 @@ public struct AnthropicChatStreamState {
     }
 
     private mutating func events(forChunk chunk: [String: Any], fallbackModel: String) throws -> [AnthropicChatStreamEvent] {
+        if let errorObject = chunk["error"] as? [String: Any] {
+            sawStreamError = true
+            return [event("error", AnthropicChatBridge.anthropicErrorBody(
+                fromOpenAIError: ["error": errorObject],
+                fallbackMessage: "OpenAI Chat stream error"
+            ))]
+        }
         if let id = chunk["id"] as? String, !id.isEmpty, messageID == nil {
             messageID = id
         }
@@ -576,6 +718,36 @@ public struct AnthropicChatStreamState {
                         "thinking": reasoning
                     ]
                 ]))
+            }
+        }
+        if let details = delta["reasoning_details"] as? [[String: Any]] {
+            for detail in details {
+                if let reasoning = string(detail["text"] ?? detail["reasoning"] ?? detail["content"]), !reasoning.isEmpty {
+                    events.append(contentsOf: ensureContentBlock(type: "thinking"))
+                    if let index = currentBlockIndex {
+                        events.append(event("content_block_delta", [
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": [
+                                "type": "thinking_delta",
+                                "thinking": reasoning
+                            ]
+                        ]))
+                    }
+                }
+                if let signature = string(detail["signature"]), !signature.isEmpty {
+                    events.append(contentsOf: ensureContentBlock(type: "thinking"))
+                    if let index = currentBlockIndex {
+                        events.append(event("content_block_delta", [
+                            "type": "content_block_delta",
+                            "index": index,
+                            "delta": [
+                                "type": "signature_delta",
+                                "signature": signature
+                            ]
+                        ]))
+                    }
+                }
             }
         }
         if let content = string(delta["content"]), !content.isEmpty {
@@ -650,12 +822,15 @@ public struct AnthropicChatStreamState {
         }
 
         var state = toolStates[openAIIndex]!
-        if let id = string(toolCall["id"]) {
+        if let id = string(toolCall["id"]), !id.isEmpty {
             state.id = id
         }
         if let function = toolCall["function"] as? [String: Any],
            let name = string(function["name"]) {
             state.name = name
+        }
+        if state.id.isEmpty, !state.name.isEmpty {
+            state.id = "call_\(openAIIndex)"
         }
 
         var events: [AnthropicChatStreamEvent] = []

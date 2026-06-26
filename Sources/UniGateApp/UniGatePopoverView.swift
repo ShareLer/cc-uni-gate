@@ -1494,21 +1494,33 @@ private struct InlineSettingsPanel: View {
                             .frame(width: 16)
                             .padding(.top, 2)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(diagnostic.providerName)：系统代理失败，直连可用")
+                            Text("\(diagnostic.providerName)：\(networkPolicyLabel(diagnostic.failedMode))失败，\(networkPolicyLabel(diagnostic.fallbackMode))可用")
                                 .font(.system(size: 11, weight: .medium))
                                 .lineLimit(1)
-                            Text(diagnostic.systemError)
+                            Text(diagnostic.failedError)
                                 .font(.caption2)
                                 .foregroundStyle(UGPopoverStyle.textSecondary)
                                 .lineLimit(2)
                         }
                         Spacer(minLength: 6)
-                        compactAction("设为直连", systemImage: "bolt.horizontal") {
-                            state.setProviderNetworkPolicy(providerRef: diagnostic.providerRef, override: .direct)
+                        compactAction("使用\(networkPolicyLabel(diagnostic.fallbackMode))", systemImage: "bolt.horizontal") {
+                            state.setProviderNetworkPolicy(
+                                providerRef: diagnostic.providerRef,
+                                override: providerNetworkOverride(for: diagnostic.fallbackMode)
+                            )
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func providerNetworkOverride(for mode: NetworkPolicyMode) -> ProviderNetworkPolicyOverride {
+        switch mode {
+        case .system:
+            return .system
+        case .direct:
+            return .direct
         }
     }
 

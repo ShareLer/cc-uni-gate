@@ -72,4 +72,10 @@ struct NetworkPolicyTests {
             host: "llm.intra.example.com"
         ) == .direct)
     }
+
+    @Test
+    func modesExposeAlternatePolicy() {
+        #expect(NetworkPolicyMode.system.alternate == .direct)
+        #expect(NetworkPolicyMode.direct.alternate == .system)
+    }
 }

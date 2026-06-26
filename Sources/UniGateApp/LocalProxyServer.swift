@@ -57,6 +57,16 @@ final class LocalProxyServer: @unchecked Sendable {
         case upstream(Error, stats: ProxyStreamStats)
     }
 
+    private struct UpstreamTransportErrorContext: Sendable {
+        let model: String
+        let routeKey: String
+        let provider: String
+        let providerRef: String
+        let upstreamProviderRef: String
+        let upstreamModel: String
+        let upstreamURL: String
+    }
+
     let id = UUID()
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
@@ -242,6 +252,8 @@ final class LocalProxyServer: @unchecked Sendable {
         var statusCode: Int?
         var responseHeadersSent = false
         var networkPolicyLog = "networkPolicy=-"
+        var networkPolicyMode: NetworkPolicyMode?
+        var transportErrorContext: UpstreamTransportErrorContext?
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
             guard let route = proxyRoute(for: request.path) else {
@@ -271,6 +283,8 @@ final class LocalProxyServer: @unchecked Sendable {
                 providerRef: resolved.candidate.upstreamProviderRef,
                 host: resolved.upstreamURL.host
             )
+            networkPolicyMode = networkPolicy
+            transportErrorContext = Self.upstreamTransportErrorContext(for: resolved)
             networkPolicyLog = "networkPolicy=\(networkPolicy.rawValue)"
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
@@ -359,22 +373,29 @@ final class LocalProxyServer: @unchecked Sendable {
                     to: connection,
                     upstreamStartedAt: upstreamStartedAt
                 )
+                let transformedStreamFailure = stats.sseFailureDetail
                 await MainActor.run {
-                    if !providerFailure {
+                    if let transformedStreamFailure {
+                        runtime.proxyProviderDidFail(
+                            appType: resolved.candidate.appType,
+                            message: "\(providerFailureContext ?? resolved.providerName)：SSE error：\(transformedStreamFailure)"
+                        )
+                    } else if !providerFailure {
                         runtime.proxyProviderDidSucceed()
                     }
                     runtime.recordRequestMetric(
                         key: Self.metricKey(for: resolved),
                         statusCode: status,
                         latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
-                        errorMessage: nil,
-                        providerFailure: false
+                        errorMessage: transformedStreamFailure.map { "SSE error: \($0)" },
+                        providerFailure: transformedStreamFailure != nil
                     )
                 }
                 await recordProxyLog(
+                    level: transformedStreamFailure == nil ? .info : .error,
                     requestID: requestID,
                     phase: "transform-stream-complete",
-                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) sseFailed=\(transformedStreamFailure != nil) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
                 )
                 connection.cancel()
                 return
@@ -561,7 +582,15 @@ final class LocalProxyServer: @unchecked Sendable {
             if responseHeadersSent {
                 connection.cancel()
             } else {
-                send(.json(status: metricStatus, body: ["error": error.localizedDescription]), on: connection)
+                send(
+                    Self.upstreamTransportErrorResponse(
+                        status: metricStatus,
+                        error: error,
+                        networkPolicy: networkPolicyMode,
+                        context: transportErrorContext
+                    ),
+                    on: connection
+                )
             }
         }
     }
@@ -657,6 +686,10 @@ final class LocalProxyServer: @unchecked Sendable {
                         if let data = Self.sseDataPayload(from: blockLines) {
                             let events = try state.events(forOpenAIChatStreamData: data, fallbackModel: resolved.outboundModel)
                             for event in events {
+                                if event.event == "error" {
+                                    stats.sawSSEFailure = true
+                                    stats.sseFailureDetail = Self.anthropicStreamErrorDetail(event)
+                                }
                                 let payload = try event.sseData()
                                 do {
                                     try await send(payload, on: connection)
@@ -686,6 +719,10 @@ final class LocalProxyServer: @unchecked Sendable {
             if let data = Self.sseDataPayload(from: blockLines) {
                 let events = try state.events(forOpenAIChatStreamData: data, fallbackModel: resolved.outboundModel)
                 for event in events {
+                    if event.event == "error" {
+                        stats.sawSSEFailure = true
+                        stats.sseFailureDetail = Self.anthropicStreamErrorDetail(event)
+                    }
                     let payload = try event.sseData()
                     do {
                         try await send(payload, on: connection)
@@ -696,6 +733,10 @@ final class LocalProxyServer: @unchecked Sendable {
                     stats.chunksForwarded += 1
                     stats.lastChunkForwardedAt = Date()
                 }
+            }
+
+            guard state.hasTerminalChunk else {
+                throw AnthropicChatBridgeError.truncatedChatStream
             }
 
             let finishEvents = state.finishEvents()
@@ -785,6 +826,18 @@ final class LocalProxyServer: @unchecked Sendable {
         ].joined(separator: " ")
     }
 
+    private static func upstreamTransportErrorContext(for resolved: ResolvedRoute) -> UpstreamTransportErrorContext {
+        UpstreamTransportErrorContext(
+            model: resolved.requestedModel,
+            routeKey: resolved.routeKey.description,
+            provider: resolved.providerName,
+            providerRef: resolved.candidate.providerRef.description,
+            upstreamProviderRef: resolved.candidate.upstreamProviderRef.description,
+            upstreamModel: resolved.outboundModel,
+            upstreamURL: resolved.upstreamURL.absoluteString
+        )
+    }
+
     private static func requestedModel(in body: Data) -> String? {
         guard
             let value = try? JSONSerialization.jsonObject(with: body),
@@ -844,6 +897,53 @@ final class LocalProxyServer: @unchecked Sendable {
         }
 
         return String(describing: type(of: error))
+    }
+
+    private static func upstreamTransportErrorResponse(
+        status: Int,
+        error: Error,
+        networkPolicy: NetworkPolicyMode?,
+        context: UpstreamTransportErrorContext?
+    ) -> HTTPResponse {
+        let errorKind = transportErrorKind(error)
+        var errorObject: [String: Any] = [
+            "message": logSafeError(error),
+            "type": "upstream_transport_error",
+            "code": upstreamTransportErrorCode(errorKind),
+            "transport_error_kind": errorKind,
+            "network_policy": networkPolicy?.rawValue ?? "unknown",
+            "upstream_returned_http_headers": false
+        ]
+        if let context {
+            errorObject["model"] = context.model
+            errorObject["route_key"] = context.routeKey
+            errorObject["provider"] = context.provider
+            errorObject["provider_ref"] = context.providerRef
+            errorObject["upstream_provider_ref"] = context.upstreamProviderRef
+            errorObject["upstream_model"] = context.upstreamModel
+            errorObject["upstream_url"] = context.upstreamURL
+        }
+        return .json(status: status, body: [
+            "type": "error",
+            "error": errorObject
+        ])
+    }
+
+    private static func upstreamTransportErrorCode(_ errorKind: String) -> String {
+        switch errorKind {
+        case "timeout":
+            return "upstream_timeout"
+        case "connectivity":
+            return "upstream_connectivity_error"
+        case "network":
+            return "upstream_network_error"
+        case "tls":
+            return "upstream_tls_error"
+        case "cancelled":
+            return "upstream_cancelled"
+        default:
+            return "upstream_transport_error"
+        }
     }
 
     private static func logSafeError(_ error: Error) -> String {
@@ -936,6 +1036,20 @@ final class LocalProxyServer: @unchecked Sendable {
         }
 
         guard status >= 200 && status < 300 else {
+            if resolved.responseTransform == .openAIChatToAnthropicMessages,
+               let value = try? JSONSerialization.jsonObject(with: body),
+               let object = value as? [String: Any] {
+                var responseHeaders = headers
+                removeEntityHeaders(from: &responseHeaders)
+                responseHeaders["content-type"] = "application/json; charset=utf-8"
+                let transformed = AnthropicChatBridge.anthropicErrorBody(
+                    fromOpenAIError: object,
+                    fallbackMessage: httpReasonPhrase(status)
+                )
+                let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
+                send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
+                return
+            }
             let response = HTTPResponse(
                 status: status,
                 headers: headers,
@@ -1171,6 +1285,20 @@ final class LocalProxyServer: @unchecked Sendable {
             dataLines.append(value)
         }
         return dataLines.isEmpty ? nil : dataLines.joined(separator: "\n")
+    }
+
+    private static func anthropicStreamErrorDetail(_ event: AnthropicChatStreamEvent) -> String {
+        guard let sse = try? event.sseData(),
+              let text = String(data: sse, encoding: .utf8),
+              let dataLine = text.split(separator: "\n").first(where: { $0.hasPrefix("data: ") }),
+              let value = try? JSONSerialization.jsonObject(with: Data(dataLine.dropFirst("data: ".count).utf8)),
+              let object = value as? [String: Any],
+              let error = object["error"] as? [String: Any] else {
+            return "stream error"
+        }
+        let type = error["type"] as? String ?? "api_error"
+        let message = error["message"] as? String ?? "stream error"
+        return "\(type): \(message)"
     }
 
     private func forwardResponseHeaders(_ response: HTTPURLResponse?) -> [String: String] {

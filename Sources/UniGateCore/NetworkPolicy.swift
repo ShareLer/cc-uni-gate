@@ -5,6 +5,15 @@ public enum NetworkPolicyMode: String, CaseIterable, Codable, Sendable, Identifi
     case direct
 
     public var id: String { rawValue }
+
+    public var alternate: NetworkPolicyMode {
+        switch self {
+        case .system:
+            return .direct
+        case .direct:
+            return .system
+        }
+    }
 }
 
 public enum ProviderNetworkPolicyOverride: String, CaseIterable, Codable, Sendable, Identifiable {
@@ -111,28 +120,81 @@ public struct NetworkPolicyDiagnostic: Codable, Sendable, Equatable, Identifiabl
     public var appType: String
     public var providerName: String
     public var url: String
-    public var systemError: String
-    public var directStatusCode: Int
+    public var failedMode: NetworkPolicyMode
+    public var failedError: String
+    public var fallbackMode: NetworkPolicyMode
+    public var fallbackStatusCode: Int
     public var checkedAt: Date
 
     public var id: String { providerRef.description }
+
+    private enum CodingKeys: String, CodingKey {
+        case providerRef
+        case appType
+        case providerName
+        case url
+        case failedMode
+        case failedError
+        case fallbackMode
+        case fallbackStatusCode
+        case systemError
+        case directStatusCode
+        case checkedAt
+    }
 
     public init(
         providerRef: ProviderRef,
         appType: String,
         providerName: String,
         url: String,
-        systemError: String,
-        directStatusCode: Int,
+        failedMode: NetworkPolicyMode,
+        failedError: String,
+        fallbackMode: NetworkPolicyMode,
+        fallbackStatusCode: Int,
         checkedAt: Date = Date()
     ) {
         self.providerRef = providerRef
         self.appType = appType
         self.providerName = providerName
         self.url = url
-        self.systemError = systemError
-        self.directStatusCode = directStatusCode
+        self.failedMode = failedMode
+        self.failedError = failedError
+        self.fallbackMode = fallbackMode
+        self.fallbackStatusCode = fallbackStatusCode
         self.checkedAt = checkedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.providerRef = try container.decode(ProviderRef.self, forKey: .providerRef)
+        self.appType = try container.decode(String.self, forKey: .appType)
+        self.providerName = try container.decode(String.self, forKey: .providerName)
+        self.url = try container.decode(String.self, forKey: .url)
+        if let failedMode = try container.decodeIfPresent(NetworkPolicyMode.self, forKey: .failedMode) {
+            self.failedMode = failedMode
+            self.failedError = try container.decode(String.self, forKey: .failedError)
+            self.fallbackMode = try container.decode(NetworkPolicyMode.self, forKey: .fallbackMode)
+            self.fallbackStatusCode = try container.decode(Int.self, forKey: .fallbackStatusCode)
+        } else {
+            self.failedMode = .system
+            self.failedError = try container.decode(String.self, forKey: .systemError)
+            self.fallbackMode = .direct
+            self.fallbackStatusCode = try container.decode(Int.self, forKey: .directStatusCode)
+        }
+        self.checkedAt = try container.decode(Date.self, forKey: .checkedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(providerRef, forKey: .providerRef)
+        try container.encode(appType, forKey: .appType)
+        try container.encode(providerName, forKey: .providerName)
+        try container.encode(url, forKey: .url)
+        try container.encode(failedMode, forKey: .failedMode)
+        try container.encode(failedError, forKey: .failedError)
+        try container.encode(fallbackMode, forKey: .fallbackMode)
+        try container.encode(fallbackStatusCode, forKey: .fallbackStatusCode)
+        try container.encode(checkedAt, forKey: .checkedAt)
     }
 }
 

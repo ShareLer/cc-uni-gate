@@ -152,7 +152,7 @@ public enum DiagnosticsReportGenerator {
 
         lines.append("[Network Diagnostics]")
         for diagnostic in input.networkDiagnostics.prefix(80) {
-            lines.append("- \(ProviderDisplay.appTypeLabel(diagnostic.appType)) / \(diagnostic.providerName): system failed (\(redact(diagnostic.systemError))), direct HTTP \(diagnostic.directStatusCode), url=\(redact(diagnostic.url)), at \(formatter.string(from: diagnostic.checkedAt))")
+            lines.append("- \(ProviderDisplay.appTypeLabel(diagnostic.appType)) / \(diagnostic.providerName): \(diagnostic.failedMode.rawValue) failed (\(redact(diagnostic.failedError))), \(diagnostic.fallbackMode.rawValue) HTTP \(diagnostic.fallbackStatusCode), url=\(redact(diagnostic.url)), at \(formatter.string(from: diagnostic.checkedAt))")
         }
         if input.networkDiagnostics.isEmpty {
             lines.append("- none")

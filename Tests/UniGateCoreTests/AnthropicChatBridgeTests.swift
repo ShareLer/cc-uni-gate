@@ -138,6 +138,87 @@ struct AnthropicChatBridgeTests {
     }
 
     @Test
+    func preservesReasoningDetailsAndSynthesizesMissingToolCallID() throws {
+        let body = try AnthropicChatBridge.anthropicBody(
+            from: [
+                "id": "chatcmpl-1",
+                "model": "luban-glm",
+                "choices": [[
+                    "message": [
+                        "role": "assistant",
+                        "reasoning_details": [[
+                            "type": "reasoning.text",
+                            "text": "Need current data.",
+                            "signature": "sig_1"
+                        ]],
+                        "tool_calls": [[
+                            "type": "function",
+                            "function": [
+                                "name": "search",
+                                "arguments": #"{"query":"swift"}"#
+                            ]
+                        ]]
+                    ],
+                    "finish_reason": "tool_calls"
+                ]]
+            ],
+            fallbackModel: "fallback"
+        )
+
+        let content = try #require(body["content"] as? [[String: Any]])
+        #expect(content[0]["type"] as? String == "thinking")
+        #expect(content[0]["thinking"] as? String == "Need current data.")
+        #expect(content[0]["signature"] as? String == "sig_1")
+        #expect(content[1]["type"] as? String == "tool_use")
+        #expect((content[1]["id"] as? String)?.hasPrefix("call_") == true)
+        #expect(content[1]["id"] as? String != "")
+    }
+
+    @Test
+    func synthesizesDistinctMissingToolCallIDs() throws {
+        let body = try AnthropicChatBridge.anthropicBody(
+            from: [
+                "id": "chatcmpl-1",
+                "model": "luban-glm",
+                "choices": [[
+                    "message": [
+                        "role": "assistant",
+                        "tool_calls": [
+                            ["type": "function", "function": ["name": "search", "arguments": "{}"]],
+                            ["type": "function", "function": ["name": "search", "arguments": "{}"]]
+                        ]
+                    ],
+                    "finish_reason": "tool_calls"
+                ]]
+            ],
+            fallbackModel: "fallback"
+        )
+
+        let content = try #require(body["content"] as? [[String: Any]])
+        let ids = content.compactMap { $0["id"] as? String }
+        #expect(ids.count == 2)
+        #expect(Set(ids).count == 2)
+    }
+
+    @Test
+    func convertsOpenAIErrorBodyToAnthropicErrorBody() throws {
+        let body = AnthropicChatBridge.anthropicErrorBody(
+            fromOpenAIError: [
+                "error": [
+                    "type": "rate_limit_exceeded",
+                    "message": "slow down"
+                ]
+            ],
+            fallbackMessage: "Too Many Requests"
+        )
+
+        #expect(body["type"] as? String == "error")
+        let error = try #require(body["error"] as? [String: Any])
+        #expect(error["type"] as? String == "rate_limit_error")
+        #expect(error["message"] as? String == "slow down")
+    }
+
+    @Test
     func convertsPureTextContentBlocksToSingleChatString() throws {
         let request: [String: Any] = [
             "model": "luban-glm",
@@ -180,6 +261,35 @@ struct AnthropicChatBridgeTests {
         #expect(messages[1]["role"] as? String == "assistant")
         #expect(messages[1]["content"] as? String == "")
         #expect(messages[1]["reasoning_content"] as? String == "I should inspect the prior result.")
+    }
+
+    @Test
+    func mapsReasoningEffortAndOSeriesTokenParameter() throws {
+        let request: [String: Any] = [
+            "model": "o3-mini",
+            "messages": [["role": "user", "content": "think"]],
+            "max_tokens": 128,
+            "thinking": ["type": "enabled", "budget_tokens": 12_000]
+        ]
+
+        let chat = try AnthropicChatBridge.chatRequest(from: request)
+
+        #expect(chat["max_tokens"] == nil)
+        #expect(chat["max_completion_tokens"] as? Int == 128)
+        #expect(chat["reasoning_effort"] as? String == "medium")
+    }
+
+    @Test
+    func mapsOutputConfigEffortForGPT5Models() throws {
+        let request: [String: Any] = [
+            "model": "gpt-5.1",
+            "messages": [["role": "user", "content": "think"]],
+            "output_config": ["effort": "max"]
+        ]
+
+        let chat = try AnthropicChatBridge.chatRequest(from: request)
+
+        #expect(chat["reasoning_effort"] as? String == "xhigh")
     }
 
     @Test
@@ -313,6 +423,43 @@ struct AnthropicChatBridgeTests {
     }
 
     @Test
+    func streamsReasoningDetailsSignatureAndSynthesizesMissingToolCallID() throws {
+        var state = AnthropicChatStreamState()
+        var events: [AnthropicChatStreamEvent] = []
+
+        events += try state.events(
+            forOpenAIChatStreamData: #"{"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{"reasoning_details":[{"text":"Need a lookup.","signature":"sig_1"}]} ,"finish_reason":null}]}"#,
+            fallbackModel: "fallback"
+        )
+        events += try state.events(
+            forOpenAIChatStreamData: #"{"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"search","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
+            fallbackModel: "fallback"
+        )
+        events += try state.events(forOpenAIChatStreamData: "[DONE]", fallbackModel: "fallback")
+
+        let deltas = try events.filter { $0.event == "content_block_delta" }.map(eventData)
+        let thinkingDelta = try #require(deltas.first { data in
+            ((data["delta"] as? [String: Any])?["type"] as? String) == "thinking_delta"
+        })
+        #expect((thinkingDelta["delta"] as? [String: Any])?["thinking"] as? String == "Need a lookup.")
+
+        let signatureDelta = try #require(deltas.first { data in
+            ((data["delta"] as? [String: Any])?["type"] as? String) == "signature_delta"
+        })
+        #expect((signatureDelta["delta"] as? [String: Any])?["signature"] as? String == "sig_1")
+
+        let toolStart = try #require(events.first { event in
+            guard event.event == "content_block_start",
+                  let block = try? eventData(event)["content_block"] as? [String: Any] else {
+                return false
+            }
+            return block["type"] as? String == "tool_use"
+        })
+        let block = try #require(eventData(toolStart)["content_block"] as? [String: Any])
+        #expect(block["id"] as? String == "call_0")
+    }
+
+    @Test
     func stopsMultipleToolStreamBlocksInContentIndexOrder() throws {
         var state = AnthropicChatStreamState()
         var events: [AnthropicChatStreamEvent] = []
@@ -337,6 +484,43 @@ struct AnthropicChatBridgeTests {
 
         #expect(startIndices == [0, 1])
         #expect(stopIndices == [0, 1])
+    }
+
+    @Test
+    func streamTerminalStateRequiresDoneOrFinishReason() throws {
+        var state = AnthropicChatStreamState()
+        _ = try state.events(
+            forOpenAIChatStreamData: #"{"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}"#,
+            fallbackModel: "fallback"
+        )
+
+        #expect(state.hasTerminalChunk == false)
+
+        _ = try state.events(
+            forOpenAIChatStreamData: #"{"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            fallbackModel: "fallback"
+        )
+
+        #expect(state.hasTerminalChunk == true)
+    }
+
+    @Test
+    func convertsOpenAIStreamErrorToAnthropicErrorEvent() throws {
+        var state = AnthropicChatStreamState()
+
+        let events = try state.events(
+            forOpenAIChatStreamData: #"{"error":{"type":"invalid_request_error","message":"bad request"}}"#,
+            fallbackModel: "fallback"
+        )
+
+        #expect(events.map(\.event) == ["error"])
+        let data = try eventData(events[0])
+        #expect(data["type"] as? String == "error")
+        let error = try #require(data["error"] as? [String: Any])
+        #expect(error["type"] as? String == "invalid_request_error")
+        #expect(error["message"] as? String == "bad request")
+        #expect(state.hasTerminalChunk == true)
+        #expect(state.finishEvents().isEmpty)
     }
 
     private func eventData(_ event: AnthropicChatStreamEvent) throws -> [String: Any] {
