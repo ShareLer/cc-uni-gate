@@ -179,6 +179,18 @@ struct ProductizationStoreTests {
     }
 
     @Test
+    func logFieldFormatterQuotesValuesForStableParsing() {
+        let text = LogFieldFormatter.format([
+            LogField("event", "proxy"),
+            LogField("requestId", "abc123"),
+            LogField("error", "The request \"timed out\"."),
+            LogField("empty", nil as String?)
+        ])
+
+        #expect(text == #"event=proxy requestId=abc123 error="The request \"timed out\"." empty=-"#)
+    }
+
+    @Test
     func diagnosticsReportIncludesBidirectionalNetworkPolicyDiagnostic() {
         let providerRef = ProviderRef(appType: "claude", id: "provider")
         let text = DiagnosticsReportGenerator.text(DiagnosticsReportInput(

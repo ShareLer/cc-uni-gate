@@ -247,12 +247,12 @@ final class LocalProxyServer: @unchecked Sendable {
         var requestAppType: String?
         var providerFailureAppType: String?
         var providerFailureContext: String?
-        var resolvedContext: String?
+        var resolvedLogFields: [LogField]?
         var metricKey: RequestMetricKey?
         var statusCode: Int?
         var responseHeadersSent = false
-        var networkPolicyLog = "networkPolicy=-"
         var networkPolicyMode: NetworkPolicyMode?
+        var networkPolicyLogFields: [LogField] = [LogField("net", "-")]
         var transportErrorContext: UpstreamTransportErrorContext?
         do {
             let snapshot = await MainActor.run { runtime.proxySnapshot() }
@@ -264,7 +264,14 @@ final class LocalProxyServer: @unchecked Sendable {
             await recordProxyLog(
                 requestID: requestID,
                 phase: "received",
-                message: "path=\(request.path) app=\(route.appType) inboundModel=\(Self.requestedModel(in: request.body) ?? "<missing>") bodyBytes=\(request.body.count) stream=\(Self.requestWantsStream(request.body))"
+                fields: [
+                    LogField("app", ProviderDisplay.appTypeLabel(route.appType)),
+                    LogField("path", request.path),
+                    LogField("clientProtocol", route.protocolKind.rawValue),
+                    LogField("inboundModel", Self.requestedModel(in: request.body) ?? "<missing>"),
+                    LogField("bodyBytes", request.body.count),
+                    LogField("stream", Self.requestWantsStream(request.body))
+                ]
             )
             let resolved = try ProxyResolver.resolveRoute(
                 catalog: snapshot.catalog,
@@ -276,7 +283,7 @@ final class LocalProxyServer: @unchecked Sendable {
             )
             providerFailureAppType = resolved.candidate.appType
             providerFailureContext = resolved.providerName
-            resolvedContext = Self.resolvedContext(for: resolved)
+            resolvedLogFields = Self.resolvedLogFields(for: resolved)
             metricKey = Self.metricKey(for: resolved)
             let networkPolicy = NetworkPolicyResolver.effectiveMode(
                 preferences: snapshot.networkPolicy,
@@ -285,14 +292,18 @@ final class LocalProxyServer: @unchecked Sendable {
             )
             networkPolicyMode = networkPolicy
             transportErrorContext = Self.upstreamTransportErrorContext(for: resolved)
-            networkPolicyLog = "networkPolicy=\(networkPolicy.rawValue)"
+            networkPolicyLogFields = [LogField("net", networkPolicy.rawValue)]
             await MainActor.run {
                 runtime.recordForwardedRequest(appType: route.appType)
             }
             await recordProxyLog(
                 requestID: requestID,
                 phase: "resolved",
-                message: "\(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
+                    LogField("api", resolved.candidate.apiFormat.rawValue),
+                    LogField("transform", resolved.responseTransform.rawValue),
+                    LogField("url", resolved.upstreamURL.absoluteString)
+                ]
             )
             if resolved.responseTransform == .openAIChatToAnthropicMessages,
                Self.isAnthropicCountTokensPath(request.path) {
@@ -310,7 +321,10 @@ final class LocalProxyServer: @unchecked Sendable {
                 await recordProxyLog(
                     requestID: requestID,
                     phase: "token-count-estimate",
-                    message: "durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) \(Self.resolvedContext(for: resolved))"
+                    fields: Self.resolvedLogFields(for: resolved) + [
+                        LogField("status", 200),
+                        LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt)))
+                    ]
                 )
                 return
             }
@@ -331,7 +345,10 @@ final class LocalProxyServer: @unchecked Sendable {
             await recordProxyLog(
                 requestID: requestID,
                 phase: "upstream-start",
-                message: "method=POST timeoutSeconds=\(Int(Self.upstreamRequestTimeout)) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
+                    LogField("method", "POST"),
+                    LogField("timeoutSeconds", Int(Self.upstreamRequestTimeout))
+                ]
             )
             let upstreamStartedAt = Date()
             let upstreamSession = NetworkPolicySession.makeSession(for: networkPolicy)
@@ -344,7 +361,11 @@ final class LocalProxyServer: @unchecked Sendable {
             await recordProxyLog(
                 requestID: requestID,
                 phase: "upstream-headers",
-                message: "status=\(status) providerFailure=\(providerFailure) contentType=\(Self.headerValue(headers, name: "content-type") ?? "-") \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
+                    LogField("status", status),
+                    LogField("providerFailure", providerFailure),
+                    LogField("contentType", Self.headerValue(headers, name: "content-type"))
+                ]
             )
             await MainActor.run {
                 if providerFailure {
@@ -395,7 +416,15 @@ final class LocalProxyServer: @unchecked Sendable {
                     level: transformedStreamFailure == nil ? .info : .error,
                     requestID: requestID,
                     phase: "transform-stream-complete",
-                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) sseFailed=\(transformedStreamFailure != nil) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                    fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
+                        LogField("status", status),
+                        LogField("outcome", transformedStreamFailure == nil ? "ok" : "sse_error"),
+                        LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt))),
+                        LogField("firstByteMs", stats.firstByteLatencyMilliseconds),
+                        LogField("bytes", stats.bytesForwarded),
+                        LogField("chunks", stats.chunksForwarded),
+                        LogField("error", transformedStreamFailure)
+                    ]
                 )
                 connection.cancel()
                 return
@@ -424,7 +453,11 @@ final class LocalProxyServer: @unchecked Sendable {
                     level: providerFailure ? .error : .info,
                     requestID: requestID,
                     phase: "transform-complete",
-                    message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                    fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
+                        LogField("status", status),
+                        LogField("outcome", providerFailure ? "provider_failure" : "ok"),
+                        LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt)))
+                    ]
                 )
                 return
             }
@@ -443,7 +476,8 @@ final class LocalProxyServer: @unchecked Sendable {
                 to: connection,
                 requestID: requestID,
                 upstreamStartedAt: upstreamStartedAt,
-                networkPolicyLog: networkPolicyLog
+                contextFields: Self.resolvedLogFields(for: resolved),
+                networkPolicyLogFields: networkPolicyLogFields
             )
             let sseFailure = stats.sseFailureDetail
                 ?? (stats.sawSSEFailure ? "response.failed event received without data" : nil)
@@ -469,18 +503,34 @@ final class LocalProxyServer: @unchecked Sendable {
                 level: completedProviderFailure ? .error : .info,
                 requestID: requestID,
                 phase: "stream-complete",
-                message: "status=\(status) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) lines=\(stats.linesObserved) sseFailed=\(sseFailure != nil) sseFailureSinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(networkPolicyLog) \(Self.resolvedContext(for: resolved))"
+                fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
+                    LogField("status", status),
+                    LogField("outcome", completedProviderFailure ? "provider_failure" : "ok"),
+                    LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt))),
+                    LogField("firstByteMs", stats.firstByteLatencyMilliseconds),
+                    LogField("bytes", stats.bytesForwarded),
+                    LogField("chunks", stats.chunksForwarded),
+                    LogField("lines", stats.linesObserved),
+                    LogField("sseFailed", sseFailure != nil),
+                    LogField("sseFailureMs", stats.sseFailureSinceLastChunkMilliseconds),
+                    LogField("error", sseFailure)
+                ]
             )
             connection.cancel()
         } catch let error as ProxyResolverError {
             let model = Self.requestedModel(in: request.body) ?? "<missing>"
+            let fields = [
+                LogField("path", request.path),
+                LogField("model", model),
+                LogField("error", error.localizedDescription)
+            ]
             await MainActor.run {
                 runtime.recordProxyEvent(
                     level: .error,
                     message: Self.issueMessage(
                         appType: requestAppType,
                         group: "代理异常",
-                        detail: "requestId=\(requestID) phase=resolve-error path=\(request.path) model=\(model) failed: \(error.localizedDescription)"
+                        detail: Self.proxyLogMessage(requestID: requestID, phase: "resolve-error", fields: fields)
                     )
                 )
                 if let metricKey {
@@ -514,7 +564,16 @@ final class LocalProxyServer: @unchecked Sendable {
                 await recordProxyLog(
                     requestID: requestID,
                     phase: "downstream-disconnected",
-                    message: "status=\(statusCode.map(String.init) ?? "-") durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(sendError)) error=\(Self.logSafeError(sendError)) \(networkPolicyLog) \(resolvedContext ?? "unresolved")"
+                    fields: (resolvedLogFields ?? Self.unresolvedLogFields()) + networkPolicyLogFields + [
+                        LogField("status", statusCode),
+                        LogField("outcome", "client_disconnected"),
+                        LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt))),
+                        LogField("firstByteMs", stats.firstByteLatencyMilliseconds),
+                        LogField("bytes", stats.bytesForwarded),
+                        LogField("chunks", stats.chunksForwarded),
+                        LogField("errorKind", Self.transportErrorKind(sendError)),
+                        LogField("error", Self.logSafeError(sendError))
+                    ]
                 )
                 connection.cancel()
             case let .upstream(streamError, stats):
@@ -540,7 +599,18 @@ final class LocalProxyServer: @unchecked Sendable {
                     level: .error,
                     requestID: requestID,
                     phase: "upstream-stream-error",
-                    message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.upstreamErrorSinceLastChunkMilliseconds)) bytes=\(stats.bytesForwarded) chunks=\(stats.chunksForwarded) errorKind=\(Self.transportErrorKind(streamError)) error=\(Self.logSafeError(streamError)) \(networkPolicyLog) \(resolvedContext ?? "unresolved")"
+                    fields: (resolvedLogFields ?? Self.unresolvedLogFields()) + networkPolicyLogFields + [
+                        LogField("status", statusCode),
+                        LogField("metricStatus", metricStatus),
+                        LogField("outcome", "upstream_stream_error"),
+                        LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt))),
+                        LogField("firstByteMs", stats.firstByteLatencyMilliseconds),
+                        LogField("sinceLastChunkMs", stats.upstreamErrorSinceLastChunkMilliseconds),
+                        LogField("bytes", stats.bytesForwarded),
+                        LogField("chunks", stats.chunksForwarded),
+                        LogField("errorKind", Self.transportErrorKind(streamError)),
+                        LogField("error", Self.logSafeError(streamError))
+                    ]
                 )
                 connection.cancel()
             }
@@ -559,7 +629,16 @@ final class LocalProxyServer: @unchecked Sendable {
                         message: Self.issueMessage(
                             appType: requestAppType,
                             group: "代理异常",
-                            detail: "requestId=\(requestID) phase=proxy-error path=\(request.path) \(networkPolicyLog) \(resolvedContext ?? "unresolved") errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error))"
+                            detail: Self.proxyLogMessage(
+                                requestID: requestID,
+                                phase: "proxy-error",
+                                fields: [
+                                    LogField("path", request.path)
+                                ] + networkPolicyLogFields + (resolvedLogFields ?? Self.unresolvedLogFields()) + [
+                                    LogField("errorKind", Self.transportErrorKind(error)),
+                                    LogField("error", Self.logSafeError(error))
+                                ]
+                            )
                         )
                     )
                 }
@@ -577,7 +656,15 @@ final class LocalProxyServer: @unchecked Sendable {
                 level: .error,
                 requestID: requestID,
                 phase: "upstream-request-error",
-                message: "status=\(statusCode.map(String.init) ?? "-") metricStatus=\(metricStatus) headersSent=\(responseHeadersSent) durationMs=\(Int(Self.elapsedMilliseconds(since: startedAt))) errorKind=\(Self.transportErrorKind(error)) error=\(Self.logSafeError(error)) \(networkPolicyLog) \(resolvedContext ?? "unresolved")"
+                fields: (resolvedLogFields ?? Self.unresolvedLogFields()) + networkPolicyLogFields + [
+                    LogField("status", statusCode),
+                    LogField("metricStatus", metricStatus),
+                    LogField("outcome", "upstream_request_error"),
+                    LogField("headersSent", responseHeadersSent),
+                    LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt))),
+                    LogField("errorKind", Self.transportErrorKind(error)),
+                    LogField("error", Self.logSafeError(error))
+                ]
             )
             if responseHeadersSent {
                 connection.cancel()
@@ -600,7 +687,8 @@ final class LocalProxyServer: @unchecked Sendable {
         to connection: NWConnection,
         requestID: String,
         upstreamStartedAt: Date,
-        networkPolicyLog: String
+        contextFields: [LogField],
+        networkPolicyLogFields: [LogField]
     ) async throws -> ProxyStreamStats {
         var stats = ProxyStreamStats()
         var buffer = Data()
@@ -625,7 +713,11 @@ final class LocalProxyServer: @unchecked Sendable {
                         level: .error,
                         requestID: requestID,
                         phase: "sse-response-failed",
-                        message: "firstByteMs=\(Self.optionalMilliseconds(stats.firstByteLatencyMilliseconds)) sinceLastChunkMs=\(Self.optionalMilliseconds(stats.sseFailureSinceLastChunkMilliseconds)) \(networkPolicyLog) \(failureDetail)"
+                        fields: contextFields + networkPolicyLogFields + [
+                            LogField("firstByteMs", stats.firstByteLatencyMilliseconds),
+                            LogField("sinceLastChunkMs", stats.sseFailureSinceLastChunkMilliseconds),
+                            LogField("error", failureDetail)
+                        ]
                     )
                 }
                 if buffer.count >= 8_192 || byte == 10 {
@@ -789,14 +881,22 @@ final class LocalProxyServer: @unchecked Sendable {
         level: ProxyEvent.Level = .info,
         requestID: String,
         phase: String,
-        message: String
+        fields: [LogField]
     ) async {
         await MainActor.run {
             runtime.recordProxyEvent(
                 level: level,
-                message: "requestId=\(requestID) phase=\(phase) \(message)"
+                message: Self.proxyLogMessage(requestID: requestID, phase: phase, fields: fields)
             )
         }
+    }
+
+    private static func proxyLogMessage(requestID: String, phase: String, fields: [LogField]) -> String {
+        LogFieldFormatter.format([
+            LogField("event", "proxy"),
+            LogField("requestId", requestID),
+            LogField("phase", phase)
+        ] + fields)
     }
 
     private static func makeRequestID() -> String {
@@ -814,16 +914,22 @@ final class LocalProxyServer: @unchecked Sendable {
         return stream
     }
 
-    private static func resolvedContext(for resolved: ResolvedRoute) -> String {
+    private static func resolvedLogFields(for resolved: ResolvedRoute) -> [LogField] {
         [
-            "model=\(resolved.requestedModel)",
-            "routeKey=\(resolved.routeKey.description)",
-            "provider=\(resolved.providerName)",
-            "providerRef=\(resolved.candidate.providerRef.description)",
-            "upstreamProviderRef=\(resolved.candidate.upstreamProviderRef.description)",
-            "upstreamModel=\(resolved.outboundModel)",
-            "url=\(resolved.upstreamURL.absoluteString)"
-        ].joined(separator: " ")
+            LogField("route", resolved.routeKey.description),
+            LogField("model", resolved.requestedModel),
+            LogField("provider", resolved.providerName),
+            LogField("upstreamModel", resolved.outboundModel)
+        ]
+    }
+
+    private static func unresolvedLogFields() -> [LogField] {
+        [
+            LogField("route", "unresolved"),
+            LogField("model", "unresolved"),
+            LogField("provider", "unresolved"),
+            LogField("upstreamModel", "unresolved")
+        ]
     }
 
     private static func upstreamTransportErrorContext(for resolved: ResolvedRoute) -> UpstreamTransportErrorContext {
