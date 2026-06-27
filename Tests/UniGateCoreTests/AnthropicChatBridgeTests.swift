@@ -323,18 +323,17 @@ struct AnthropicChatBridgeTests {
             ]]
         ]
 
-        let fullChat = try AnthropicChatBridge.chatRequest(from: request)
-        let fullCount = try #require(
-            AnthropicChatBridge.countTokensBody(fromOpenAIChatRequest: fullChat)["input_tokens"] as? Int
+        // Fixed-count assertion: the translation must carry the image data URL and
+        // the tool schema through to the OpenAI Chat payload, so the estimated
+        // token count is a deterministic function of those bytes. Asserting a
+        // concrete value (rather than `fullCount > textOnlyCount`, which holds for
+        // any byte-counting algorithm) catches a regression that silently drops the
+        // image or schema during conversion.
+        let chat = try AnthropicChatBridge.chatRequest(from: request)
+        let count = try #require(
+            AnthropicChatBridge.countTokensBody(fromOpenAIChatRequest: chat)["input_tokens"] as? Int
         )
-        let textOnlyCount = try #require(
-            AnthropicChatBridge.countTokensBody(fromOpenAIChatRequest: [
-                "model": "luban-glm",
-                "messages": [["role": "user", "content": "Describe this"]]
-            ])["input_tokens"] as? Int
-        )
-
-        #expect(fullCount > textOnlyCount)
+        #expect(count == 96)
     }
 
     @Test

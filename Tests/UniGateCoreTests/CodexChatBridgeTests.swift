@@ -41,4 +41,25 @@ struct CodexChatBridgeTests {
             _ = try CodexChatBridge.chatRequest(from: request)
         }
     }
+
+    @Test
+    func rejectsToolFieldsInsteadOfDroppingThem() {
+        // The OpenAI Chat bridge cannot map Codex tool definitions to the upstream
+        // Responses API, so tool-bearing requests must fail loudly rather than be
+        // forwarded without tools (which would silently degrade the client's tool
+        // loop). Each tool-related key is rejected on its own.
+        let baseInput: [[String: Any]] = [["role": "user", "content": "hello"]]
+
+        for key in ["tools", "tool_choice", "parallel_tool_calls"] {
+            let request: [String: Any] = [
+                "model": "gpt-5.5",
+                "input": baseInput,
+                key: key == "parallel_tool_calls" ? false as Any : [[ "type": "function" ]]
+            ]
+
+            #expect(throws: CodexChatBridgeError.unsupportedInputItem(key)) {
+                _ = try CodexChatBridge.chatRequest(from: request)
+            }
+        }
+    }
 }

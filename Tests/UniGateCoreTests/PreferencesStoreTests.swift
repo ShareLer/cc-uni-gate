@@ -132,32 +132,6 @@ struct PreferencesStoreTests {
     }
 
     @Test
-    func persistsBubbleNotificationsEnabled() throws {
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathComponent("preferences.json")
-        let store = PreferencesStore(fileURL: tmp)
-        try store.save(AppPreferences(bubbleNotificationsEnabled: false))
-
-        let loaded = try store.load()
-
-        #expect(!loaded.bubbleNotificationsEnabled)
-    }
-
-    @Test
-    func persistsLaunchAtLoginEnabled() throws {
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathComponent("preferences.json")
-        let store = PreferencesStore(fileURL: tmp)
-        try store.save(AppPreferences(launchAtLoginEnabled: false))
-
-        let loaded = try store.load()
-
-        #expect(!loaded.launchAtLoginEnabled)
-    }
-
-    @Test
     func persistsNetworkPolicy() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

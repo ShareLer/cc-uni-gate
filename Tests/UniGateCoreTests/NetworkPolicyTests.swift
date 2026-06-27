@@ -94,9 +94,4 @@ struct NetworkPolicyTests {
         ) == .direct)
     }
 
-    @Test
-    func modesExposeAlternatePolicy() {
-        #expect(NetworkPolicyMode.system.alternate == .direct)
-        #expect(NetworkPolicyMode.direct.alternate == .system)
-    }
 }

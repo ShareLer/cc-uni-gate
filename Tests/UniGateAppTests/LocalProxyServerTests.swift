@@ -70,25 +70,102 @@ struct LocalProxyServerTests {
           ]
         }
         """
-        let rawResponse = try await Task.detached {
-            try Self.rawHTTPResponse(
-                port: proxyPort,
-                request: """
-                POST /v1/messages HTTP/1.1\r
-                Host: 127.0.0.1:\(proxyPort)\r
-                Content-Type: application/json\r
-                Accept: text/event-stream\r
-                Content-Length: \(Data(requestBody.utf8).count)\r
-                \r
-                \(requestBody)
-                """
-            )
-        }.value
+        let rawResponse = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /v1/messages HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Content-Type: application/json\r
+            Accept: text/event-stream\r
+            Content-Length: \(Data(requestBody.utf8).count)\r
+            \r
+            \(requestBody)
+            """
+        )
 
         #expect(rawResponse.contains("HTTP/1.1 200 OK"))
         #expect(runtime.failures.contains { $0.contains("SSE error") }, "\(runtime.events)")
         #expect(rawResponse.contains("event: error"), "\(rawResponse)\n\(runtime.events)")
         #expect(rawResponse.contains("Upstream OpenAI Chat stream chunk must be a JSON object"), "\(rawResponse)\n\(runtime.events)")
+    }
+
+    @Test
+    @MainActor
+    func managerWriteEndpointsRequireBearerToken() async throws {
+        // Management write endpoints (/__manager/reload, /__manager/routes) must be
+        // gated by the configured Bearer token: a missing or wrong token yields 401,
+        // and the correct token passes through to the handler. A server with no token
+        // configured rejects all writes with 403. The token is injected explicitly so
+        // the test does not depend on the UNIGATE_MANAGER_TOKEN environment variable.
+        let token = "test-manager-token"
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(routes: [:]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime, managerToken: token)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let reloadPath = "POST /__manager/reload HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\nContent-Length: 0\r\n"
+        let missingToken = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: reloadPath + "Authorization: \r\n\r\n"
+        )
+        #expect(missingToken.contains("HTTP/1.1 401"))
+
+        let wrongToken = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: reloadPath + "Authorization: Bearer wrong-token\r\n\r\n"
+        )
+        #expect(wrongToken.contains("HTTP/1.1 401"))
+
+        let correctToken = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: reloadPath + "Authorization: Bearer \(token)\r\n\r\n"
+        )
+        #expect(correctToken.contains("HTTP/1.1 200"))
+    }
+
+    @Test
+    @MainActor
+    func managerWriteEndpointsRejectWhenTokenUnconfigured() async throws {
+        // With no token configured, every management write must be rejected (403) so a
+        // fresh install is secure-by-default. We unset UNIGATE_MANAGER_TOKEN for the
+        // duration of the test so configuredManagerToken() deterministically returns nil
+        // regardless of the host environment.
+        let previousToken = ProcessInfo.processInfo.environment["UNIGATE_MANAGER_TOKEN"]
+        setenv("UNIGATE_MANAGER_TOKEN", "", 1)
+        defer {
+            if let previousToken {
+                setenv("UNIGATE_MANAGER_TOKEN", previousToken, 1)
+            } else {
+                unsetenv("UNIGATE_MANAGER_TOKEN")
+            }
+        }
+
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(routes: [:]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime, managerToken: nil)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: "POST /__manager/reload HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\nContent-Length: 0\r\n\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 403"))
+        #expect(response.contains("Manager token is not configured"))
     }
 
     private static func availablePort() throws -> UInt16 {
@@ -126,6 +203,15 @@ struct LocalProxyServerTests {
         return UInt16(bigEndian: bound.sin_port)
     }
 
+    private static func rawHTTPResponseFromBackgroundTask(port: UInt16, request: String) async throws -> String {
+        // Keep blocking socket I/O off the MainActor. Some proxy handlers hop to
+        // MainActor before responding, and a synchronous read there would starve
+        // that hop until SO_RCVTIMEO fires.
+        try await Task.detached {
+            try Self.rawHTTPResponse(port: port, request: request)
+        }.value
+    }
+
     private static func rawHTTPResponse(port: UInt16, request: String) throws -> String {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
@@ -147,6 +233,12 @@ struct LocalProxyServerTests {
         guard connectResult == 0 else {
             throw TestError("connect failed")
         }
+
+        // Guard against a malformed request or an unresponsive server hanging the
+        // whole test run: bound the read so a request that never yields a response
+        // fails fast instead of blocking forever.
+        var readTimeout = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &readTimeout, socklen_t(MemoryLayout<timeval>.size))
 
         let requestData = Array(request.utf8)
         try requestData.withUnsafeBytes { buffer in
@@ -172,7 +264,11 @@ struct LocalProxyServerTests {
             } else if count == 0 {
                 break
             } else {
-                throw TestError("read failed")
+                // errno EAGAIN/EWOULDBLOCK from the SO_RCVTIMEO: return whatever was
+                // read so the caller can assert on a partial response (or an empty one
+                // when the server never replied) instead of throwing opaquely.
+                if !response.isEmpty { break }
+                throw TestError("read failed (no response within timeout)")
             }
         }
         return String(data: response, encoding: .utf8) ?? ""

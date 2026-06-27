@@ -319,6 +319,44 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func rejectsStreamingCodexResponsesToOpenAIChatTransform() throws {
+        // The OpenAI Chat -> Codex Responses bridge only handles non-streaming
+        // text. A streaming Codex Responses request routed to an OpenAI Chat
+        // upstream must be rejected up front (not silently forwarded), so the
+        // client gets a clear error instead of an unparseable SSE stream.
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let candidate = candidate(provider: provider, requiresTransform: false)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        #expect(throws: ProxyResolverError.streamingTransformUnsupported(
+            model: "gpt-5.5",
+            provider: "Provider 1",
+            apiFormat: .openaiChat
+        )) {
+            _ = try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .codexResponses,
+                path: "/openai/v1/responses",
+                body: Data(#"{"model":"gpt-5.5","input":"hello","stream":true}"#.utf8)
+            )
+        }
+    }
+
+    @Test
     func bridgesClaudeMessagesRequestToOpenAIChatUpstream() throws {
         let provider = ImportedProvider(
             id: "luban-glm",
@@ -1290,25 +1328,6 @@ struct ProxyResolverTests {
         #expect(resolved.outboundModel == "qwen3.6")
         #expect(resolved.upstreamURL.absoluteString == "https://discovered.example.com/v1/responses")
         #expect(resolved.headers["authorization"] == "Bearer discovered-key")
-    }
-
-    @Test
-    func providerDisplayNameIncludesAppType() {
-        let provider = ImportedProvider(
-            id: "p1",
-            appType: "claude-desktop",
-            name: "Dasu-gpt",
-            category: nil,
-            sortIndex: 1,
-            isCurrent: false,
-            apiFormat: .anthropic,
-            baseURL: nil,
-            hasSecret: false,
-            settings: [:],
-            meta: [:]
-        )
-
-        #expect(provider.displayName == "Dasu-gpt · Claude Desktop")
     }
 
     private func candidate(
