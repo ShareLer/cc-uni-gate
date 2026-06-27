@@ -265,21 +265,6 @@ final class UniGateAppState: ObservableObject {
         }
     }
 
-    func providerTitle(_ candidate: ModelCandidate) -> String {
-        var parts = [candidate.providerName]
-        let displayUpstreamModel = candidate.upstreamModelDisplayName
-        let displayLogicalModel = ModelCandidate.stripOneMSuffix(candidate.logicalModel)
-        if displayUpstreamModel != displayLogicalModel {
-            parts.append(displayUpstreamModel)
-        }
-        if candidate.requiresTransform {
-            parts.append("需要转换")
-        } else {
-            parts.append(candidate.apiFormat.rawValue)
-        }
-        return parts.joined(separator: " · ")
-    }
-
     func modelTitleText(for routeGroup: ModelRouteGroup) -> String {
         let routeKey = routeGroup.routeKey
         guard customModelAvailability(for: routeKey) == nil else {
@@ -569,15 +554,6 @@ final class UniGateAppState: ObservableObject {
                 result: results[provider.ref.description]
             )
         }
-    }
-
-    var currentDiscoveryResults: [ProviderModelDiscoveryResult] {
-        guard let appType = currentAppType else {
-            return discoveryState.results.values.sorted {
-                $0.providerName.localizedStandardCompare($1.providerName) == .orderedAscending
-            }
-        }
-        return discoveryState.results(appType: appType)
     }
 
     func showToast(_ message: String) {

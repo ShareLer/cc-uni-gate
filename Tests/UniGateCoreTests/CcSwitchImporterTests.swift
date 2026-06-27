@@ -471,6 +471,46 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func importsNumericClaudeDesktopSupports1mFlag() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "desktop",
+                appType: "claude-desktop",
+                name: "DeepSeek Desktop",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "https://api.deepseek.example",
+                    "ANTHROPIC_AUTH_TOKEN": "key-1"
+                  }
+                }
+                """,
+                meta: """
+                {
+                  "apiFormat": "anthropic",
+                  "claudeDesktopMode": "proxy",
+                  "claudeDesktopModelRoutes": {
+                    "claude-sonnet-4-6": {
+                      "model": "deepseek-v4-pro",
+                      "supports1m": 1
+                    }
+                  }
+                }
+                """
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let candidate = try #require(catalog.candidates.first)
+
+        #expect(candidate.upstreamModel == "deepseek-v4-pro")
+        #expect(candidate.supportsLongContext)
+    }
+
+    @Test
     func ignoresClaudeDesktopEnvModelsWithoutRoutes() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)

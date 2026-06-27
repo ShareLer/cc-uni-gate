@@ -113,10 +113,14 @@ public enum ProviderModelDiscoveryFingerprint {
     }
 
     private static func bool(_ object: [String: SendableValue], _ path: [String]) -> Bool? {
-        guard case let .bool(value)? = JSONValueParser.value(object, path) else {
+        switch JSONValueParser.value(object, path) {
+        case let .bool(value):
+            return value
+        case let .number(value):
+            return value != 0
+        default:
             return nil
         }
-        return value
     }
 
     private static func shortHash(_ value: String) -> String {

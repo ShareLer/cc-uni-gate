@@ -51,8 +51,6 @@ enum JSONValueParser {
                 return .bool(value.boolValue)
             }
             return .number(value.doubleValue)
-        case let value as Bool:
-            return .bool(value)
         case let value as [Any]:
             return .array(value.compactMap(convert))
         case let value as [String: Any]:

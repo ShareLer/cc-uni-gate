@@ -138,6 +138,33 @@ struct ProductizationStoreTests {
     }
 
     @Test
+    func providerModelDiscoveryFingerprintTreatsNumericIsFullUrlAsBoolean() {
+        let boolProvider = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.example.com/v1/chat/completions",
+            apiKey: "key-one",
+            meta: ["isFullUrl": .bool(true)]
+        )
+        let numericProvider = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.example.com/v1/chat/completions",
+            apiKey: "key-one",
+            meta: ["isFullUrl": .number(1)]
+        )
+        let falseProvider = discoveryProvider(
+            id: "provider",
+            baseURL: "https://api.example.com/v1/chat/completions",
+            apiKey: "key-one",
+            meta: ["isFullUrl": .number(0)]
+        )
+
+        let fingerprint = ProviderModelDiscoveryFingerprint.value(for: boolProvider)
+
+        #expect(fingerprint == ProviderModelDiscoveryFingerprint.value(for: numericProvider))
+        #expect(fingerprint != ProviderModelDiscoveryFingerprint.value(for: falseProvider))
+    }
+
+    @Test
     func configurationBackupRoundTrips() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

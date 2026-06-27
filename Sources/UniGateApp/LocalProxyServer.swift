@@ -791,21 +791,6 @@ final class LocalProxyServer: @unchecked Sendable {
             }
         } catch let error as ProxyTransferError {
             throw error
-        } catch let error as AnthropicChatBridgeError {
-            stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
-            let event = Self.anthropicStreamBridgeErrorEvent(error)
-            stats.sawSSEFailure = true
-            stats.sseFailureDetail = Self.anthropicStreamErrorDetail(event)
-            let payload = try event.sseData()
-            do {
-                try await send(payload, on: connection)
-            } catch {
-                throw ProxyTransferError.downstream(error, stats: stats)
-            }
-            stats.bytesForwarded += payload.count
-            stats.chunksForwarded += 1
-            stats.lastChunkForwardedAt = Date()
-            return stats
         } catch {
             stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
             throw ProxyTransferError.upstream(error, stats: stats)
@@ -917,6 +902,21 @@ final class LocalProxyServer: @unchecked Sendable {
             }
         } catch let error as ProxyTransferError {
             throw error
+        } catch let error as AnthropicChatBridgeError {
+            stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
+            let event = Self.anthropicStreamBridgeErrorEvent(error)
+            stats.sawSSEFailure = true
+            stats.sseFailureDetail = Self.anthropicStreamErrorDetail(event)
+            let payload = try event.sseData()
+            do {
+                try await send(payload, on: connection)
+            } catch {
+                throw ProxyTransferError.downstream(error, stats: stats)
+            }
+            stats.bytesForwarded += payload.count
+            stats.chunksForwarded += 1
+            stats.lastChunkForwardedAt = Date()
+            return stats
         } catch {
             stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
             throw ProxyTransferError.upstream(error, stats: stats)
@@ -943,10 +943,6 @@ final class LocalProxyServer: @unchecked Sendable {
             return nil
         }
         return Int(max(endedAt.timeIntervalSince(startedAt) * 1000, 0))
-    }
-
-    private static func optionalMilliseconds(_ value: Int?) -> String {
-        value.map(String.init) ?? "-"
     }
 
     private func recordProxyLog(

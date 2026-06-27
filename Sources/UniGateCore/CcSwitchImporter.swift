@@ -407,10 +407,6 @@ public struct CcSwitchImporter: Sendable {
                 ?? JSONValueParser.string(settings, ["apiEndpoint"])
         }
 
-        if appType == "gemini" {
-            return JSONValueParser.string(settings, ["env", "GOOGLE_GEMINI_BASE_URL"])
-        }
-
         return JSONValueParser.string(settings, ["base_url"])
             ?? JSONValueParser.string(settings, ["baseURL"])
     }
@@ -424,10 +420,14 @@ public struct CcSwitchImporter: Sendable {
     }
 
     private func bool(_ value: SendableValue?) -> Bool? {
-        guard case let .bool(flag)? = value else {
+        switch value {
+        case let .bool(flag):
+            return flag
+        case let .number(number):
+            return number != 0
+        default:
             return nil
         }
-        return flag
     }
 
     private func longContextValue(_ value: SendableValue?) -> Bool? {

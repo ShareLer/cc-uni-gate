@@ -55,6 +55,27 @@ struct ProviderModelDiscoveryTests {
     }
 
     @Test
+    func modelFetchPlanTreatsNumericIsFullUrlAsTrue() throws {
+        let provider = ImportedProvider(
+            id: "codex",
+            appType: "codex",
+            name: "Codex Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://api.example.com/v1/chat/completions",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("codex-key")])],
+            meta: ["isFullUrl": .number(1)]
+        )
+
+        let plan = try #require(ProviderModelDiscovery.fetchPlan(for: provider))
+
+        #expect(plan.urls.map(\.absoluteString) == ["https://api.example.com/v1/models"])
+    }
+
+    @Test
     func parsesModelIDsFromOpenAICompatibleResponses() {
         let data = Data("""
         {

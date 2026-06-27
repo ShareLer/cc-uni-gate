@@ -33,6 +33,10 @@ let package = Package(
         .testTarget(
             name: "UniGateCoreTests",
             dependencies: ["UniGateCore"]
+        ),
+        .testTarget(
+            name: "UniGateAppTests",
+            dependencies: ["UniGateApp"]
         )
     ]
 )

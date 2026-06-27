@@ -583,6 +583,15 @@ struct AnthropicChatBridgeTests {
         #expect(state.finishEvents().isEmpty)
     }
 
+    @Test
+    func malformedOpenAIStreamChunkThrowsBridgeError() throws {
+        var state = AnthropicChatStreamState()
+
+        #expect(throws: AnthropicChatBridgeError.invalidChatStreamChunk) {
+            try state.events(forOpenAIChatStreamData: "{not json}", fallbackModel: "fallback")
+        }
+    }
+
     private func eventData(_ event: AnthropicChatStreamEvent) throws -> [String: Any] {
         let sse = try #require(String(data: try event.sseData(), encoding: .utf8))
         let dataLine = try #require(sse.split(separator: "\n").first { $0.hasPrefix("data: ") })

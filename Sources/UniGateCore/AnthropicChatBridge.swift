@@ -690,10 +690,16 @@ public struct AnthropicChatStreamState {
             sawDone = true
             return finishEvents()
         }
-        guard
-            let jsonData = trimmed.data(using: .utf8),
-            let value = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
-        else {
+        guard let jsonData = trimmed.data(using: .utf8) else {
+            throw AnthropicChatBridgeError.invalidChatStreamChunk
+        }
+        let parsedValue: Any
+        do {
+            parsedValue = try JSONSerialization.jsonObject(with: jsonData)
+        } catch {
+            throw AnthropicChatBridgeError.invalidChatStreamChunk
+        }
+        guard let value = parsedValue as? [String: Any] else {
             throw AnthropicChatBridgeError.invalidChatStreamChunk
         }
         return try events(forChunk: value, fallbackModel: fallbackModel)
