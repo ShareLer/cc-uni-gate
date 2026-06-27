@@ -491,24 +491,18 @@ struct UniGatePopoverRootView: View {
                         .lineLimit(1)
                     Text(discoveryProviderSummaryText(item))
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(item.isEnabled ? UGPopoverStyle.textSecondary : .orange)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
                         .lineLimit(1)
                 }
                 Spacer()
-                Toggle(isOn: discoveryEnabledBinding(for: provider.ref)) {
-                    Text("启用探测")
+                if let result {
+                    Text(shortDateTime(result.updatedAt))
+                        .font(.caption2)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
                 }
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .help(item.isEnabled ? "关闭该供应商的探测" : "开启该供应商的探测")
             }
 
-            if !item.isEnabled {
-                Text("已关闭探测，不参与自动刷新。")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(UGPopoverStyle.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let result {
+            if let result {
                 if let error = result.errorMessage {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(error)
@@ -548,9 +542,6 @@ struct UniGatePopoverRootView: View {
     }
 
     private func discoveryProviderSummaryText(_ item: ModelDiscoveryProviderItem) -> String {
-        guard item.isEnabled else {
-            return "已关闭探测"
-        }
         guard let result = item.result else {
             return "尚未探测"
         }
@@ -558,14 +549,6 @@ struct UniGatePopoverRootView: View {
             return "探测失败"
         }
         return "\(result.modelIDs.count) 个模型"
-    }
-
-    private func discoveryEnabledBinding(for providerRef: ProviderRef) -> Binding<Bool> {
-        Binding {
-            state.preferences.isModelDiscoveryEnabled(for: providerRef)
-        } set: { nextValue in
-            state.setModelDiscoveryEnabled(nextValue, for: providerRef)
-        }
     }
 
     private func shortDateTime(_ date: Date) -> String {
@@ -1221,6 +1204,14 @@ struct UniGatePopoverRootView: View {
             parts.append(candidate.upstreamModelDisplayName)
         }
         parts.append(candidate.requiresTransform ? "需要转换" : candidate.apiFormat.rawValue)
+        switch candidate.source {
+        case .discovered:
+            parts.append("探测到")
+        case .staleDiscovered:
+            parts.append("探测失效")
+        case .configured:
+            break
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -2017,6 +2008,8 @@ private struct InlineCustomModelEditorView: View {
     @State private var forceEnabled: Bool
     @State private var selectedTargetIDs: Set<String>
     @State private var currentTargetID: String
+    @State private var currentTargetIDByAppType: [String: String]
+    @State private var targetSearchText: String
 
     init(
         candidates: [ModelCandidate],
@@ -2070,6 +2063,10 @@ private struct InlineCustomModelEditorView: View {
         _forceEnabled = State(initialValue: existing?.forceEnabled ?? false)
         _selectedTargetIDs = State(initialValue: targetIDs)
         _currentTargetID = State(initialValue: initialTargetID)
+        _currentTargetIDByAppType = State(initialValue: existing.map {
+            [$0.appType: initialTargetID]
+        } ?? [:])
+        _targetSearchText = State(initialValue: "")
     }
 
     var body: some View {
@@ -2078,10 +2075,12 @@ private struct InlineCustomModelEditorView: View {
             formPanel
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onChange(of: appType) { _, _ in
+        .onChange(of: appType) { oldValue, newValue in
             withAnimation(.easeInOut(duration: 0.18)) {
-                selectedTargetIDs.removeAll()
-                currentTargetID = ""
+                currentTargetIDByAppType[oldValue] = currentTargetID
+                currentTargetID = currentTargetIDByAppType[newValue]
+                    ?? scopedSelectedCandidates.first.map(targetID)
+                    ?? ""
             }
         }
     }
@@ -2163,6 +2162,9 @@ private struct InlineCustomModelEditorView: View {
                     Spacer()
                 }
 
+                TextField("搜索模型 / 供应商 / 协议", text: $targetSearchText)
+                    .textFieldStyle(.roundedBorder)
+
                 targetList
             }
         }
@@ -2210,10 +2212,10 @@ private struct InlineCustomModelEditorView: View {
 
     private var targetList: some View {
         LazyVStack(spacing: 6) {
-            if filteredCandidates.isEmpty {
+            if visibleCandidates.isEmpty {
                 emptyTargetState
             } else {
-                ForEach(filteredCandidates) { candidate in
+                ForEach(visibleCandidates) { candidate in
                     targetRow(candidate)
                 }
             }
@@ -2226,9 +2228,11 @@ private struct InlineCustomModelEditorView: View {
             Image(systemName: "tray")
                 .font(.system(size: 22))
                 .foregroundStyle(UGPopoverStyle.textSecondary)
-            Text("没有可用目标")
+            Text(targetSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "没有可用目标" : "没有匹配的目标")
                 .font(.system(size: 12, weight: .medium))
-            Text("当前应用下没有可作为自定义模型目标的基础模型。")
+            Text(targetSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "当前应用下没有可作为自定义模型目标的基础模型。"
+                : "清空搜索条件后可查看全部候选。")
                 .font(.caption2)
                 .foregroundStyle(UGPopoverStyle.textSecondary)
                 .multilineTextAlignment(.center)
@@ -2310,17 +2314,45 @@ private struct InlineCustomModelEditorView: View {
     }
 
     private var filteredCandidates: [ModelCandidate] {
+        let scoped = scopedCandidates
+        let query = targetSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else {
+            return scoped
+        }
+        return scoped.filter { candidate in
+            [
+                candidate.displayModelName,
+                candidate.logicalModel,
+                candidate.upstreamModelDisplayName,
+                candidate.providerName,
+                candidate.apiFormat.rawValue
+            ]
+            .joined(separator: " ")
+            .lowercased()
+            .contains(query)
+        }
+    }
+
+    private var visibleCandidates: [ModelCandidate] {
+        filteredCandidates
+    }
+
+    private var scopedCandidates: [ModelCandidate] {
         candidates.filter { appType.isEmpty || $0.appType == appType }
     }
 
+    private var scopedSelectedCandidates: [ModelCandidate] {
+        scopedCandidates.filter { selectedTargetIDs.contains(targetID($0)) }
+    }
+
     private var selectedCandidates: [ModelCandidate] {
-        filteredCandidates.filter { selectedTargetIDs.contains(targetID($0)) }
+        scopedSelectedCandidates
     }
 
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !appType.isEmpty
-            && !selectedCandidates.isEmpty
+            && !scopedSelectedCandidates.isEmpty
     }
 
     private func setTarget(_ id: String, selected: Bool) {
@@ -2332,19 +2364,19 @@ private struct InlineCustomModelEditorView: View {
         } else {
             selectedTargetIDs.remove(id)
             if currentTargetID == id {
-                currentTargetID = selectedCandidates.first.map(targetID) ?? ""
+                currentTargetID = scopedSelectedCandidates.first.map(targetID) ?? ""
             }
         }
     }
 
     private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !appType.isEmpty, !selectedCandidates.isEmpty else {
+        guard !trimmedName.isEmpty, !appType.isEmpty, !scopedSelectedCandidates.isEmpty else {
             NSSound.beep()
             return
         }
 
-        let targets = selectedCandidates.map { candidate in
+        let targets = scopedSelectedCandidates.map { candidate in
             let existing = existingTargetsByKey[targetID(candidate)]
             return CustomModelTarget(
                 id: existing?.id ?? UUID(),
@@ -2352,7 +2384,7 @@ private struct InlineCustomModelEditorView: View {
                 providerRef: candidate.providerRef
             )
         }
-        let selectedTargetID = zip(selectedCandidates, targets).first {
+        let selectedTargetID = zip(scopedSelectedCandidates, targets).first {
             targetID($0.0) == currentTargetID
         }?.1.id ?? targets.first?.id
 
@@ -2380,6 +2412,14 @@ private struct InlineCustomModelEditorView: View {
             parts.append("需要转换")
         } else {
             parts.append(candidate.apiFormat.rawValue)
+        }
+        switch candidate.source {
+        case .discovered:
+            parts.append("探测到")
+        case .staleDiscovered:
+            parts.append("探测失效")
+        case .configured:
+            break
         }
         return parts.joined(separator: " · ")
     }

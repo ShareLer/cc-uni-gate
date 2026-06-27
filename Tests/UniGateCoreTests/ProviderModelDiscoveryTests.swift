@@ -160,53 +160,6 @@ struct ProviderModelDiscoveryTests {
     }
 
     @Test
-    func disabledDiscoveryDoesNotMakeStaleFingerprintCandidatesAvailable() {
-        let currentProvider = ImportedProvider(
-            id: "desktop",
-            appType: "claude-desktop",
-            name: "DeepSeek Desktop",
-            category: nil,
-            sortIndex: 1,
-            isCurrent: false,
-            apiFormat: .anthropic,
-            baseURL: "https://api.current.example/anthropic",
-            hasSecret: true,
-            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
-            meta: [:]
-        )
-        let oldProvider = ImportedProvider(
-            id: "desktop",
-            appType: "claude-desktop",
-            name: "DeepSeek Desktop",
-            category: nil,
-            sortIndex: 1,
-            isCurrent: false,
-            apiFormat: .anthropic,
-            baseURL: "https://api.old.example/anthropic",
-            hasSecret: true,
-            settings: ["env": .object(["ANTHROPIC_AUTH_TOKEN": .string("key-1")])],
-            meta: [:]
-        )
-        let result = ProviderModelDiscoveryResult(
-            providerRef: currentProvider.ref,
-            appType: currentProvider.appType,
-            providerName: currentProvider.name,
-            modelIDs: ["stale-model"],
-            errorMessage: nil,
-            sourceURL: nil,
-            configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: oldProvider)
-        )
-        let state = ProviderModelDiscoveryState(results: [currentProvider.ref.description: result])
-        let catalog = ProviderCatalog(providers: [currentProvider], candidates: [])
-
-        var preferences = AppPreferences()
-        preferences.setModelDiscoveryEnabled(false, for: currentProvider.ref)
-
-        #expect(!preferences.isModelDiscoveryEnabled(for: currentProvider.ref))
-        #expect(ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog).isEmpty)
-    }
-
-    @Test
     func discoveredCandidatesKeepLastSuccessfulModelsWhenDiscoveryFails() throws {
         let provider = ImportedProvider(
             id: "desktop",

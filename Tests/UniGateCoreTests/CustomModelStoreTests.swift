@@ -488,6 +488,97 @@ struct CustomModelStoreTests {
     }
 
     @Test
+    func baseCandidatesPreserveEditingTargetsForMatchingCustomModelNames() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.4",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.4",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let state = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "gpt-5.4",
+                targets: [target],
+                selectedTargetID: target.id
+            )
+        ])
+
+        let baseCandidates = state.baseCandidates(from: catalog, preserving: [target])
+
+        #expect(baseCandidates.map(\.logicalModel) == ["gpt-5.4"])
+        #expect(baseCandidates.first?.providerRef == provider.ref)
+    }
+
+    @Test
+    func baseCandidatesPreserveEditingRouteKeysForMatchingCustomModelNames() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.4",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.4",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        let state = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "gpt-5.4",
+                targets: []
+            )
+        ])
+
+        let baseCandidates = state.baseCandidates(
+            from: catalog,
+            preservingRouteKeys: [baseCandidate.routeKey]
+        )
+
+        #expect(baseCandidates.map(\.logicalModel) == ["gpt-5.4"])
+        #expect(baseCandidates.first?.providerRef == provider.ref)
+    }
+
+    @Test
     func displayCandidatesPreserveSavedTargetsMissingFromCurrentCatalog() throws {
         let dcc = ImportedProvider(
             id: "dcc",

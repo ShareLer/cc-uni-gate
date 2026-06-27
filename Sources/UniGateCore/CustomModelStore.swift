@@ -121,18 +121,24 @@ public struct CustomModelState: Codable, Sendable {
 
     public func baseCandidates(
         from catalog: ProviderCatalog,
-        preserving targets: [CustomModelTarget] = []
+        preserving targets: [CustomModelTarget] = [],
+        preservingRouteKeys: Set<ModelRouteKey> = []
     ) -> [ModelCandidate] {
+        let preservingTargetIDs = Set(targets.map { Self.targetID(for: $0) })
         let customRouteKeys = Set(models.map {
             ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
         })
         let baseCandidates = catalog.candidates.filter { candidate in
-            candidate.providerRef == candidate.upstreamProviderRef
-                && !customRouteKeys.contains(candidate.routeKey)
+                candidate.providerRef == candidate.upstreamProviderRef
+                && (
+                    !customRouteKeys.contains(candidate.routeKey)
+                    || preservingTargetIDs.contains(Self.targetID(for: candidate))
+                    || preservingRouteKeys.contains(candidate.routeKey)
+                )
         }
         return Self.deduplicatedTargetCandidates(
             baseCandidates,
-            preservingTargetIDs: Set(targets.map { Self.targetID(for: $0) })
+            preservingTargetIDs: preservingTargetIDs
         )
     }
 

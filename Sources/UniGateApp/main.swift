@@ -379,8 +379,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let importedSnapshot = try loadImportedConfigurationSnapshot()
             let providers = importedSnapshot.catalog.providers.filter { provider in
                 appType == nil || provider.appType == appType
-            }.filter { provider in
-                preferences.isModelDiscoveryEnabled(for: provider.ref)
             }
             guard !providers.isEmpty else {
                 appState.showToast("没有可探测的供应商")
@@ -424,9 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         automaticModelDiscoveryTask?.cancel()
-        let providers = catalog.providers.filter {
-            preferences.isModelDiscoveryEnabled(for: $0.ref)
-        }
+        let providers = catalog.providers
         guard !providers.isEmpty else {
             return
         }
@@ -776,9 +772,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.onRefreshModelDiscovery = { [weak self] appType in
             self?.refreshModelDiscovery(appType: appType)
         }
-        appState.onSetModelDiscoveryEnabled = { [weak self] providerRef, enabled in
-            self?.setModelDiscoveryEnabled(providerRef: providerRef, enabled: enabled)
-        }
         appState.onCopyDiagnostics = { [weak self] in
             self?.copyDiagnostics()
         }
@@ -813,27 +806,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.updateRequestMetrics(requestMetrics)
         appState.updateDiscoveryState(discoveryState)
         appState.updateNetworkDiagnostics(networkDiagnostics)
-    }
-
-    private func setModelDiscoveryEnabled(providerRef: ProviderRef, enabled: Bool) {
-        guard preferences.isModelDiscoveryEnabled(for: providerRef) != enabled else {
-            return
-        }
-        var nextPreferences = preferences
-        nextPreferences.setModelDiscoveryEnabled(enabled, for: providerRef)
-        automaticModelDiscoveryTask?.cancel()
-        persistModelDiscoveryPreferenceChange(nextPreferences)
-        appState.showToast(enabled ? "已开启探测" : "已关闭探测")
-    }
-
-    private func persistModelDiscoveryPreferenceChange(_ preferences: AppPreferences) {
-        do {
-            self.preferences = preferences
-            try preferencesStore.save(preferences)
-            reloadCatalog()
-        } catch {
-            showError(error.localizedDescription)
-        }
     }
 
     private func publishError(_ error: Error, notify: Bool = true) {

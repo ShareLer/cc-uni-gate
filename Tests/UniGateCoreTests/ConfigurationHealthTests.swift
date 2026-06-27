@@ -124,7 +124,7 @@ struct ConfigurationHealthTests {
     }
 
     @Test
-    func ignoresStaleCustomModelTargetWhenForceEnabled() {
+    func reportsStaleCustomModelTargetWhenForceEnabled() {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -179,12 +179,12 @@ struct ConfigurationHealthTests {
             now: Date(timeIntervalSince1970: 0)
         )
 
-        #expect(!report.items.contains { $0.id == "custom-target-stale-codex:uni" })
+        #expect(report.items.contains { $0.id == "custom-target-stale-codex:uni" })
         #expect(!report.items.contains { $0.id == "custom-unconfigured-codex:uni" })
     }
 
     @Test
-    func ignoresDiscoveryStaleTargetsAndRoutes() {
+    func reportsDiscoveryStaleTargetsAndRoutes() {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -245,8 +245,8 @@ struct ConfigurationHealthTests {
             now: Date(timeIntervalSince1970: 0)
         )
 
-        #expect(!report.items.contains { $0.id == "route-stale-codex:gpt-5.5" })
-        #expect(!report.items.contains { $0.id == "custom-target-stale-codex:uni" })
+        #expect(report.items.contains { $0.id == "route-stale-codex:gpt-5.5" })
+        #expect(report.items.contains { $0.id == "custom-target-stale-codex:uni" })
         #expect(!report.items.contains { $0.id == "route-invalid-codex:gpt-5.5" })
         #expect(!report.items.contains { $0.id == "custom-target-missing-codex:uni" })
     }

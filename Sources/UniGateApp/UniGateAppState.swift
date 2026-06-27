@@ -45,7 +45,6 @@ final class UniGateAppState: ObservableObject {
     var onSaveSettings: ((AppPreferences, CustomModelState) -> Void)?
     var onApplySettings: ((AppPreferences, CustomModelState) -> Void)?
     var onRefreshModelDiscovery: ((String?) -> Void)?
-    var onSetModelDiscoveryEnabled: ((ProviderRef, Bool) -> Void)?
     var onCopyDiagnostics: (() -> Void)?
     var onExportConfiguration: (() -> Void)?
     var onImportConfiguration: (() -> Void)?
@@ -240,6 +239,9 @@ final class UniGateAppState: ObservableObject {
     }
 
     func isUnavailableCandidate(_ candidate: ModelCandidate, for routeGroup: ModelRouteGroup) -> Bool {
+        if candidate.isDiscoveryStale(in: catalog) {
+            return true
+        }
         guard customModelAvailability(for: routeGroup.routeKey) == .missingTarget else {
             return false
         }
@@ -349,6 +351,10 @@ final class UniGateAppState: ObservableObject {
             }
         }
 
+        if let active = activeCandidate(for: routeGroup), active.isDiscoveryStale(in: catalog) {
+            return "目标失效"
+        }
+
         guard routes.routes[routeGroup.routeKey.description] != nil else {
             return nil
         }
@@ -360,7 +366,13 @@ final class UniGateAppState: ObservableObject {
     }
 
     func customModelBaseCandidates(preserving definition: CustomModelDefinition? = nil) -> [ModelCandidate] {
-        customModels.baseCandidates(from: catalog, preserving: definition?.targets ?? [])
+        customModels.baseCandidates(
+            from: catalog,
+            preserving: definition?.targets ?? [],
+            preservingRouteKeys: definition.map {
+                [ModelRouteKey(appType: $0.appType, logicalModel: $0.name)]
+            } ?? []
+        )
     }
 
     func customModel(for routeKey: ModelRouteKey) -> CustomModelDefinition? {
@@ -467,10 +479,6 @@ final class UniGateAppState: ObservableObject {
         onRefreshModelDiscovery?(currentAppType)
     }
 
-    func setModelDiscoveryEnabled(_ enabled: Bool, for providerRef: ProviderRef) {
-        onSetModelDiscoveryEnabled?(providerRef, enabled)
-    }
-
     func copyDiagnostics() {
         onCopyDiagnostics?()
     }
@@ -553,8 +561,7 @@ final class UniGateAppState: ObservableObject {
         return providers.map { provider in
             ModelDiscoveryProviderItem(
                 provider: provider,
-                result: results[provider.ref.description],
-                isEnabled: preferences.isModelDiscoveryEnabled(for: provider.ref)
+                result: results[provider.ref.description]
             )
         }
     }
@@ -654,7 +661,6 @@ final class UniGateAppState: ObservableObject {
 struct ModelDiscoveryProviderItem: Identifiable {
     let provider: ImportedProvider
     let result: ProviderModelDiscoveryResult?
-    let isEnabled: Bool
 
     var id: String {
         provider.ref.description
