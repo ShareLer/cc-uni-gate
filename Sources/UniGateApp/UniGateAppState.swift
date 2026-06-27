@@ -383,19 +383,24 @@ final class UniGateAppState: ObservableObject {
 
     func saveCustomModel(_ definition: CustomModelDefinition, replacing existing: CustomModelDefinition? = nil) {
         var nextCustomModels = customModels
+        var savedDefinition = definition
+        if let existing {
+            savedDefinition.appType = existing.appType
+        }
         let oldRouteKey = existing.map {
             ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
         }
-        let newRouteKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+        let newRouteKey = ModelRouteKey(appType: savedDefinition.appType, logicalModel: savedDefinition.name)
 
         if let existing,
            let index = nextCustomModels.models.firstIndex(where: { $0.id == existing.id }) {
-            nextCustomModels.models[index] = definition
-        } else if let index = nextCustomModels.models.firstIndex(where: { $0.id == definition.id }) {
-            nextCustomModels.models[index] = definition
+            nextCustomModels.models[index] = savedDefinition
+        } else if let index = nextCustomModels.models.firstIndex(where: { $0.id == savedDefinition.id }) {
+            nextCustomModels.models[index] = savedDefinition
         } else {
-            nextCustomModels.models.append(definition)
+            nextCustomModels.models.append(savedDefinition)
         }
+        nextCustomModels = nextCustomModels.normalized()
 
         var nextPreferences = preferences
         if var visibleModels = nextPreferences.visibleModels {
@@ -409,7 +414,7 @@ final class UniGateAppState: ObservableObject {
         if expandedRouteKeyDescription == oldRouteKey?.description {
             expandedRouteKeyDescription = nil
         }
-        selectedAppType = definition.appType
+        selectedAppType = savedDefinition.appType
         onSaveSettings?(nextPreferences, nextCustomModels)
     }
 

@@ -338,6 +338,66 @@ struct AnthropicChatBridgeTests {
     }
 
     @Test
+    func countTokensEstimationDoesNotUnderweightCJKText() throws {
+        let latinCount = try #require(
+            AnthropicChatBridge.countTokensBody(fromOpenAIChatRequest: [
+                "model": "luban-glm",
+                "messages": [["role": "user", "content": "hello world"]]
+            ])["input_tokens"] as? Int
+        )
+        let cjkCount = try #require(
+            AnthropicChatBridge.countTokensBody(fromOpenAIChatRequest: [
+                "model": "luban-glm",
+                "messages": [["role": "user", "content": "你好世界你好世界你好世界"]]
+            ])["input_tokens"] as? Int
+        )
+
+        #expect(cjkCount > latinCount)
+    }
+
+    @Test
+    func mapsAnthropicImageURLSourceToOpenAIImageURL() throws {
+        let request: [String: Any] = [
+            "model": "luban-glm",
+            "messages": [[
+                "role": "user",
+                "content": [[
+                    "type": "image",
+                    "source": [
+                        "type": "url",
+                        "url": "https://example.com/image.png"
+                    ]
+                ]]
+            ]]
+        ]
+
+        let chat = try AnthropicChatBridge.chatRequest(from: request)
+        let messages = try #require(chat["messages"] as? [[String: Any]])
+        let content = try #require(messages.first?["content"] as? [[String: Any]])
+        let imageURL = try #require(content.first?["image_url"] as? [String: Any])
+
+        #expect(imageURL["url"] as? String == "https://example.com/image.png")
+    }
+
+    @Test
+    func rejectsUnsupportedDocumentBlocksInsteadOfDroppingThem() {
+        let request: [String: Any] = [
+            "model": "luban-glm",
+            "messages": [[
+                "role": "user",
+                "content": [[
+                    "type": "document",
+                    "source": ["type": "base64", "data": "ZmlsZQ=="]
+                ]]
+            ]]
+        ]
+
+        #expect(throws: AnthropicChatBridgeError.unsupportedContentBlock("document")) {
+            _ = try AnthropicChatBridge.chatRequest(from: request)
+        }
+    }
+
+    @Test
     func convertsOpenAIChatTextStreamToAnthropicMessagesEvents() throws {
         var state = AnthropicChatStreamState()
         var events: [AnthropicChatStreamEvent] = []

@@ -438,18 +438,35 @@ public struct CcSwitchImporter: Sendable {
     }
 
     private func isUniGateProvider(_ provider: ImportedProvider) -> Bool {
-        if provider.name.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare("UniGate") == .orderedSame {
-            return true
-        }
-        guard let baseURL = provider.baseURL?.lowercased() else {
+        guard let baseURL = provider.baseURL else {
             return false
         }
-        return isLoopbackURL(baseURL)
-            && (baseURL.contains("/codex") || baseURL.contains("/claude-code") || baseURL.contains("/claude-desktop"))
+        return isLoopbackURL(baseURL) && isUniGateProxyPath(baseURL)
     }
 
     private func isLoopbackURL(_ value: String) -> Bool {
-        value.contains("://127.") || value.contains("://localhost") || value.contains("://[::1]")
+        guard let url = URL(string: value.lowercased()), let host = url.host else {
+            return false
+        }
+        return host == "localhost" || host == "::1" || host.hasPrefix("127.")
+    }
+
+    private func isUniGateProxyPath(_ value: String) -> Bool {
+        guard let url = URL(string: value.lowercased()) else {
+            return false
+        }
+        let firstSegment = url.path
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .first
+            .map(String.init)
+        return [
+            "anthropic",
+            "claude",
+            "claude-code",
+            "claude-desktop",
+            "codex",
+            "openai"
+        ].contains(firstSegment)
     }
 }
 

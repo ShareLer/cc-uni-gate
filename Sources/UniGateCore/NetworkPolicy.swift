@@ -82,18 +82,28 @@ public struct NetworkPolicyPreferences: Codable, Sendable, Equatable {
     }
 
     private static func normalizedDomainRule(_ value: String) -> String? {
-        var rule = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawRule = value.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             .lowercased()
+        var rule = rawRule
+        var ruleKind: String?
         guard !rule.isEmpty else {
             return nil
         }
 
-        if rule.hasPrefix("domain-suffix,") || rule.hasPrefix("domain,") {
+        if rule.hasPrefix("domain-suffix,") {
             let parts = rule.split(separator: ",").map(String.init)
             guard parts.count >= 2 else {
                 return nil
             }
+            ruleKind = "domain-suffix"
+            rule = parts[1]
+        } else if rule.hasPrefix("domain,") {
+            let parts = rule.split(separator: ",").map(String.init)
+            guard parts.count >= 2 else {
+                return nil
+            }
+            ruleKind = "domain"
             rule = parts[1]
         }
 
@@ -111,7 +121,13 @@ public struct NetworkPolicyPreferences: Codable, Sendable, Equatable {
             rule = String(rule[..<colonIndex])
         }
         rule = rule.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return rule.isEmpty ? nil : rule
+        guard !rule.isEmpty else {
+            return nil
+        }
+        if let ruleKind {
+            return "\(ruleKind),\(rule)"
+        }
+        return rule
     }
 }
 
@@ -227,6 +243,14 @@ public enum NetworkPolicyResolver {
     }
 
     private static func matchesDomainRule(host: String, rule: String) -> Bool {
+        if rule.hasPrefix("domain,") {
+            let exact = String(rule.dropFirst("domain,".count))
+            return host == exact
+        }
+        if rule.hasPrefix("domain-suffix,") {
+            let suffix = String(rule.dropFirst("domain-suffix,".count))
+            return host == suffix || host.hasSuffix(".\(suffix)")
+        }
         if rule.hasPrefix("*.") {
             let suffix = String(rule.dropFirst(2))
             return host.hasSuffix(".\(suffix)")

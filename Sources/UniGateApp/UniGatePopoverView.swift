@@ -2089,7 +2089,7 @@ private struct InlineCustomModelEditorView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(existing == nil ? "自定义模型" : "编辑自定义模型")
                 .font(.system(size: 16, weight: .semibold))
-            Text(existing == nil ? "为新模型选择应用和一个或多个转发目标。" : "调整模型名、应用和转发目标。")
+            Text(existing == nil ? "为新模型选择应用和一个或多个转发目标。" : "调整模型名和转发目标。")
                 .font(.caption)
                 .foregroundStyle(UGPopoverStyle.textSecondary)
         }
@@ -2206,6 +2206,8 @@ private struct InlineCustomModelEditorView: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .disabled(existing != nil)
+                .opacity(existing != nil && !selected ? 0.55 : 1)
             }
         }
     }

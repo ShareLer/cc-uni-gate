@@ -46,10 +46,13 @@ enum JSONValueParser {
             return .null
         case let value as String:
             return .string(value)
+        case let value as NSNumber:
+            if CFGetTypeID(value) == CFBooleanGetTypeID() {
+                return .bool(value.boolValue)
+            }
+            return .number(value.doubleValue)
         case let value as Bool:
             return .bool(value)
-        case let value as NSNumber:
-            return .number(value.doubleValue)
         case let value as [Any]:
             return .array(value.compactMap(convert))
         case let value as [String: Any]:

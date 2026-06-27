@@ -71,17 +71,26 @@ final class LocalProxyServer: @unchecked Sendable {
     private let host: NWEndpoint.Host
     private let port: NWEndpoint.Port
     private let runtime: any LocalProxyRuntime
+    private let managerToken: String?
     private let queue = DispatchQueue(label: "unigate.local-proxy")
     private var listener: NWListener?
 
-    init(host: String = "127.0.0.1", port: UInt16 = 17888, runtime: any LocalProxyRuntime) {
+    init(
+        host: String = "127.0.0.1",
+        port: UInt16 = 17888,
+        runtime: any LocalProxyRuntime,
+        managerToken: String? = nil
+    ) {
         self.host = NWEndpoint.Host(host)
         self.port = NWEndpoint.Port(rawValue: port)!
         self.runtime = runtime
+        self.managerToken = managerToken ?? Self.configuredManagerToken()
     }
 
     func start() throws {
-        let listener = try NWListener(using: .tcp, on: port)
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: host, port: port)
+        let listener = try NWListener(using: parameters)
         listener.newConnectionHandler = { [weak self] connection in
             self?.handle(connection)
         }
@@ -133,7 +142,7 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private func isLoopback(_ endpoint: NWEndpoint) -> Bool {
         guard case let .hostPort(host, _) = endpoint else {
-            return true
+            return false
         }
         switch host {
         case .ipv4(let address):
@@ -197,11 +206,18 @@ final class LocalProxyServer: @unchecked Sendable {
                     "ok": true,
                     "serverID": id.uuidString,
                     "providers": snapshot.catalog.providers.count,
-                    "candidates": snapshot.catalog.candidates.count
+                    "candidates": snapshot.catalog.candidates.count,
+                    "managerAuth": [
+                        "mutatingRequests": "bearer",
+                        "tokenConfigured": managerToken != nil
+                    ]
                 ], allowsCORS: true)
             }
 
             if request.method == "POST", request.path == "/__manager/reload" {
+                if let failure = managerAuthorizationFailure(for: request) {
+                    return failure
+                }
                 _ = try await MainActor.run { try runtime.reloadProxyRuntime() }
                 return .json(status: 200, body: ["ok": true], allowsCORS: true)
             }
@@ -217,6 +233,9 @@ final class LocalProxyServer: @unchecked Sendable {
             }
 
             if request.method == "POST", request.path == "/__manager/routes" {
+                if let failure = managerAuthorizationFailure(for: request) {
+                    return failure
+                }
                 let body = try jsonObject(request.body)
                 guard
                     let logicalModel = body["logicalModel"] as? String,
@@ -239,6 +258,38 @@ final class LocalProxyServer: @unchecked Sendable {
         } catch {
             return .json(status: 500, body: ["error": error.localizedDescription], allowsCORS: true)
         }
+    }
+
+    private static func configuredManagerToken() -> String? {
+        let token = ProcessInfo.processInfo.environment["UNIGATE_MANAGER_TOKEN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return token?.isEmpty == false ? token : nil
+    }
+
+    private func managerAuthorizationFailure(for request: HTTPRequest) -> HTTPResponse? {
+        guard let managerToken else {
+            return .json(
+                status: 403,
+                body: ["error": "Manager token is not configured; set UNIGATE_MANAGER_TOKEN"],
+                allowsCORS: true
+            )
+        }
+        guard
+            let authorization = request.headers["authorization"],
+            Self.bearerToken(from: authorization) == managerToken
+        else {
+            return .json(status: 401, body: ["error": "Unauthorized"], allowsCORS: true)
+        }
+        return nil
+    }
+
+    private static func bearerToken(from authorization: String) -> String? {
+        let parts = authorization.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count == 2, parts[0].caseInsensitiveCompare("Bearer") == .orderedSame else {
+            return nil
+        }
+        let token = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        return token.isEmpty ? nil : token
     }
 
     private func proxy(_ request: HTTPRequest, on connection: NWConnection) async {
@@ -430,32 +481,38 @@ final class LocalProxyServer: @unchecked Sendable {
                 return
             }
             if resolved.responseTransform != .none {
-                try await sendTransformedResponse(
+                let transformedStatus = try await sendTransformedResponse(
                     bytes: bytes,
                     status: status,
                     headers: headers,
                     resolved: resolved,
                     on: connection
                 )
+                let transformedRequestFailure = transformedStatus < 200 || transformedStatus >= 400
+                let transformedProviderFailure = providerFailure || Self.isProviderFailureStatus(transformedStatus)
                 await MainActor.run {
-                    if !providerFailure, status >= 200 && status < 400 {
+                    if !transformedProviderFailure, transformedStatus >= 200 && transformedStatus < 400 {
                         runtime.proxyProviderDidSucceed()
                     }
                     runtime.recordRequestMetric(
                         key: Self.metricKey(for: resolved),
-                        statusCode: status,
+                        statusCode: transformedStatus,
                         latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
-                        errorMessage: providerFailure ? "HTTP \(status)" : nil,
-                        providerFailure: providerFailure
+                        errorMessage: transformedRequestFailure ? "HTTP \(transformedStatus)" : nil,
+                        providerFailure: transformedProviderFailure
                     )
                 }
                 await recordProxyLog(
-                    level: providerFailure ? .error : .info,
+                    level: transformedRequestFailure ? .error : .info,
                     requestID: requestID,
                     phase: "transform-complete",
                     fields: Self.resolvedLogFields(for: resolved) + networkPolicyLogFields + [
-                        LogField("status", status),
-                        LogField("outcome", providerFailure ? "provider_failure" : "ok"),
+                        LogField("status", transformedStatus),
+                        LogField("upstreamStatus", status),
+                        LogField(
+                            "outcome",
+                            transformedProviderFailure ? "provider_failure" : (transformedRequestFailure ? "request_failure" : "ok")
+                        ),
                         LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt)))
                     ]
                 )
@@ -486,7 +543,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 if let sseFailure {
                     runtime.proxyProviderDidFail(
                         appType: resolved.candidate.appType,
-                        message: "\(providerFailureContext ?? resolved.providerName)：SSE response.failed：\(sseFailure)"
+                        message: "\(providerFailureContext ?? resolved.providerName)：SSE error：\(sseFailure)"
                     )
                 } else if !providerFailure, status >= 200 && status < 400 {
                     runtime.proxyProviderDidSucceed()
@@ -495,7 +552,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     key: Self.metricKey(for: resolved),
                     statusCode: status,
                     latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
-                    errorMessage: sseFailure.map { "SSE response.failed: \($0)" } ?? (providerFailure ? "HTTP \(status)" : nil),
+                    errorMessage: sseFailure.map { "SSE error: \($0)" } ?? (providerFailure ? "HTTP \(status)" : nil),
                     providerFailure: completedProviderFailure
                 )
             }
@@ -734,6 +791,21 @@ final class LocalProxyServer: @unchecked Sendable {
             }
         } catch let error as ProxyTransferError {
             throw error
+        } catch let error as AnthropicChatBridgeError {
+            stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
+            let event = Self.anthropicStreamBridgeErrorEvent(error)
+            stats.sawSSEFailure = true
+            stats.sseFailureDetail = Self.anthropicStreamErrorDetail(event)
+            let payload = try event.sseData()
+            do {
+                try await send(payload, on: connection)
+            } catch {
+                throw ProxyTransferError.downstream(error, stats: stats)
+            }
+            stats.bytesForwarded += payload.count
+            stats.chunksForwarded += 1
+            stats.lastChunkForwardedAt = Date()
+            return stats
         } catch {
             stats.upstreamErrorSinceLastChunkMilliseconds = Self.milliseconds(from: stats.lastChunkForwardedAt, to: Date())
             throw ProxyTransferError.upstream(error, stats: stats)
@@ -1131,17 +1203,31 @@ final class LocalProxyServer: @unchecked Sendable {
         headers: [String: String],
         resolved: ResolvedRoute,
         on connection: NWConnection
-    ) async throws {
+    ) async throws -> Int {
         var body = Data()
         for try await byte in bytes {
             body.append(byte)
             if body.count > 10_485_760 {
                 send(.json(status: 413, body: ["error": "Response too large"]), on: connection)
-                return
+                return 413
             }
         }
 
         guard status >= 200 && status < 300 else {
+            if resolved.responseTransform == .openAIChatToCodexResponse,
+               let value = try? JSONSerialization.jsonObject(with: body),
+               let object = value as? [String: Any] {
+                var responseHeaders = headers
+                removeEntityHeaders(from: &responseHeaders)
+                responseHeaders["content-type"] = "application/json; charset=utf-8"
+                let transformed = CodexChatBridge.responsesErrorBody(
+                    fromOpenAIError: object,
+                    fallbackMessage: httpReasonPhrase(status)
+                )
+                let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
+                send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
+                return status
+            }
             if resolved.responseTransform == .openAIChatToAnthropicMessages,
                let value = try? JSONSerialization.jsonObject(with: body),
                let object = value as? [String: Any] {
@@ -1154,7 +1240,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 )
                 let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
                 send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
-                return
+                return status
             }
             let response = HTTPResponse(
                 status: status,
@@ -1162,7 +1248,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 body: body
             )
             send(response, on: connection)
-            return
+            return status
         }
 
         switch resolved.responseTransform {
@@ -1197,6 +1283,7 @@ final class LocalProxyServer: @unchecked Sendable {
             let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
             send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
         }
+        return status
     }
 
     private func removeEntityHeaders(from headers: inout [String: String]) {
@@ -1407,6 +1494,16 @@ final class LocalProxyServer: @unchecked Sendable {
         return "\(type): \(message)"
     }
 
+    private static func anthropicStreamBridgeErrorEvent(_ error: AnthropicChatBridgeError) -> AnthropicChatStreamEvent {
+        AnthropicChatStreamEvent(event: "error", data: [
+            "type": .string("error"),
+            "error": .object([
+                "type": .string("api_error"),
+                "message": .string(error.localizedDescription)
+            ])
+        ])
+    }
+
     private func forwardResponseHeaders(_ response: HTTPURLResponse?) -> [String: String] {
         guard let response else {
             return [:]
@@ -1555,10 +1652,10 @@ private struct SSEFailureInspector {
                 currentEvent = nil
                 currentDataLines.removeAll(keepingCapacity: true)
             }
-            guard currentEvent == "response.failed" else {
+            guard let currentEvent, currentEvent == "response.failed" || currentEvent == "error" else {
                 return nil
             }
-            return failureDetail(from: currentDataLines.joined(separator: "\n"))
+            return failureDetail(event: currentEvent, from: currentDataLines.joined(separator: "\n"))
         }
 
         if line.hasPrefix(":") {
@@ -1586,17 +1683,17 @@ private struct SSEFailureInspector {
         return nil
     }
 
-    private func failureDetail(from data: String) -> String {
+    private func failureDetail(event: String, from data: String) -> String {
         let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return "response.failed"
+            return event
         }
         guard
             let jsonData = trimmed.data(using: .utf8),
             let value = try? JSONSerialization.jsonObject(with: jsonData),
             let object = value as? [String: Any]
         else {
-            return "response.failed data=\(Self.compact(trimmed))"
+            return "\(event) data=\(Self.compact(trimmed))"
         }
 
         var fields: [String] = []
@@ -1615,7 +1712,7 @@ private struct SSEFailureInspector {
         if fields.isEmpty {
             fields.append("data=\(Self.compact(trimmed))")
         }
-        return "response.failed \(fields.joined(separator: " "))"
+        return "\(event) \(fields.joined(separator: " "))"
     }
 
     private func appendErrorFields(_ error: [String: Any], to fields: inout [String]) {

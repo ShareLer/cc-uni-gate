@@ -29,7 +29,9 @@ public final class RouteStore: @unchecked Sendable {
         }
 
         let merged = merge(state, catalog: catalog)
-        try save(merged)
+        if !merged.routes.isEmpty || state.routes.isEmpty {
+            try save(merged)
+        }
         return merged
     }
 

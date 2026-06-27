@@ -174,7 +174,7 @@ struct PreferencesStoreTests {
 
         #expect(loaded.networkPolicy.globalMode == .direct)
         #expect(loaded.networkPolicy.providerOverrides[ref.description] == .system)
-        #expect(loaded.networkPolicy.directDomainRules == ["*.intra.example.com", "corp.example.com"])
+        #expect(loaded.networkPolicy.directDomainRules == ["*.intra.example.com", "domain-suffix,corp.example.com"])
     }
 
     @Test

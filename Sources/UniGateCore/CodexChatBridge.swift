@@ -25,6 +25,9 @@ public enum CodexChatBridge {
         guard let model = trimmedString(responsesRequest["model"]) else {
             throw CodexChatBridgeError.missingModel
         }
+        for key in ["tools", "tool_choice", "parallel_tool_calls"] where responsesRequest[key] != nil {
+            throw CodexChatBridgeError.unsupportedInputItem(key)
+        }
 
         var messages: [[String: Any]] = []
         if let instructions = trimmedString(responsesRequest["instructions"]) {
@@ -58,7 +61,7 @@ public enum CodexChatBridge {
         let model = trimmedString(chatResponse["model"]) ?? fallbackModel
         let choice = firstChoice(chatResponse)
         let message = choice?["message"] as? [String: Any] ?? [:]
-        let text = textContent(message["content"])
+        let text = try textContent(message["content"])
         let finishReason = trimmedString(choice?["finish_reason"])
         let status = finishReason == "length" ? "incomplete" : "completed"
 
@@ -87,6 +90,28 @@ public enum CodexChatBridge {
         ]
     }
 
+    public static func responsesErrorBody(fromOpenAIError object: [String: Any], fallbackMessage: String) -> [String: Any] {
+        let errorObject = object["error"] as? [String: Any]
+        let message = trimmedString(errorObject?["message"])
+            ?? trimmedString(object["message"])
+            ?? fallbackMessage
+        let type = trimmedString(errorObject?["type"]) ?? "api_error"
+        var error: [String: Any] = [
+            "message": message,
+            "type": type
+        ]
+        if let code = errorObject?["code"] ?? object["code"] {
+            error["code"] = code
+        }
+        if let param = errorObject?["param"] ?? object["param"] {
+            error["param"] = param
+        }
+        return [
+            "type": "error",
+            "error": error
+        ]
+    }
+
     private static func inputMessages(from input: Any?) throws -> [[String: Any]] {
         if let text = trimmedString(input) {
             return [["role": "user", "content": text]]
@@ -111,9 +136,12 @@ public enum CodexChatBridge {
             if type == "reasoning" {
                 return []
             }
+            if let type, !["message", "input_message", "input_text", "output_text"].contains(type) {
+                throw CodexChatBridgeError.unsupportedInputItem(type)
+            }
 
             let role = normalizeRole(trimmedString(object["role"]) ?? "user")
-            let content = textContent(object["content"] ?? object["text"])
+            let content = try textContent(object["content"] ?? object["text"])
             guard !content.isEmpty else {
                 return []
             }
@@ -121,27 +149,49 @@ public enum CodexChatBridge {
         }
     }
 
-    private static func textContent(_ value: Any?) -> String {
+    private static func textContent(_ value: Any?) throws -> String {
         if let text = trimmedString(value) {
             return text
         }
         if let object = value as? [String: Any] {
-            return trimmedString(object["text"]) ?? ""
+            guard let type = trimmedString(object["type"]) else {
+                return trimmedString(object["text"]) ?? ""
+            }
+            switch type {
+            case "text", "input_text", "output_text":
+                return trimmedString(object["text"]) ?? ""
+            default:
+                throw CodexChatBridgeError.unsupportedInputItem(type)
+            }
         }
         guard let parts = value as? [Any] else {
             return ""
         }
-        return parts.compactMap { part -> String? in
+        var textParts: [String] = []
+        for part in parts {
             if let text = trimmedString(part) {
-                return text
+                textParts.append(text)
+                continue
             }
             guard let object = part as? [String: Any] else {
-                return nil
+                continue
             }
-            return trimmedString(object["text"])
+            guard let type = trimmedString(object["type"]) else {
+                if let text = trimmedString(object["text"]) {
+                    textParts.append(text)
+                }
+                continue
+            }
+            switch type {
+            case "text", "input_text", "output_text":
+                if let text = trimmedString(object["text"]) {
+                    textParts.append(text)
+                }
+            default:
+                throw CodexChatBridgeError.unsupportedInputItem(type)
+            }
         }
-        .filter { !$0.isEmpty }
-        .joined(separator: "\n")
+        return textParts.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     private static func normalizeRole(_ role: String) -> String {

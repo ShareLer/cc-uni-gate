@@ -160,6 +160,104 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func filtersLoopbackOpenAIAndAnthropicUniGateProvidersWithoutNameHeuristic() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "loopback-openai",
+                appType: "codex",
+                name: "Local Proxy",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/openai\\"\\nwire_api = \\"responses\\""
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#
+            )
+            try insertProvider(
+                db,
+                id: "loopback-anthropic",
+                appType: "claude",
+                name: "Local Anthropic",
+                settings: """
+                {
+                  "env": {
+                    "ANTHROPIC_BASE_URL": "http://localhost:17888/anthropic",
+                    "ANTHROPIC_MODEL": "deepseek-v4-flash"
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"anthropic"}"#
+            )
+            try insertProvider(
+                db,
+                id: "real-unigate-name",
+                appType: "codex",
+                name: "UniGate",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"real-model\\"\\n[model_providers.custom]\\nbase_url = \\"https://api.real.example\\"\\nwire_api = \\"responses\\""
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+
+        #expect(catalog.providers.map(\.id) == ["real-unigate-name"])
+        #expect(catalog.routeKeys.map(\.description) == ["codex:real-model"])
+    }
+
+    @Test
+    func parsesNumericJSONValuesAsNumbersNotBooleans() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "p1",
+                appType: "codex",
+                name: "Provider 1",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"https://api.example.com\\"\\nwire_api = \\"responses\\"",
+                  "modelCatalog": {
+                    "models": [
+                      {"model": "gpt-5.5", "contextWindow": 1000000}
+                    ]
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses","one":1,"zero":0,"flag":true}"#
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let provider = try #require(catalog.providers.first)
+        let candidate = try #require(catalog.candidates.first)
+
+        if case let .number(one)? = provider.meta["one"] {
+            #expect(one == 1)
+        } else {
+            Issue.record("Expected meta.one to be a number")
+        }
+        if case let .number(zero)? = provider.meta["zero"] {
+            #expect(zero == 0)
+        } else {
+            Issue.record("Expected meta.zero to be a number")
+        }
+        if case let .bool(flag)? = provider.meta["flag"] {
+            #expect(flag)
+        } else {
+            Issue.record("Expected meta.flag to be a bool")
+        }
+        #expect(candidate.supportsLongContext)
+    }
+
+    @Test
     func loadsIntegrationSnapshotWithUniGateProvidersAndDesktopRoutes() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)

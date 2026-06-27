@@ -246,6 +246,37 @@ struct RouteStoreTests {
     }
 
     @Test
+    func loadDoesNotPersistEmptyCatalogOverExistingRoutes() throws {
+        let provider = ProviderRef(appType: "codex", id: "p1")
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        let existing = RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: provider,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+        try store.save(existing)
+
+        let loaded = try store.load(catalog: ProviderCatalog(providers: [], candidates: []))
+        let reloaded = try store.load(catalog: ProviderCatalog(providers: [], candidates: [
+            candidate(
+                routeKey: routeKey,
+                providerRef: provider,
+                providerName: "Provider"
+            )
+        ]))
+
+        #expect(loaded.routes.isEmpty)
+        #expect(reloaded.routes[routeKey.description]?.providerRef == provider)
+    }
+
+    @Test
     func keepsSameModelSeparateAcrossApps() {
         let candidates = [
             ModelCandidate(

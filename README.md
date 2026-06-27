@@ -288,6 +288,8 @@ POST /__manager/reload
 POST /__manager/routes
 ```
 
+`POST /__manager/reload` 和 `POST /__manager/routes` 需要 `Authorization: Bearer <token>`，token 通过环境变量 `UNIGATE_MANAGER_TOKEN` 配置；未配置 token 时写操作会被拒绝。
+
 常用代理接口：
 
 ```text

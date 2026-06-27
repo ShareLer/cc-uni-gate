@@ -176,6 +176,33 @@ struct CustomModelStoreTests {
     }
 
     @Test
+    func normalizesDuplicateCustomModelRouteKeysOnLoad() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("custom-models.json")
+        try FileManager.default.createDirectory(
+            at: tmp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let firstID = UUID()
+        let secondID = UUID()
+        try Data("""
+        {
+          "models": [
+            {"id":"\(firstID.uuidString)","appType":"codex","name":"uni","forceEnabled":false,"targets":[]},
+            {"id":"\(secondID.uuidString)","appType":"codex","name":"uni","forceEnabled":true,"targets":[]}
+          ]
+        }
+        """.utf8).write(to: tmp)
+        let store = CustomModelStore(fileURL: tmp)
+
+        let loaded = try store.load()
+
+        #expect(loaded.models.map(\.id) == [secondID])
+        #expect(loaded.models.first?.forceEnabled == true)
+    }
+
+    @Test
     func expandsAllSelectedTargetsForCustomModel() throws {
         let provider = ImportedProvider(
             id: "p1",

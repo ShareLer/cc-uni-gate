@@ -55,6 +55,27 @@ struct NetworkPolicyTests {
     }
 
     @Test
+    func domainRuleMatchesExactHostOnly() {
+        let rules = NetworkPolicyPreferences.parseDomainRulesText("""
+        DOMAIN,api.example.com,DIRECT
+        DOMAIN-SUFFIX,intra.example.com,DIRECT
+        """)
+
+        #expect(NetworkPolicyResolver.matchesAnyDomainRule(
+            host: "api.example.com",
+            rules: rules
+        ))
+        #expect(!NetworkPolicyResolver.matchesAnyDomainRule(
+            host: "sub.api.example.com",
+            rules: rules
+        ))
+        #expect(NetworkPolicyResolver.matchesAnyDomainRule(
+            host: "sub.intra.example.com",
+            rules: rules
+        ))
+    }
+
+    @Test
     func domainRuleFallsBackToGlobalWhenNoMatch() {
         let preferences = NetworkPolicyPreferences(
             globalMode: .system,

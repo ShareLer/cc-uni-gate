@@ -6,6 +6,7 @@ public enum AnthropicChatBridgeError: Error, LocalizedError, Equatable {
     case invalidChatResponse
     case invalidChatStreamChunk
     case truncatedChatStream
+    case unsupportedContentBlock(String)
 
     public var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ public enum AnthropicChatBridgeError: Error, LocalizedError, Equatable {
             return "Upstream OpenAI Chat stream chunk must be a JSON object"
         case .truncatedChatStream:
             return "Upstream OpenAI Chat stream ended before a terminal chunk"
+        case let .unsupportedContentBlock(type):
+            return "Anthropic Messages content block is not supported by the OpenAI Chat bridge: \(type)"
         }
     }
 }
@@ -116,7 +119,7 @@ public enum AnthropicChatBridge {
     }
 
     public static func countTokensBody(fromOpenAIChatRequest chatRequest: [String: Any]) -> [String: Any] {
-        let estimated = max(Int(ceil(Double(serializedText(chatRequest).count) / 4.0)), 1)
+        let estimated = estimatedTokenCount(serializedText(chatRequest))
         return ["input_tokens": estimated]
     }
 
@@ -172,14 +175,25 @@ public enum AnthropicChatBridge {
                     contentParts.append(["type": "text", "text": text])
                 }
             case "image":
-                if let source = block["source"] as? [String: Any],
-                   let data = trimmedString(source["data"]) {
+                guard let source = block["source"] as? [String: Any] else {
+                    throw AnthropicChatBridgeError.unsupportedContentBlock("image")
+                }
+                if let data = trimmedString(source["data"]) {
                     let mediaType = trimmedString(source["media_type"]) ?? "image/png"
                     contentParts.append([
                         "type": "image_url",
                         "image_url": ["url": "data:\(mediaType);base64,\(data)"]
                     ])
+                } else if let url = trimmedString(source["url"]) {
+                    contentParts.append([
+                        "type": "image_url",
+                        "image_url": ["url": url]
+                    ])
+                } else {
+                    throw AnthropicChatBridgeError.unsupportedContentBlock("image")
                 }
+            case "document", "file", "pdf":
+                throw AnthropicChatBridgeError.unsupportedContentBlock(trimmedString(block["type"]) ?? "document")
             case "tool_use":
                 let input = block["input"] ?? [:]
                 toolCalls.append([
@@ -203,7 +217,9 @@ public enum AnthropicChatBridge {
                 }
             case "redacted_thinking":
                 reasoningParts.append("[redacted thinking]")
-            default:
+            case .some(let type):
+                throw AnthropicChatBridgeError.unsupportedContentBlock(type)
+            case .none:
                 continue
             }
         }
@@ -589,6 +605,43 @@ public enum AnthropicChatBridge {
             return string
         }
         return String(describing: value)
+    }
+
+    private static func estimatedTokenCount(_ text: String) -> Int {
+        var latinByteCount = 0
+        var cjkScalarCount = 0
+        var otherByteCount = 0
+
+        for scalar in text.unicodeScalars {
+            if isCJKScalar(scalar) {
+                cjkScalarCount += 1
+            } else if scalar.isASCII {
+                latinByteCount += scalar.utf8.count
+            } else {
+                otherByteCount += scalar.utf8.count
+            }
+        }
+
+        let latinTokens = Int(ceil(Double(latinByteCount) / 4.0))
+        let otherTokens = Int(ceil(Double(otherByteCount) / 2.0))
+        return max(latinTokens + cjkScalarCount + otherTokens, 1)
+    }
+
+    private static func isCJKScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3400...0x4DBF,
+             0x4E00...0x9FFF,
+             0xF900...0xFAFF,
+             0x20000...0x2A6DF,
+             0x2A700...0x2B73F,
+             0x2B740...0x2B81F,
+             0x2B820...0x2CEAF,
+             0x2CEB0...0x2EBEF,
+             0x30000...0x3134F:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func jsonObject(_ value: String) -> Any {

@@ -92,7 +92,26 @@ public struct CustomModelState: Codable, Sendable {
     public var models: [CustomModelDefinition]
 
     public init(models: [CustomModelDefinition] = []) {
-        self.models = models
+        self.models = Self.deduplicatedModels(models)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case models
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let models = try container.decodeIfPresent([CustomModelDefinition].self, forKey: .models) ?? []
+        self.models = Self.deduplicatedModels(models)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(models, forKey: .models)
+    }
+
+    public func normalized() -> CustomModelState {
+        CustomModelState(models: models)
     }
 
     public static func targetID(for candidate: ModelCandidate) -> String {
@@ -303,6 +322,20 @@ public struct CustomModelState: Codable, Sendable {
             return UniGateAppRegistry.requiresTransform(appType: appType, apiFormat: apiFormat) ?? false
         }
     }
+
+    private static func deduplicatedModels(_ models: [CustomModelDefinition]) -> [CustomModelDefinition] {
+        var seen: Set<ModelRouteKey> = []
+        var result: [CustomModelDefinition] = []
+        for definition in models.reversed() {
+            let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+            guard !seen.contains(routeKey) else {
+                continue
+            }
+            seen.insert(routeKey)
+            result.insert(definition, at: 0)
+        }
+        return result
+    }
 }
 
 public final class CustomModelStore: @unchecked Sendable {
@@ -327,7 +360,7 @@ public final class CustomModelStore: @unchecked Sendable {
             return CustomModelState()
         }
         let data = try Data(contentsOf: fileURL)
-        return try decoder.decode(CustomModelState.self, from: data)
+        return try decoder.decode(CustomModelState.self, from: data).normalized()
     }
 
     public func save(_ state: CustomModelState) throws {
@@ -335,7 +368,7 @@ public final class CustomModelStore: @unchecked Sendable {
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let data = try encoder.encode(state)
+        let data = try encoder.encode(state.normalized())
         try data.write(to: fileURL, options: .atomic)
     }
 }
