@@ -191,14 +191,7 @@ struct ProductizationStoreTests {
                     name: "Custom Provider",
                     baseURL: "https://api.example.com",
                     apiFormat: .openaiResponses,
-                    enableDiscovery: false,
-                    manualModels: [
-                        CustomProviderManualModel(
-                            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-                            logicalModel: "gpt-5.5",
-                            upstreamModel: "gpt-5.5"
-                        )
-                    ]
+                    enableDiscovery: false
                 )
             ])
         )
@@ -212,6 +205,102 @@ struct ProductizationStoreTests {
         #expect(loaded.routes.routes.keys == backup.routes.routes.keys)
         #expect(loaded.customModels.models == backup.customModels.models)
         #expect(loaded.customProviders.definitions == backup.customProviders.definitions)
+    }
+
+    @Test
+    func v1ConfigurationBackupImportKeepsCurrentCustomProviders() throws {
+        let json = """
+        {
+          "exportedAt": "2026-01-01T00:00:00Z",
+          "preferences": {"port": 17988},
+          "routes": {"routes": {}},
+          "customModels": {"models": []}
+        }
+        """
+        let backup = try ConfigurationBackupStore().decodeForTest(json)
+        let current = CustomProviderState(definitions: [
+            CustomProviderDefinition(
+                id: "unigate-current",
+                appType: "codex",
+                name: "Current Provider",
+                baseURL: "https://current.example.com",
+                apiFormat: .openaiResponses,
+                apiKeyIdentifier: "current-secret"
+            )
+        ])
+
+        #expect(backup.version == 1)
+        #expect(!backup.importsCustomProviders)
+        #expect(backup.customProvidersForImport(current: current) == current)
+    }
+
+    @Test
+    func v2ConfigurationBackupImportUsesBackupCustomProviders() {
+        let current = CustomProviderState(definitions: [
+            CustomProviderDefinition(
+                id: "unigate-current",
+                appType: "codex",
+                name: "Current Provider",
+                baseURL: "https://current.example.com",
+                apiFormat: .openaiResponses,
+                apiKeyIdentifier: "current-secret"
+            )
+        ])
+        let imported = CustomProviderState(definitions: [
+            CustomProviderDefinition(
+                id: "unigate-imported",
+                appType: "claude",
+                name: "Imported Provider",
+                baseURL: "https://imported.example.com",
+                apiFormat: .anthropic
+            )
+        ])
+        let backup = UniGateConfigurationBackup(
+            preferences: AppPreferences(port: 17989),
+            routes: RouteState(),
+            customModels: CustomModelState(),
+            customProviders: imported
+        )
+
+        #expect(backup.version == 2)
+        #expect(backup.importsCustomProviders)
+        #expect(backup.customProvidersForImport(current: current) == imported)
+    }
+
+    @Test
+    func customProviderSecretRetentionKeepsReadableExistingIdentifier() {
+        let existing = CustomProviderDefinition(
+            id: "unigate-provider",
+            appType: "codex",
+            name: "Provider",
+            baseURL: "https://api.example.com",
+            apiFormat: .openaiResponses,
+            apiKeyIdentifier: "secret-id"
+        )
+
+        let preserved = CustomProviderSecretRetention.identifierToPreserve(existing: existing) { identifier in
+            identifier == "secret-id"
+        }
+
+        #expect(preserved == "secret-id")
+    }
+
+    @Test
+    func customProviderSecretRetentionDropsUnreadableExistingIdentifier() {
+        let existing = CustomProviderDefinition(
+            id: "unigate-provider",
+            appType: "codex",
+            name: "Provider",
+            baseURL: "https://api.example.com",
+            apiFormat: .openaiResponses,
+            apiKeyIdentifier: "missing-secret"
+        )
+
+        let preserved = CustomProviderSecretRetention.identifierToPreserve(existing: existing) { _ in
+            false
+        }
+
+        #expect(preserved == nil)
     }
 
     @Test
@@ -292,5 +381,19 @@ struct ProductizationStoreTests {
             settings: ["auth": .object(["OPENAI_API_KEY": .string(apiKey)])],
             meta: meta
         )
+    }
+}
+
+private extension ConfigurationBackupStore {
+    func decodeForTest(_ json: String) throws -> UniGateConfigurationBackup {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("backup.json")
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(json.utf8).write(to: fileURL)
+        return try load(from: fileURL)
     }
 }

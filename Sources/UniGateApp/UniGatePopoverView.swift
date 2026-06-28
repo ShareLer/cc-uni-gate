@@ -1491,14 +1491,6 @@ private struct BubbleTail: Shape {
     }
 }
 
-private extension Array where Element == String {
-    func uniqueSortedAppTypes() -> [String] {
-        Array(Set(self)).sorted {
-            ProviderDisplay.appTypeLabel($0).localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
-        }
-    }
-}
-
 private struct InlineSettingsPanel: View {
     @Environment(\.ugBrandColor) private var brand
     @ObservedObject var state: UniGateAppState
@@ -2892,7 +2884,6 @@ private struct InlineCustomProviderEditorView: View {
             apiFormat: apiFormat,
             isCurrent: existing?.isCurrent ?? false,
             enableDiscovery: true,
-            manualModels: existing?.manualModels ?? [],
             apiKeyIdentifier: existing?.apiKeyIdentifier,
             isFullUrl: isFullUrl,
             modelsUrl: existing?.modelsUrl,

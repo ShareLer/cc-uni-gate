@@ -174,8 +174,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let nextSecret, !nextSecret.isEmpty {
                 try customProviderKeychain.save(nextSecret, identifier: identifier)
                 nextDefinition.apiKeyIdentifier = identifier
-            } else if let existing, let existingIdentifier = existing.apiKeyIdentifier,
-                      (try? customProviderKeychain.read(identifier: existingIdentifier)) != nil {
+            } else if let existingIdentifier = CustomProviderSecretRetention.identifierToPreserve(
+                existing: existing,
+                canReadSecret: { identifier in
+                    (try? customProviderKeychain.read(identifier: identifier)) != nil
+                }
+            ) {
                 // 未输入新密钥，且 Keychain 中确有可读的现有密钥 → 保留标识符
                 nextDefinition.apiKeyIdentifier = existingIdentifier
             } else {
@@ -356,13 +360,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // v1 备份在自定义供应商功能之前生成，不含 customProviders 字段（解码为空）。
             // 直接覆盖会经 reconcile 删除当前所有自定义供应商密钥（不可恢复，密钥不随备份导出）。
             // 故 v1 保留当前 customProviders，仅恢复 v2 及以上的该字段。
-            let restoreCustomProviders = backup.version >= 2 ? backup.customProviders : previousCustomProviders
+            let restoreCustomProviders = backup.customProvidersForImport(current: previousCustomProviders)
             customProviders = restoreCustomProviders
             networkDiagnostics.removeAll()
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             try customProviderStore.save(customProviders)
-            if backup.version >= 2 {
+            if backup.importsCustomProviders {
                 try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
             }
             try routeStore.save(routes)

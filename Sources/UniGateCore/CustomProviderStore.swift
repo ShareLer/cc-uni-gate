@@ -1,52 +1,6 @@
 import Foundation
 import Security
 
-public struct CustomProviderManualModel: Codable, Hashable, Identifiable, Sendable {
-    public let id: UUID
-    public var logicalModel: String
-    public var upstreamModel: String
-    public var label: String?
-    public var supportsLongContext: Bool
-
-    public init(
-        id: UUID = UUID(),
-        logicalModel: String,
-        upstreamModel: String,
-        label: String? = nil,
-        supportsLongContext: Bool = false
-    ) {
-        self.id = id
-        self.logicalModel = logicalModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.upstreamModel = upstreamModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.label = label?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.supportsLongContext = supportsLongContext
-    }
-
-    public func routeKey(appType: String) -> ModelRouteKey {
-        ModelRouteKey(appType: appType, logicalModel: logicalModel)
-    }
-
-    public func withAppType(_ appType: String) -> CustomProviderManualModel {
-        CustomProviderManualModel(
-            id: id,
-            logicalModel: logicalModel,
-            upstreamModel: upstreamModel,
-            label: label,
-            supportsLongContext: supportsLongContext
-        )
-    }
-
-    public func normalized() -> CustomProviderManualModel {
-        CustomProviderManualModel(
-            id: id,
-            logicalModel: logicalModel,
-            upstreamModel: upstreamModel,
-            label: label,
-            supportsLongContext: supportsLongContext
-        )
-    }
-}
-
 public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendable {
     public let id: String
     public var appType: String
@@ -57,11 +11,26 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
     public var sortIndex: Int?
     public var isCurrent: Bool
     public var enableDiscovery: Bool
-    public var manualModels: [CustomProviderManualModel]
     public var apiKeyIdentifier: String?
     public var isFullUrl: Bool
     public var modelsUrl: String?
     public var customUserAgent: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case appType
+        case name
+        case baseURL
+        case apiFormat
+        case category
+        case sortIndex
+        case isCurrent
+        case enableDiscovery
+        case apiKeyIdentifier
+        case isFullUrl
+        case modelsUrl
+        case customUserAgent
+    }
 
     public init(
         id: String = Self.makeID(),
@@ -73,7 +42,6 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         sortIndex: Int? = nil,
         isCurrent: Bool = false,
         enableDiscovery: Bool = true,
-        manualModels: [CustomProviderManualModel] = [],
         apiKeyIdentifier: String? = nil,
         isFullUrl: Bool = false,
         modelsUrl: String? = nil,
@@ -88,11 +56,48 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         self.sortIndex = sortIndex
         self.isCurrent = isCurrent
         self.enableDiscovery = enableDiscovery
-        self.manualModels = manualModels
         self.apiKeyIdentifier = apiKeyIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.isFullUrl = isFullUrl
         self.modelsUrl = modelsUrl?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.customUserAgent = customUserAgent?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let appType = try container.decode(String.self, forKey: .appType)
+        self.init(
+            id: try container.decodeIfPresent(String.self, forKey: .id) ?? Self.makeID(),
+            appType: appType,
+            name: try container.decode(String.self, forKey: .name),
+            baseURL: try container.decode(String.self, forKey: .baseURL),
+            apiFormat: try container.decodeIfPresent(ApiFormat.self, forKey: .apiFormat)
+                ?? UniGateAppRegistry.defaultApiFormat(for: appType),
+            category: try container.decodeIfPresent(String.self, forKey: .category),
+            sortIndex: try container.decodeIfPresent(Int.self, forKey: .sortIndex),
+            isCurrent: try container.decodeIfPresent(Bool.self, forKey: .isCurrent) ?? false,
+            enableDiscovery: try container.decodeIfPresent(Bool.self, forKey: .enableDiscovery) ?? true,
+            apiKeyIdentifier: try container.decodeIfPresent(String.self, forKey: .apiKeyIdentifier),
+            isFullUrl: try container.decodeIfPresent(Bool.self, forKey: .isFullUrl) ?? false,
+            modelsUrl: try container.decodeIfPresent(String.self, forKey: .modelsUrl),
+            customUserAgent: try container.decodeIfPresent(String.self, forKey: .customUserAgent)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(appType, forKey: .appType)
+        try container.encode(name, forKey: .name)
+        try container.encode(baseURL, forKey: .baseURL)
+        try container.encode(apiFormat, forKey: .apiFormat)
+        try container.encodeIfPresent(category, forKey: .category)
+        try container.encodeIfPresent(sortIndex, forKey: .sortIndex)
+        try container.encode(isCurrent, forKey: .isCurrent)
+        try container.encode(enableDiscovery, forKey: .enableDiscovery)
+        try container.encodeIfPresent(apiKeyIdentifier, forKey: .apiKeyIdentifier)
+        try container.encode(isFullUrl, forKey: .isFullUrl)
+        try container.encodeIfPresent(modelsUrl, forKey: .modelsUrl)
+        try container.encodeIfPresent(customUserAgent, forKey: .customUserAgent)
     }
 
     public static func makeID() -> String {
@@ -111,10 +116,6 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         apiKeyIdentifier != nil
     }
 
-    public var hasManualModels: Bool {
-        !manualModels.isEmpty
-    }
-
     public func normalized() -> CustomProviderDefinition {
         CustomProviderDefinition(
             id: id,
@@ -126,7 +127,6 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
             sortIndex: sortIndex,
             isCurrent: isCurrent,
             enableDiscovery: enableDiscovery,
-            manualModels: manualModels.map { $0.normalized() },
             apiKeyIdentifier: apiKeyIdentifier,
             isFullUrl: isFullUrl,
             modelsUrl: modelsUrl,
@@ -137,12 +137,6 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
     public func withSecretIdentifier(_ identifier: String?) -> CustomProviderDefinition {
         var next = self
         next.apiKeyIdentifier = identifier?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return next
-    }
-
-    public func withManualModels(_ models: [CustomProviderManualModel]) -> CustomProviderDefinition {
-        var next = self
-        next.manualModels = models
         return next
     }
 
@@ -182,26 +176,6 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
                 customUserAgent: customUserAgent
             )
         )
-    }
-
-    public func manualCandidates(apiKey: String?) -> [ModelCandidate] {
-        let provider = toImportedProvider(apiKey: apiKey)
-        return manualModels.map { model in
-            ModelCandidate(
-                logicalModel: model.logicalModel,
-                providerRef: provider.ref,
-                providerName: provider.name,
-                appType: provider.appType,
-                clientProtocol: clientProtocol(for: provider.appType),
-                apiFormat: provider.apiFormat,
-                upstreamModel: model.upstreamModel,
-                baseURL: provider.baseURL,
-                requiresTransform: requiresTransform(appType: provider.appType, apiFormat: provider.apiFormat),
-                label: model.label,
-                supportsLongContext: model.supportsLongContext,
-                source: .custom
-            )
-        }
     }
 
     private static func settings(
@@ -245,23 +219,6 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         return meta
     }
 
-    private func clientProtocol(for appType: String) -> ClientProtocolKind {
-        switch appType {
-        case "gemini":
-            return .geminiNative
-        default:
-            return UniGateAppRegistry.clientProtocol(for: appType) ?? .openaiChat
-        }
-    }
-
-    private func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool {
-        switch appType {
-        case "gemini":
-            return apiFormat != .geminiNative
-        default:
-            return UniGateAppRegistry.requiresTransform(appType: appType, apiFormat: apiFormat) ?? false
-        }
-    }
 }
 
 public struct CustomProviderState: Codable, Sendable, Equatable {
@@ -269,6 +226,23 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
 
     public init(definitions: [CustomProviderDefinition] = []) {
         self.definitions = Self.deduplicated(definitions)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case definitions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.definitions = Self.deduplicated(try container.decodeIfPresent(
+            [CustomProviderDefinition].self,
+            forKey: .definitions
+        ) ?? [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(definitions, forKey: .definitions)
     }
 
     public func normalized() -> CustomProviderState {
@@ -294,12 +268,6 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
     public func importedProviders(keychain: CustomProviderKeychain = .shared) -> [ImportedProvider] {
         definitions.map { definition in
             definition.toImportedProvider(apiKey: apiKey(for: definition.providerRef, keychain: keychain))
-        }
-    }
-
-    public func manualCandidates(keychain: CustomProviderKeychain = .shared) -> [ModelCandidate] {
-        definitions.flatMap { definition in
-            definition.manualCandidates(apiKey: apiKey(for: definition.providerRef, keychain: keychain))
         }
     }
 
@@ -362,6 +330,22 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
             result.insert(definition, at: 0)
         }
         return result
+    }
+}
+
+public enum CustomProviderSecretRetention {
+    public static func identifierToPreserve(
+        existing: CustomProviderDefinition?,
+        canReadSecret: (String) -> Bool
+    ) -> String? {
+        guard
+            let existing,
+            let identifier = existing.apiKeyIdentifier,
+            canReadSecret(identifier)
+        else {
+            return nil
+        }
+        return identifier
     }
 }
 

@@ -52,6 +52,14 @@ public struct UniGateConfigurationBackup: Codable, Sendable {
         try container.encode(customModels, forKey: .customModels)
         try container.encode(customProviders, forKey: .customProviders)
     }
+
+    public var importsCustomProviders: Bool {
+        version >= 2
+    }
+
+    public func customProvidersForImport(current: CustomProviderState) -> CustomProviderState {
+        importsCustomProviders ? customProviders : current
+    }
 }
 
 public final class ConfigurationBackupStore: @unchecked Sendable {
