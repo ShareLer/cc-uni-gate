@@ -199,6 +199,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func previewCustomProviderModels(
+        _ definition: CustomProviderDefinition,
+        secret: String?
+    ) async -> ProviderModelDiscoveryResult {
+        let trimmedSecret = secret?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existingSecret = try? definition.apiKeyIdentifier.flatMap { try customProviderKeychain.read(identifier: $0) }
+        let provider = definition.toImportedProvider(apiKey: trimmedSecret?.isEmpty == false ? trimmedSecret : existingSecret)
+        return await discoverModels(for: provider, updatesNetworkDiagnostics: false)
+    }
+
     private func persistSettings(
         _ preferences: AppPreferences,
         customModels: CustomModelState,
@@ -534,7 +544,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func discoverModels(for provider: ImportedProvider) async -> ProviderModelDiscoveryResult {
+    private func discoverModels(
+        for provider: ImportedProvider,
+        updatesNetworkDiagnostics: Bool = true
+    ) async -> ProviderModelDiscoveryResult {
         let now = Date()
         let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
         guard let plan = ProviderModelDiscovery.fetchPlan(for: provider) else {
@@ -572,7 +585,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let (data, response) = try await session.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if (200..<300).contains(status) {
-                    clearNetworkDiagnostic(providerRef: provider.ref)
+                    if updatesNetworkDiagnostics {
+                        clearNetworkDiagnostic(providerRef: provider.ref)
+                    }
                     let ids = ProviderModelDiscovery.modelIDs(from: data)
                     return ProviderModelDiscoveryResult(
                         providerRef: provider.ref,
@@ -592,13 +607,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 break
             } catch {
                 lastFailure = "networkPolicy=\(networkPolicy.rawValue) \(error.localizedDescription)"
-                await updateNetworkPolicyDiagnosticIfAlternateResponds(
-                    provider: provider,
-                    request: request,
-                    url: url,
-                    failedMode: networkPolicy,
-                    failedError: error.localizedDescription
-                )
+                if updatesNetworkDiagnostics {
+                    await updateNetworkPolicyDiagnosticIfAlternateResponds(
+                        provider: provider,
+                        request: request,
+                        url: url,
+                        failedMode: networkPolicy,
+                        failedError: error.localizedDescription
+                    )
+                }
                 break
             }
         }
@@ -866,6 +883,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appState.onDeleteCustomProvider = { [weak self] definition in
             self?.deleteCustomProvider(definition)
+        }
+        appState.onPreviewCustomProviderModels = { [weak self] definition, secret in
+            guard let self else {
+                return nil
+            }
+            return await self.previewCustomProviderModels(definition, secret: secret)
         }
         appState.onRefreshModelDiscovery = { [weak self] appType in
             self?.refreshModelDiscovery(appType: appType)

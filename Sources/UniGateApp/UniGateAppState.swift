@@ -47,6 +47,7 @@ final class UniGateAppState: ObservableObject {
     var onApplySettings: ((AppPreferences, CustomModelState) -> Void)?
     var onSaveCustomProvider: ((CustomProviderDefinition, String?, CustomProviderDefinition?) -> Void)?
     var onDeleteCustomProvider: ((CustomProviderDefinition) -> Void)?
+    var onPreviewCustomProviderModels: ((CustomProviderDefinition, String?) async -> ProviderModelDiscoveryResult?)?
     var onRefreshModelDiscovery: ((String?) -> Void)?
     var onCopyDiagnostics: (() -> Void)?
     var onExportConfiguration: (() -> Void)?
@@ -436,6 +437,13 @@ final class UniGateAppState: ObservableObject {
 
     func deleteCustomProvider(_ definition: CustomProviderDefinition) {
         onDeleteCustomProvider?(definition)
+    }
+
+    func previewCustomProviderModels(
+        _ definition: CustomProviderDefinition,
+        secret: String?
+    ) async -> ProviderModelDiscoveryResult? {
+        await onPreviewCustomProviderModels?(definition, secret)
     }
 
     func reload() {

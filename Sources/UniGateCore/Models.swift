@@ -44,6 +44,19 @@ public enum UniGateAppRegistry {
         return nil
     }
 
+    public static func defaultApiFormat(for appType: String) -> ApiFormat {
+        if appType == codex {
+            return .openaiResponses
+        }
+        if isClaudeLike(appType) {
+            return .anthropic
+        }
+        if appType == "gemini" {
+            return .geminiNative
+        }
+        return .openaiResponses
+    }
+
     public static func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool? {
         if appType == codex {
             return apiFormat != .openaiResponses && apiFormat != .openaiChat

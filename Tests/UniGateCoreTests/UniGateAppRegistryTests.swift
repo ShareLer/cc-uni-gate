@@ -29,15 +29,24 @@ struct UniGateAppRegistryTests {
     func codexUsesResponsesProtocolAndOpenAITransformRules() {
         #expect(!UniGateAppRegistry.isClaudeLike(UniGateAppRegistry.codex))
         #expect(UniGateAppRegistry.clientProtocol(for: UniGateAppRegistry.codex) == .codexResponses)
+        #expect(UniGateAppRegistry.defaultApiFormat(for: UniGateAppRegistry.codex) == .openaiResponses)
         #expect(UniGateAppRegistry.requiresTransform(appType: UniGateAppRegistry.codex, apiFormat: .openaiResponses) == false)
         #expect(UniGateAppRegistry.requiresTransform(appType: UniGateAppRegistry.codex, apiFormat: .openaiChat) == false)
         #expect(UniGateAppRegistry.requiresTransform(appType: UniGateAppRegistry.codex, apiFormat: .anthropic) == true)
     }
 
     @Test
+    func claudeLikeAppsDefaultToAnthropicApiFormat() {
+        for appType in [UniGateAppRegistry.claudeCode, UniGateAppRegistry.claudeDesktop] {
+            #expect(UniGateAppRegistry.defaultApiFormat(for: appType) == .anthropic)
+        }
+    }
+
+    @Test
     func nonScopedAppsDoNotInheritUniGateProtocolRules() {
         #expect(!UniGateAppRegistry.isUniGateScoped("gemini"))
         #expect(UniGateAppRegistry.clientProtocol(for: "gemini") == nil)
+        #expect(UniGateAppRegistry.defaultApiFormat(for: "gemini") == .geminiNative)
         #expect(UniGateAppRegistry.requiresTransform(appType: "gemini", apiFormat: .geminiNative) == nil)
     }
 

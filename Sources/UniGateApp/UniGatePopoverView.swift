@@ -71,6 +71,7 @@ struct UniGatePopoverRootView: View {
     private let expandedRowAnimation = Animation.easeInOut(duration: 0.22)
     private let collapsedRowAnimation = Animation.easeInOut(duration: 0.34)
     private let panelTransitionAnimation = Animation.easeInOut(duration: 0.28)
+    private let customProviderEditorAnimation = Animation.spring(response: 0.32, dampingFraction: 0.88)
     private let providerTagWidth: CGFloat = 132
     private let rowActionSlotWidth: CGFloat = 18
     private let selectorSideControlWidth: CGFloat = 86
@@ -360,7 +361,7 @@ struct UniGatePopoverRootView: View {
                 routeContent
                     .transition(.opacity)
             case .modelDiscovery:
-                modelDiscoveryWorkspace
+                modelDiscoveryPanel
                     .transition(.opacity)
             case .settings:
                 inlineSettingsPanel
@@ -370,28 +371,6 @@ struct UniGatePopoverRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
         .animation(.easeInOut(duration: 0.15), value: state.screen)
-    }
-
-    private var modelDiscoveryWorkspace: some View {
-        ZStack(alignment: .topLeading) {
-            if isAddingCustomProvider {
-                customProviderEditor
-                    .id(customProviderEditorID)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
-            } else {
-                modelDiscoveryPanel
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .leading).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .clipped()
-        .animation(panelTransitionAnimation, value: isAddingCustomProvider)
     }
 
     private var routeContent: some View {
@@ -458,25 +437,23 @@ struct UniGatePopoverRootView: View {
         InlineCustomProviderEditorView(
             existing: editingCustomProvider,
             appType: editingCustomProvider?.appType ?? state.currentAppType ?? state.appTypes.first ?? UniGateAppRegistry.codex,
-            onSave: { definition, secret, shouldRefreshModels in
+            onSave: { definition, secret in
                 state.saveCustomProvider(definition, secret: secret, replacing: editingCustomProvider)
                 closeCustomProviderEditor()
-                if shouldRefreshModels {
-                    state.refreshModelDiscovery()
-                }
+            },
+            onPreviewModels: { definition, secret in
+                await state.previewCustomProviderModels(definition, secret: secret)
             },
             onCancel: closeCustomProviderEditor
         )
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func openCustomProviderEditor() {
         pendingDeleteCustomProviderID = nil
         editingCustomProvider = nil
         customProviderEditorID = UUID()
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(customProviderEditorAnimation) {
             isAddingCustomProvider = true
         }
     }
@@ -485,7 +462,7 @@ struct UniGatePopoverRootView: View {
         pendingDeleteCustomProviderID = nil
         editingCustomProvider = definition
         customProviderEditorID = UUID()
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(customProviderEditorAnimation) {
             isAddingCustomProvider = true
         }
     }
@@ -493,7 +470,7 @@ struct UniGatePopoverRootView: View {
     private func closeCustomProviderEditor() {
         editingCustomProvider = nil
         pendingDeleteCustomProviderID = nil
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(customProviderEditorAnimation) {
             isAddingCustomProvider = false
         }
     }
@@ -507,10 +484,14 @@ struct UniGatePopoverRootView: View {
                     .font(.caption)
                     .foregroundStyle(UGPopoverStyle.textSecondary)
                 Spacer()
-                compactIconButton(systemImage: "plus") {
-                    openCustomProviderEditor()
+                compactIconButton(systemImage: isAddingCustomProvider ? "minus" : "plus") {
+                    if isAddingCustomProvider {
+                        closeCustomProviderEditor()
+                    } else {
+                        openCustomProviderEditor()
+                    }
                 }
-                .help("新增自定义供应商")
+                .help(customProviderToggleHelp)
                 modelDiscoveryRefreshButton
                     .help("刷新模型探测")
                 compactIconButton(systemImage: "xmark") {
@@ -519,18 +500,45 @@ struct UniGatePopoverRootView: View {
                 .help("返回模型列表")
             }
 
-            modelDiscoveryContent
-                .opacity(state.isRefreshingModelDiscovery ? 0.70 : 1)
-                .scaleEffect(state.isRefreshingModelDiscovery ? 0.996 : 1)
-                .animation(.easeInOut(duration: 0.22), value: state.isRefreshingModelDiscovery)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if isAddingCustomProvider {
+                        customProviderEditor
+                            .id(customProviderEditorID)
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.96, anchor: .top)
+                                    .combined(with: .offset(y: -10))
+                                    .combined(with: .opacity),
+                                removal: .scale(scale: 0.96, anchor: .top)
+                                    .combined(with: .offset(y: -8))
+                                    .combined(with: .opacity)
+                            ))
+                    }
+
+                    modelDiscoveryContent
+                        .opacity(state.isRefreshingModelDiscovery ? 0.70 : 1)
+                        .scaleEffect(state.isRefreshingModelDiscovery ? 0.996 : 1)
+                        .animation(.easeInOut(duration: 0.22), value: state.isRefreshingModelDiscovery)
+                }
+                .padding(2)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .animation(customProviderEditorAnimation, value: isAddingCustomProvider)
+    }
+
+    private var customProviderToggleHelp: String {
+        guard isAddingCustomProvider else {
+            return "新增自定义供应商"
+        }
+        return editingCustomProvider == nil ? "取消新增自定义供应商" : "取消编辑自定义供应商"
     }
 
     @ViewBuilder
     private var modelDiscoveryContent: some View {
-        if state.currentModelDiscoveryItems.isEmpty {
+        let items = state.currentModelDiscoveryItems
+        if items.isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: "list.bullet.rectangle")
                     .font(.system(size: 28))
@@ -543,13 +551,10 @@ struct UniGatePopoverRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(state.currentModelDiscoveryItems) { item in
-                        discoveryProviderRow(item)
-                    }
+            VStack(spacing: 8) {
+                ForEach(items) { item in
+                    discoveryProviderRow(item)
                 }
-                .padding(2)
             }
         }
     }
@@ -2608,28 +2613,36 @@ private struct InlineCustomProviderEditorView: View {
     @Environment(\.ugBrandColor) private var brand
     let existing: CustomProviderDefinition?
     let appType: String
-    let onSave: (CustomProviderDefinition, String?, Bool) -> Void
+    let onSave: (CustomProviderDefinition, String?) -> Void
+    let onPreviewModels: (CustomProviderDefinition, String?) async -> ProviderModelDiscoveryResult?
     let onCancel: () -> Void
 
     @State private var name: String
     @State private var baseURL: String
     @State private var apiFormat: ApiFormat
+    @State private var isFullUrl: Bool
     @State private var secret: String
+    @State private var previewResult: ProviderModelDiscoveryResult?
+    @State private var isPreviewingModels = false
+    @State private var previewTask: Task<Void, Never>?
 
     init(
         existing: CustomProviderDefinition?,
         appType: String,
-        onSave: @escaping (CustomProviderDefinition, String?, Bool) -> Void,
+        onSave: @escaping (CustomProviderDefinition, String?) -> Void,
+        onPreviewModels: @escaping (CustomProviderDefinition, String?) async -> ProviderModelDiscoveryResult?,
         onCancel: @escaping () -> Void
     ) {
         self.existing = existing
         self.appType = existing?.appType ?? appType
         self.onSave = onSave
+        self.onPreviewModels = onPreviewModels
         self.onCancel = onCancel
 
         _name = State(initialValue: existing?.name ?? "")
         _baseURL = State(initialValue: existing?.baseURL ?? "")
-        _apiFormat = State(initialValue: existing?.apiFormat ?? .openaiResponses)
+        _apiFormat = State(initialValue: existing?.apiFormat ?? UniGateAppRegistry.defaultApiFormat(for: self.appType))
+        _isFullUrl = State(initialValue: existing?.isFullUrl ?? false)
         _secret = State(initialValue: "")
     }
 
@@ -2638,7 +2651,10 @@ private struct InlineCustomProviderEditorView: View {
             header
             formPanel
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .onDisappear {
+            previewTask?.cancel()
+        }
     }
 
     private var header: some View {
@@ -2654,34 +2670,37 @@ private struct InlineCustomProviderEditorView: View {
 
     private var formPanel: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    field(title: "名称") {
-                        TextField("例如 DeepSeek", text: $name)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    field(title: "base_url") {
-                        TextField("https://api.example.com", text: $baseURL)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    field(title: "API 格式") {
-                        Picker("", selection: $apiFormat) {
-                            Text("OpenAI Responses").tag(ApiFormat.openaiResponses)
-                            Text("OpenAI Chat").tag(ApiFormat.openaiChat)
-                            Text("Anthropic").tag(ApiFormat.anthropic)
-                            Text("Gemini Native").tag(ApiFormat.geminiNative)
-                        }
-                        .pickerStyle(.menu)
-                    }
-                    field(title: "API Key") {
-                        SecureField(existing?.hasSecret == true ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
-                            .textFieldStyle(.roundedBorder)
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                field(title: "名称") {
+                    TextField("例如 DeepSeek", text: $name)
+                        .textFieldStyle(.roundedBorder)
                 }
-                .padding(12)
-                .padding(.trailing, 4)
+                field(title: "base_url") {
+                    TextField("https://api.example.com", text: $baseURL)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Toggle(isOn: $isFullUrl) {
+                    Text("填写完整 URL")
+                }
+                field(title: "API 格式") {
+                    Picker("", selection: $apiFormat) {
+                        Text("OpenAI Responses").tag(ApiFormat.openaiResponses)
+                        Text("OpenAI Chat").tag(ApiFormat.openaiChat)
+                        Text("Anthropic").tag(ApiFormat.anthropic)
+                        Text("Gemini Native").tag(ApiFormat.geminiNative)
+                    }
+                    .pickerStyle(.menu)
+                }
+                field(title: "API Key") {
+                    SecureField(existing?.hasSecret == true ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
+                        .textFieldStyle(.roundedBorder)
+                }
+                if isPreviewingModels || previewResult != nil {
+                    previewResultPanel
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(12)
 
             Divider()
 
@@ -2689,7 +2708,7 @@ private struct InlineCustomProviderEditorView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.inputFieldBorder))
     }
@@ -2707,6 +2726,7 @@ private struct InlineCustomProviderEditorView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Button("取消") {
+                previewTask?.cancel()
                 onCancel()
             }
             .buttonStyle(.plain)
@@ -2716,21 +2736,27 @@ private struct InlineCustomProviderEditorView: View {
             Spacer()
 
             Button {
-                save(shouldRefreshModels: true)
+                previewModels()
             } label: {
-                Text("获取模型列表")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(canSave ? brand : UGPopoverStyle.textSecondary)
-                    .padding(.horizontal, 12)
-                    .frame(height: 30)
-                    .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
+                HStack(spacing: 6) {
+                    if isPreviewingModels {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(isPreviewingModels ? "获取中" : "获取模型列表")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(canPreviewModels ? brand : UGPopoverStyle.textSecondary)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
             }
             .buttonStyle(.plain)
-            .disabled(!canSave)
+            .disabled(!canPreviewModels || isPreviewingModels)
 
             Button {
-                save(shouldRefreshModels: false)
+                save()
             } label: {
                 Text(existing == nil ? "添加" : "保存")
                     .font(.system(size: 12, weight: .semibold))
@@ -2740,8 +2766,70 @@ private struct InlineCustomProviderEditorView: View {
                     .background(canSave ? brand : UGPopoverStyle.tabFill, in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
-            .disabled(!canSave)
+            .disabled(!canSave || isPreviewingModels)
         }
+    }
+
+    @ViewBuilder
+    private var previewResultPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if isPreviewingModels {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在获取模型列表")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                } else if let previewResult {
+                    previewStatusBadge(
+                        previewResult.errorMessage == nil ? "\(previewResult.modelIDs.count) 个模型" : "获取失败",
+                        color: previewResult.errorMessage == nil ? brand : .orange
+                    )
+                    if let sourceURL = previewResult.sourceURL {
+                        Text(sourceURL)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(UGPopoverStyle.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer()
+            }
+
+            if let previewResult, !isPreviewingModels {
+                if let errorMessage = previewResult.errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if previewResult.modelIDs.isEmpty {
+                    Text("接口返回成功，但未解析到模型")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(previewResult.modelIDs.prefix(12).joined(separator: ", "))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .lineLimit(4)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UGPopoverStyle.cardBorder))
+        .animation(.easeInOut(duration: 0.18), value: isPreviewingModels)
+        .animation(.easeInOut(duration: 0.18), value: previewResult)
+    }
+
+    private func previewStatusBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.24)))
     }
 
     private var canSave: Bool {
@@ -2751,12 +2839,42 @@ private struct InlineCustomProviderEditorView: View {
             && (existing?.hasSecret == true || !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
-    private func save(shouldRefreshModels: Bool) {
+    private var canPreviewModels: Bool {
+        canSave
+    }
+
+    private func previewModels() {
+        guard canPreviewModels else {
+            NSSound.beep()
+            return
+        }
+        let definition = makeDefinition()
+        let trimmedSecret = trimmedSecret
+        previewTask?.cancel()
+        previewResult = nil
+        isPreviewingModels = true
+        previewTask = Task { @MainActor in
+            let result = await onPreviewModels(definition, trimmedSecret)
+            guard !Task.isCancelled else {
+                return
+            }
+            previewResult = result
+            isPreviewingModels = false
+            previewTask = nil
+        }
+    }
+
+    private func save() {
         guard canSave else {
             NSSound.beep()
             return
         }
-        let definition = CustomProviderDefinition(
+        previewTask?.cancel()
+        onSave(makeDefinition(), trimmedSecret)
+    }
+
+    private func makeDefinition() -> CustomProviderDefinition {
+        CustomProviderDefinition(
             id: existing?.id ?? CustomProviderDefinition.makeID(),
             appType: appType,
             name: name,
@@ -2766,12 +2884,15 @@ private struct InlineCustomProviderEditorView: View {
             enableDiscovery: true,
             manualModels: existing?.manualModels ?? [],
             apiKeyIdentifier: existing?.apiKeyIdentifier,
-            isFullUrl: existing?.isFullUrl ?? false,
+            isFullUrl: isFullUrl,
             modelsUrl: existing?.modelsUrl,
             customUserAgent: existing?.customUserAgent
         )
-        let trimmedSecret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
-        onSave(definition, trimmedSecret.isEmpty ? nil : trimmedSecret, shouldRefreshModels)
+    }
+
+    private var trimmedSecret: String? {
+        let value = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }
 
