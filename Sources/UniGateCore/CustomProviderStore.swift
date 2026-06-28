@@ -233,7 +233,8 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         customUserAgent: String?
     ) -> [String: SendableValue] {
         var meta: [String: SendableValue] = [
-            "isFullUrl": .bool(isFullUrl)
+            "isFullUrl": .bool(isFullUrl),
+            "source": .string("unigate")
         ]
         if let modelsUrl, !modelsUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             meta["modelsUrl"] = .string(modelsUrl)

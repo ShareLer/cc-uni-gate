@@ -138,9 +138,19 @@ public enum ProviderModelDiscovery {
                 return []
             }
 
+            let isCustom = isCustomProvider(provider)
+            let source: ModelCandidateSource
+            if isCustom {
+                // 自定义供应商的探测结果（含上次成功的 stale 结果）都能 seed 路由键，
+                // 让用户主动添加的供应商不会因探测抖动丢失路由入口。
+                source = .custom
+            } else {
+                source = result.errorMessage == nil ? .discovered : .staleDiscovered
+            }
             return mergedModelIDs(result.modelIDs).map { modelID in
-                ModelCandidate(
-                    logicalModel: ModelNameNormalizer.stripOneMSuffix(modelID),
+                let logicalModel = isCustom ? modelID : ModelNameNormalizer.stripOneMSuffix(modelID)
+                return ModelCandidate(
+                    logicalModel: logicalModel,
                     providerRef: provider.ref,
                     providerName: provider.name,
                     appType: provider.appType,
@@ -151,7 +161,7 @@ public enum ProviderModelDiscovery {
                     requiresTransform: requiresTransform(appType: provider.appType, apiFormat: provider.apiFormat),
                     label: nil,
                     supportsLongContext: ModelNameNormalizer.hasOneMMarker(modelID),
-                    source: result.errorMessage == nil ? .discovered : .staleDiscovered
+                    source: source
                 )
             }
         }
@@ -181,6 +191,10 @@ public enum ProviderModelDiscovery {
         JSONValueParser.string(provider.meta, ["modelsUrl"])
             ?? JSONValueParser.string(provider.settings, ["modelsUrl"])
             ?? JSONValueParser.string(provider.settings, ["models_url"])
+    }
+
+    private static func isCustomProvider(_ provider: ImportedProvider) -> Bool {
+        JSONValueParser.string(provider.meta, ["source"]) == "unigate"
     }
 
     private static func bool(_ object: [String: SendableValue], _ path: [String]) -> Bool? {

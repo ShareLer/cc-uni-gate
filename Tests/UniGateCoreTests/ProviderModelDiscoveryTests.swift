@@ -225,4 +225,90 @@ struct ProviderModelDiscoveryTests {
         #expect(candidates.map(\.logicalModel) == ["auto", "deepseek-v4-pro"])
         #expect(candidates.allSatisfy { $0.source == .staleDiscovered })
     }
+
+    @Test
+    func discoveredCandidatesForCustomProviderSeedRouteKeysWithoutStrippingSuffix() {
+        let provider = ImportedProvider(
+            id: "unigate-test",
+            appType: "codex",
+            name: "自定义代理",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://proxy.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: ["source": .string("unigate")]
+        )
+        let result = ProviderModelDiscoveryResult(
+            providerRef: provider.ref,
+            appType: provider.appType,
+            providerName: provider.name,
+            modelIDs: ["gpt-5.5", "gpt-5.5-1m"],
+            errorMessage: nil,
+            sourceURL: nil,
+            configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: provider)
+        )
+        let state = ProviderModelDiscoveryState(results: [provider.ref.description: result])
+        let catalog = ProviderCatalog(providers: [provider], candidates: [])
+
+        let candidates = ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog)
+
+        // 自定义供应商的探测结果产 .custom（可 seed 路由键），且不 strip -1m 后缀
+        #expect(candidates.map(\.logicalModel) == ["gpt-5.5", "gpt-5.5-1m"])
+        #expect(candidates.allSatisfy { $0.source == .custom })
+        #expect(candidates.allSatisfy { $0.source.isRouteKeySeed })
+        // logicalModel 与 upstreamModel 相同（用户决策：探测名即实际名）
+        #expect(candidates.allSatisfy { $0.logicalModel == $0.upstreamModel })
+    }
+
+    @Test
+    func discoveredCandidatesForCustomProviderKeepStaleResultsAsRouteKeySeed() {
+        let provider = ImportedProvider(
+            id: "unigate-test",
+            appType: "codex",
+            name: "自定义代理",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://proxy.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: ["source": .string("unigate")]
+        )
+        let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
+        var state = ProviderModelDiscoveryState(results: [
+            provider.ref.description: ProviderModelDiscoveryResult(
+                providerRef: provider.ref,
+                appType: provider.appType,
+                providerName: provider.name,
+                modelIDs: ["gpt-5.5"],
+                errorMessage: nil,
+                sourceURL: nil,
+                updatedAt: Date(timeIntervalSince1970: 1),
+                configurationFingerprint: fingerprint
+            )
+        ])
+        // 本次探测失败，保留上次成功结果
+        state.upsert(ProviderModelDiscoveryResult(
+            providerRef: provider.ref,
+            appType: provider.appType,
+            providerName: provider.name,
+            modelIDs: [],
+            errorMessage: "timeout",
+            sourceURL: nil,
+            updatedAt: Date(timeIntervalSince1970: 2),
+            configurationFingerprint: fingerprint
+        ))
+
+        let catalog = ProviderCatalog(providers: [provider], candidates: [])
+        let candidates = ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog)
+
+        // 自定义供应商的 stale 结果仍保留 .custom source，路由入口不因探测抖动消失
+        #expect(candidates.map(\.logicalModel) == ["gpt-5.5"])
+        #expect(candidates.allSatisfy { $0.source == .custom })
+        #expect(candidates.allSatisfy { $0.source.isRouteKeySeed })
+    }
 }

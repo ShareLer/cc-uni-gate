@@ -434,8 +434,12 @@ struct UniGatePopoverRootView: View {
     }
 
     private var customProviderEditor: some View {
-        InlineCustomProviderEditorView(
+        let existingHasResolvableSecret = editingCustomProvider.flatMap { definition in
+            state.catalog.providers.first { $0.ref == definition.providerRef }?.hasSecret
+        } ?? false
+        return InlineCustomProviderEditorView(
             existing: editingCustomProvider,
+            existingHasResolvableSecret: existingHasResolvableSecret,
             appType: editingCustomProvider?.appType ?? state.currentAppType ?? state.appTypes.first ?? UniGateAppRegistry.codex,
             onSave: { definition, secret in
                 state.saveCustomProvider(definition, secret: secret, replacing: editingCustomProvider)
@@ -638,6 +642,9 @@ struct UniGatePopoverRootView: View {
                             .lineLimit(1)
                         if customDefinition != nil {
                             providerStatusBadge("自定义供应商", color: brand)
+                        }
+                        if customDefinition != nil, !provider.hasSecret {
+                            providerStatusBadge("密钥缺失", color: .orange)
                         }
                     }
                     Text(discoveryProviderSummaryText(item))
@@ -2612,6 +2619,7 @@ private struct InlineCustomModelEditorView: View {
 private struct InlineCustomProviderEditorView: View {
     @Environment(\.ugBrandColor) private var brand
     let existing: CustomProviderDefinition?
+    let existingHasResolvableSecret: Bool
     let appType: String
     let onSave: (CustomProviderDefinition, String?) -> Void
     let onPreviewModels: (CustomProviderDefinition, String?) async -> ProviderModelDiscoveryResult?
@@ -2628,12 +2636,14 @@ private struct InlineCustomProviderEditorView: View {
 
     init(
         existing: CustomProviderDefinition?,
+        existingHasResolvableSecret: Bool,
         appType: String,
         onSave: @escaping (CustomProviderDefinition, String?) -> Void,
         onPreviewModels: @escaping (CustomProviderDefinition, String?) async -> ProviderModelDiscoveryResult?,
         onCancel: @escaping () -> Void
     ) {
         self.existing = existing
+        self.existingHasResolvableSecret = existingHasResolvableSecret
         self.appType = existing?.appType ?? appType
         self.onSave = onSave
         self.onPreviewModels = onPreviewModels
@@ -2692,7 +2702,7 @@ private struct InlineCustomProviderEditorView: View {
                     .pickerStyle(.menu)
                 }
                 field(title: "API Key") {
-                    SecureField(existing?.hasSecret == true ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
+                    SecureField(existingHasResolvableSecret ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
                         .textFieldStyle(.roundedBorder)
                 }
                 if isPreviewingModels || previewResult != nil {
@@ -2836,7 +2846,7 @@ private struct InlineCustomProviderEditorView: View {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !appType.isEmpty
             && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (existing?.hasSecret == true || !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            && (existingHasResolvableSecret || !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private var canPreviewModels: Bool {

@@ -174,8 +174,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let nextSecret, !nextSecret.isEmpty {
                 try customProviderKeychain.save(nextSecret, identifier: identifier)
                 nextDefinition.apiKeyIdentifier = identifier
-            } else if existing?.hasSecret == true {
-                nextDefinition.apiKeyIdentifier = identifier
+            } else if let existing, let existingIdentifier = existing.apiKeyIdentifier,
+                      (try? customProviderKeychain.read(identifier: existingIdentifier)) != nil {
+                // 未输入新密钥，且 Keychain 中确有可读的现有密钥 → 保留标识符
+                nextDefinition.apiKeyIdentifier = existingIdentifier
             } else {
                 nextDefinition.apiKeyIdentifier = nil
             }
@@ -341,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard confirmDestructiveAction(
             title: "恢复配置？",
-            message: "这会覆盖 Uni Gate 当前的本地设置、模型路由和自定义模型。cc-switch 数据库不会被修改。"
+            message: "这会覆盖 Uni Gate 当前的本地设置、模型路由、自定义模型和自定义供应商。备份不含 API 密钥，跨设备恢复后自定义供应商需重新输入密钥。cc-switch 数据库不会被修改。"
         ) else {
             return
         }
@@ -351,12 +353,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences = backup.preferences
             routes = backup.routes
             customModels = backup.customModels
-            customProviders = backup.customProviders
+            // v1 备份在自定义供应商功能之前生成，不含 customProviders 字段（解码为空）。
+            // 直接覆盖会经 reconcile 删除当前所有自定义供应商密钥（不可恢复，密钥不随备份导出）。
+            // 故 v1 保留当前 customProviders，仅恢复 v2 及以上的该字段。
+            let restoreCustomProviders = backup.version >= 2 ? backup.customProviders : previousCustomProviders
+            customProviders = restoreCustomProviders
             networkDiagnostics.removeAll()
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             try customProviderStore.save(customProviders)
-            try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
+            if backup.version >= 2 {
+                try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
+            }
             try routeStore.save(routes)
             syncLaunchAtLoginPreference()
             reloadCatalog(recordEventMessage: "已恢复 Uni Gate 配置")
@@ -378,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func performResetConfiguration() {
         guard confirmDestructiveAction(
             title: "重置 Uni Gate 配置？",
-            message: "这会清空本地偏好、自定义模型和路由选择，并重新从 cc-switch 生成默认路由。"
+            message: "这会清空本地偏好、自定义模型、自定义供应商及其已保存的 API 密钥，并重新从 cc-switch 生成默认路由。"
         ) else {
             return
         }
@@ -748,8 +756,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadExpandedCatalog(imported: ProviderCatalog) -> ProviderCatalog {
-        let manualCandidates = customProviders.manualCandidates()
-        let manualCandidateIDs = Set(manualCandidates.map(\.id))
         let allProviders = imported.providers + customProviders.importedProviders()
         let discoverableCatalog = ProviderCatalog(
             providers: discoverableProviders(from: allProviders),
@@ -758,10 +764,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let discoveredCandidates = ProviderModelDiscovery.discoveredCandidates(
             from: discoveryState,
             catalog: discoverableCatalog
-        ).filter { !manualCandidateIDs.contains($0.id) }
+        )
         let baseCatalog = ProviderCatalog(
             providers: allProviders,
-            candidates: imported.candidates + manualCandidates + discoveredCandidates
+            candidates: imported.candidates + discoveredCandidates
         )
         let customCandidates = customModels.expandedCandidates(from: baseCatalog)
         return ProviderCatalog(
@@ -1012,6 +1018,7 @@ extension AppDelegate: LocalProxyRuntime {
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()
+        customProviders = try customProviderStore.load()
         discoveryState = try discoveryStore.load()
         let importedSnapshot = try loadImportedConfigurationSnapshot()
         ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
