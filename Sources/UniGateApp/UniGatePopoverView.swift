@@ -60,9 +60,13 @@ struct UniGatePopoverRootView: View {
     @State private var reloadFeedbackActive = false
     @State private var reloadFeedbackID = UUID()
     @State private var isAddingCustomModel = false
+    @State private var isAddingCustomProvider = false
     @State private var customModelEditorID = UUID()
+    @State private var customProviderEditorID = UUID()
     @State private var editingCustomModel: CustomModelDefinition?
+    @State private var editingCustomProvider: CustomProviderDefinition?
     @State private var pendingDeleteCustomModelID: UUID?
+    @State private var pendingDeleteCustomProviderID: String?
 
     private let expandedRowAnimation = Animation.easeInOut(duration: 0.22)
     private let collapsedRowAnimation = Animation.easeInOut(duration: 0.34)
@@ -356,7 +360,7 @@ struct UniGatePopoverRootView: View {
                 routeContent
                     .transition(.opacity)
             case .modelDiscovery:
-                modelDiscoveryPanel
+                modelDiscoveryWorkspace
                     .transition(.opacity)
             case .settings:
                 inlineSettingsPanel
@@ -366,6 +370,28 @@ struct UniGatePopoverRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipped()
         .animation(.easeInOut(duration: 0.15), value: state.screen)
+    }
+
+    private var modelDiscoveryWorkspace: some View {
+        ZStack(alignment: .topLeading) {
+            if isAddingCustomProvider {
+                customProviderEditor
+                    .id(customProviderEditorID)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
+            } else {
+                modelDiscoveryPanel
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .leading).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    ))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .clipped()
+        .animation(panelTransitionAnimation, value: isAddingCustomProvider)
     }
 
     private var routeContent: some View {
@@ -428,17 +454,65 @@ struct UniGatePopoverRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private var customProviderEditor: some View {
+        InlineCustomProviderEditorView(
+            existing: editingCustomProvider,
+            appType: editingCustomProvider?.appType ?? state.currentAppType ?? state.appTypes.first ?? UniGateAppRegistry.codex,
+            onSave: { definition, secret, shouldRefreshModels in
+                state.saveCustomProvider(definition, secret: secret, replacing: editingCustomProvider)
+                closeCustomProviderEditor()
+                if shouldRefreshModels {
+                    state.refreshModelDiscovery()
+                }
+            },
+            onCancel: closeCustomProviderEditor
+        )
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func openCustomProviderEditor() {
+        pendingDeleteCustomProviderID = nil
+        editingCustomProvider = nil
+        customProviderEditorID = UUID()
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isAddingCustomProvider = true
+        }
+    }
+
+    private func editCustomProvider(_ definition: CustomProviderDefinition) {
+        pendingDeleteCustomProviderID = nil
+        editingCustomProvider = definition
+        customProviderEditorID = UUID()
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isAddingCustomProvider = true
+        }
+    }
+
+    private func closeCustomProviderEditor() {
+        editingCustomProvider = nil
+        pendingDeleteCustomProviderID = nil
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isAddingCustomProvider = false
+        }
+    }
+
     private var modelDiscoveryPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("模型探测结果")
+                Text("供应商")
                     .font(.system(size: 16, weight: .semibold))
                 Text(state.currentAppType.map(ProviderDisplay.appTypeLabel) ?? "全部应用")
                     .font(.caption)
                     .foregroundStyle(UGPopoverStyle.textSecondary)
                 Spacer()
+                compactIconButton(systemImage: "plus") {
+                    openCustomProviderEditor()
+                }
+                .help("新增自定义供应商")
                 modelDiscoveryRefreshButton
-                .help("刷新模型探测")
+                    .help("刷新模型探测")
                 compactIconButton(systemImage: "xmark") {
                     state.closeSettings()
                 }
@@ -480,15 +554,87 @@ struct UniGatePopoverRootView: View {
         }
     }
 
+    private func customProviderMenu(_ definition: CustomProviderDefinition) -> some View {
+        Menu {
+            Button("编辑") {
+                editCustomProvider(definition)
+            }
+            Button("删除...", role: .destructive) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    pendingDeleteCustomProviderID = definition.id
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .help("自定义供应商操作")
+    }
+
+    private func customProviderDeleteConfirmation(for definition: CustomProviderDefinition) -> some View {
+        HStack(spacing: 8) {
+            Text("删除这个自定义供应商？")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button("取消") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    pendingDeleteCustomProviderID = nil
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+
+            Button("删除") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    pendingDeleteCustomProviderID = nil
+                }
+                state.deleteCustomProvider(definition)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(UGPopoverStyle.destructive)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(UGPopoverStyle.deleteConfirmFill, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UGPopoverStyle.deleteConfirmBorder))
+    }
+
+    private func providerStatusBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.24)))
+    }
+
     private func discoveryProviderRow(_ item: ModelDiscoveryProviderItem) -> some View {
         let provider = item.provider
         let result = item.result
+        let customDefinition = state.customProviders.definition(for: provider.ref)
+        let isConfirmingDelete = customDefinition.map { pendingDeleteCustomProviderID == $0.id } ?? false
         return VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(provider.name)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(provider.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                        if customDefinition != nil {
+                            providerStatusBadge("自定义供应商", color: brand)
+                        }
+                    }
                     Text(discoveryProviderSummaryText(item))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(UGPopoverStyle.textSecondary)
@@ -499,6 +645,9 @@ struct UniGatePopoverRootView: View {
                     Text(shortDateTime(result.updatedAt))
                         .font(.caption2)
                         .foregroundStyle(UGPopoverStyle.textSecondary)
+                }
+                if let customDefinition {
+                    customProviderMenu(customDefinition)
                 }
             }
 
@@ -534,11 +683,18 @@ struct UniGatePopoverRootView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(UGPopoverStyle.textSecondary)
             }
+
+            if let customDefinition, isConfirmingDelete {
+                customProviderDeleteConfirmation(for: customDefinition)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.cardBorder))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isConfirmingDelete ? UGPopoverStyle.deleteConfirmBorder : UGPopoverStyle.cardBorder)
+        )
     }
 
     private func discoveryProviderSummaryText(_ item: ModelDiscoveryProviderItem) -> String {
@@ -1337,10 +1493,6 @@ private struct InlineSettingsPanel: View {
     @ObservedObject var model: SettingsViewModel
     let loadError: String?
     @State private var applyTask: Task<Void, Never>?
-    @State private var isEditingCustomProvider = false
-    @State private var customProviderEditorID = UUID()
-    @State private var editingCustomProvider: CustomProviderDefinition?
-    @State private var pendingDeleteCustomProviderID: String?
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -1350,17 +1502,7 @@ private struct InlineSettingsPanel: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            settingsContent
-                .opacity(isEditingCustomProvider ? 0.18 : 1)
-                .blur(radius: isEditingCustomProvider ? 0.4 : 0)
-                .allowsHitTesting(!isEditingCustomProvider)
-
-            if isEditingCustomProvider {
-                customProviderEditor
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
-            }
-        }
+        settingsContent
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .overlay(alignment: .top) {
             if let toast = model.toast {
@@ -1412,7 +1554,6 @@ private struct InlineSettingsPanel: View {
                     healthCheckCard
                     generalSettingsCard
                     networkPolicyCard
-                    customProvidersCard
                     endpointCard
                     diagnosticsCard
                     backupRestoreCard
@@ -1421,20 +1562,6 @@ private struct InlineSettingsPanel: View {
                 .padding(.trailing, 4)
             }
         }
-    }
-
-    private var customProviderEditor: some View {
-        InlineCustomProviderEditorView(
-            existing: editingCustomProvider,
-            appTypes: customProviderAppTypes(),
-            onSave: { definition, secret in
-                state.saveCustomProvider(definition, secret: secret, replacing: editingCustomProvider)
-                closeCustomProviderEditor()
-            },
-            onCancel: closeCustomProviderEditor
-        )
-        .id(customProviderEditorID)
-        .padding(12)
     }
 
     private var header: some View {
@@ -1518,32 +1645,6 @@ private struct InlineSettingsPanel: View {
                     state.resetConfiguration()
                 }
             }
-        }
-    }
-
-    private func openCustomProviderEditor() {
-        pendingDeleteCustomProviderID = nil
-        editingCustomProvider = nil
-        customProviderEditorID = UUID()
-        withAnimation(.easeInOut(duration: 0.18)) {
-            isEditingCustomProvider = true
-        }
-    }
-
-    private func editCustomProvider(_ definition: CustomProviderDefinition) {
-        pendingDeleteCustomProviderID = nil
-        editingCustomProvider = definition
-        customProviderEditorID = UUID()
-        withAnimation(.easeInOut(duration: 0.18)) {
-            isEditingCustomProvider = true
-        }
-    }
-
-    private func closeCustomProviderEditor() {
-        editingCustomProvider = nil
-        pendingDeleteCustomProviderID = nil
-        withAnimation(.easeInOut(duration: 0.18)) {
-            isEditingCustomProvider = false
         }
     }
 
@@ -1751,167 +1852,6 @@ private struct InlineSettingsPanel: View {
                 }
             }
         }
-    }
-
-    private var customProvidersCard: some View {
-        settingsCard(spacing: 10) {
-            HStack(spacing: 8) {
-                Text("自定义供应商")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("\(model.sortedCustomProviders.count) 个")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(UGPopoverStyle.textSecondary)
-                    .padding(.horizontal, 6)
-                    .frame(height: 18)
-                    .background(UGPopoverStyle.disabledTagFill, in: RoundedRectangle(cornerRadius: 5))
-                Spacer()
-                compactAction("新增", systemImage: "plus") {
-                    openCustomProviderEditor()
-                }
-            }
-
-            if model.sortedCustomProviders.isEmpty {
-                Text("尚未添加自定义供应商。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(UGPopoverStyle.textSecondary)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(model.sortedCustomProviders, id: \.id) { definition in
-                        customProviderRow(definition)
-                    }
-                }
-            }
-        }
-    }
-
-    private func customProviderRow(_ definition: CustomProviderDefinition) -> some View {
-        let hasSecret = model.customProviderHasSecret(definition)
-        let isConfirmingDelete = pendingDeleteCustomProviderID == definition.id
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(definition.name)
-                            .font(.system(size: 12, weight: .semibold))
-                            .lineLimit(1)
-                        providerStatusBadge(
-                            hasSecret ? "密钥已保存" : "缺少密钥",
-                            color: hasSecret ? .green : .orange
-                        )
-                    }
-                    Text("\(ProviderDisplay.appTypeLabel(definition.appType)) · \(definition.apiFormat.rawValue)")
-                        .font(.caption2)
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                        .lineLimit(1)
-                    Text(definition.baseURL)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 6) {
-                    HStack(spacing: 6) {
-                        providerStatusBadge(
-                            definition.enableDiscovery ? "发现开启" : "发现关闭",
-                            color: definition.enableDiscovery ? .blue : .secondary
-                        )
-                        providerStatusBadge("\(definition.manualModels.count) 个手动模型", color: .secondary)
-                    }
-                    customProviderMenu(definition)
-                }
-            }
-
-            if isConfirmingDelete {
-                customProviderDeleteConfirmation(for: definition)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isConfirmingDelete ? UGPopoverStyle.deleteConfirmBorder : UGPopoverStyle.cardBorder)
-        )
-    }
-
-    private func customProviderMenu(_ definition: CustomProviderDefinition) -> some View {
-        Menu {
-            Button("编辑") {
-                editCustomProvider(definition)
-            }
-            Button("删除...", role: .destructive) {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    pendingDeleteCustomProviderID = definition.id
-                }
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(UGPopoverStyle.textSecondary)
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.button)
-        .menuIndicator(.hidden)
-        .help("自定义供应商操作")
-    }
-
-    private func customProviderDeleteConfirmation(for definition: CustomProviderDefinition) -> some View {
-        HStack(spacing: 8) {
-            Text("删除这个自定义供应商？")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(UGPopoverStyle.textSecondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            Button("取消") {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    pendingDeleteCustomProviderID = nil
-                }
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-
-            Button("删除") {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    pendingDeleteCustomProviderID = nil
-                }
-                state.deleteCustomProvider(definition)
-            }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(UGPopoverStyle.destructive)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(UGPopoverStyle.deleteConfirmFill, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UGPopoverStyle.deleteConfirmBorder))
-    }
-
-    private func providerStatusBadge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .frame(height: 18)
-            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.24)))
-    }
-
-    private func customProviderAppTypes() -> [String] {
-        let known = [
-            UniGateAppRegistry.codex,
-            UniGateAppRegistry.claudeCode,
-            UniGateAppRegistry.claudeDesktop,
-            "gemini"
-        ]
-        let candidates = Set(model.candidates.map(\.appType))
-        let customProviders = Set(model.sortedCustomProviders.map(\.appType))
-        return (known + Array(candidates) + Array(customProviders)).uniqueSortedAppTypes()
     }
 
     private var endpointCard: some View {
@@ -2667,49 +2607,30 @@ private struct InlineCustomModelEditorView: View {
 private struct InlineCustomProviderEditorView: View {
     @Environment(\.ugBrandColor) private var brand
     let existing: CustomProviderDefinition?
-    let appTypes: [String]
-    let onSave: (CustomProviderDefinition, String?) -> Void
+    let appType: String
+    let onSave: (CustomProviderDefinition, String?, Bool) -> Void
     let onCancel: () -> Void
 
-    @State private var appType: String
     @State private var name: String
     @State private var baseURL: String
     @State private var apiFormat: ApiFormat
-    @State private var enableDiscovery: Bool
-    @State private var isFullUrl: Bool
-    @State private var modelsUrl: String
-    @State private var customUserAgent: String
     @State private var secret: String
-    @State private var manualModelName: String
-    @State private var manualUpstreamModel: String
-    @State private var manualModelLabel: String
-    @State private var manualModelSupportsLongContext: Bool
 
     init(
         existing: CustomProviderDefinition?,
-        appTypes: [String],
-        onSave: @escaping (CustomProviderDefinition, String?) -> Void,
+        appType: String,
+        onSave: @escaping (CustomProviderDefinition, String?, Bool) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.existing = existing
-        self.appTypes = appTypes
+        self.appType = existing?.appType ?? appType
         self.onSave = onSave
         self.onCancel = onCancel
 
-        _appType = State(initialValue: existing?.appType ?? appTypes.first ?? "")
         _name = State(initialValue: existing?.name ?? "")
         _baseURL = State(initialValue: existing?.baseURL ?? "")
         _apiFormat = State(initialValue: existing?.apiFormat ?? .openaiResponses)
-        _enableDiscovery = State(initialValue: existing?.enableDiscovery ?? true)
-        _isFullUrl = State(initialValue: existing?.isFullUrl ?? false)
-        _modelsUrl = State(initialValue: existing?.modelsUrl ?? "")
-        _customUserAgent = State(initialValue: existing?.customUserAgent ?? "")
         _secret = State(initialValue: "")
-        let firstManual = existing?.manualModels.first
-        _manualModelName = State(initialValue: firstManual?.logicalModel ?? "")
-        _manualUpstreamModel = State(initialValue: firstManual?.upstreamModel ?? "")
-        _manualModelLabel = State(initialValue: firstManual?.label ?? "")
-        _manualModelSupportsLongContext = State(initialValue: firstManual?.supportsLongContext ?? false)
     }
 
     var body: some View {
@@ -2718,32 +2639,28 @@ private struct InlineCustomProviderEditorView: View {
             formPanel
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.inputFieldBorder))
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(existing == nil ? "新增自定义供应商" : "编辑自定义供应商")
                 .font(.system(size: 16, weight: .semibold))
-            Text("至少保留一个手动模型；API key 只写入 Keychain。")
+            Text(ProviderDisplay.appTypeLabel(appType))
                 .font(.caption)
                 .foregroundStyle(UGPopoverStyle.textSecondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var formPanel: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    field(title: "应用") {
-                        appTypeSelector
-                    }
                     field(title: "名称") {
                         TextField("例如 DeepSeek", text: $name)
                             .textFieldStyle(.roundedBorder)
                     }
-                    field(title: "基础地址") {
+                    field(title: "base_url") {
                         TextField("https://api.example.com", text: $baseURL)
                             .textFieldStyle(.roundedBorder)
                     }
@@ -2756,45 +2673,15 @@ private struct InlineCustomProviderEditorView: View {
                         }
                         .pickerStyle(.menu)
                     }
-                    Toggle(isOn: $enableDiscovery) {
-                        Text("启用模型发现")
-                    }
-                    Toggle(isOn: $isFullUrl) {
-                        Text("使用完整模型 URL")
-                    }
-                    field(title: "Models URL") {
-                        TextField("可选", text: $modelsUrl)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    field(title: "自定义 User-Agent") {
-                        TextField("可选", text: $customUserAgent)
-                            .textFieldStyle(.roundedBorder)
-                    }
                     field(title: "API Key") {
                         SecureField(existing?.hasSecret == true ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
                             .textFieldStyle(.roundedBorder)
                     }
-                    Divider()
-                    Text("手动模型")
-                        .font(.system(size: 12, weight: .semibold))
-                    field(title: "模型名") {
-                        TextField("例如 gpt-5.5", text: $manualModelName)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    field(title: "上游模型") {
-                        TextField("例如 gpt-5.5", text: $manualUpstreamModel)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    field(title: "标签") {
-                        TextField("可选", text: $manualModelLabel)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    Toggle(isOn: $manualModelSupportsLongContext) {
-                        Text("支持长上下文")
-                    }
                 }
                 .padding(12)
+                .padding(.trailing, 4)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             Divider()
 
@@ -2802,6 +2689,9 @@ private struct InlineCustomProviderEditorView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.inputFieldBorder))
     }
 
     private func field<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -2811,30 +2701,7 @@ private struct InlineCustomProviderEditorView: View {
                 .foregroundStyle(UGPopoverStyle.textSecondary)
             content()
         }
-    }
-
-    private var appTypeSelector: some View {
-        HStack(spacing: 6) {
-            ForEach(appTypes, id: \.self) { item in
-                let selected = appType == item
-                Button {
-                    appType = item
-                } label: {
-                    Text(ProviderDisplay.appTypeLabel(item))
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .foregroundStyle(selected ? .white : UGPopoverStyle.textSecondary)
-                        .padding(.horizontal, 10)
-                        .frame(height: 26)
-                        .background(Capsule().fill(selected ? brand : UGPopoverStyle.tabFill))
-                        .overlay(Capsule().stroke(selected ? Color.clear : UGPopoverStyle.tabBorder))
-                }
-                .buttonStyle(.plain)
-                .disabled(existing != nil)
-                .opacity(existing != nil && !selected ? 0.55 : 1)
-            }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var footer: some View {
@@ -2849,9 +2716,23 @@ private struct InlineCustomProviderEditorView: View {
             Spacer()
 
             Button {
-                save()
+                save(shouldRefreshModels: true)
             } label: {
-                Text("保存")
+                Text("获取模型列表")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(canSave ? brand : UGPopoverStyle.textSecondary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSave)
+
+            Button {
+                save(shouldRefreshModels: false)
+            } label: {
+                Text(existing == nil ? "添加" : "保存")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(canSave ? .white : UGPopoverStyle.textSecondary)
                     .padding(.horizontal, 14)
@@ -2867,22 +2748,14 @@ private struct InlineCustomProviderEditorView: View {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !appType.isEmpty
             && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !manualModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !manualUpstreamModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (existing?.hasSecret == true || !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
-    private func save() {
+    private func save(shouldRefreshModels: Bool) {
         guard canSave else {
             NSSound.beep()
             return
         }
-        let manual = CustomProviderManualModel(
-            id: existing?.manualModels.first?.id ?? UUID(),
-            logicalModel: manualModelName,
-            upstreamModel: manualUpstreamModel,
-            label: manualModelLabel,
-            supportsLongContext: manualModelSupportsLongContext
-        )
         let definition = CustomProviderDefinition(
             id: existing?.id ?? CustomProviderDefinition.makeID(),
             appType: appType,
@@ -2890,15 +2763,15 @@ private struct InlineCustomProviderEditorView: View {
             baseURL: baseURL,
             apiFormat: apiFormat,
             isCurrent: existing?.isCurrent ?? false,
-            enableDiscovery: enableDiscovery,
-            manualModels: [manual],
+            enableDiscovery: true,
+            manualModels: existing?.manualModels ?? [],
             apiKeyIdentifier: existing?.apiKeyIdentifier,
-            isFullUrl: isFullUrl,
-            modelsUrl: modelsUrl,
-            customUserAgent: customUserAgent
+            isFullUrl: existing?.isFullUrl ?? false,
+            modelsUrl: existing?.modelsUrl,
+            customUserAgent: existing?.customUserAgent
         )
         let trimmedSecret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
-        onSave(definition, trimmedSecret.isEmpty ? nil : trimmedSecret)
+        onSave(definition, trimmedSecret.isEmpty ? nil : trimmedSecret, shouldRefreshModels)
     }
 }
 

@@ -83,27 +83,6 @@ final class UniGateAppState: ObservableObject {
         updateSettingsViewModel()
     }
 
-    func customProviders(for appType: String? = nil) -> [CustomProviderDefinition] {
-        let definitions = customProviders.definitions
-        guard let appType else {
-            return definitions.sorted {
-                ProviderDisplay.appTypeLabel($0.appType)
-                    .localizedStandardCompare(ProviderDisplay.appTypeLabel($1.appType)) == .orderedAscending
-            }
-        }
-        return definitions.filter { $0.appType == appType }.sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-    }
-
-    func customProvider(for ref: ProviderRef) -> CustomProviderDefinition? {
-        customProviders.definition(for: ref)
-    }
-
-    func hasCustomProviderSecret(_ definition: CustomProviderDefinition) -> Bool {
-        customProviders.hasSecret(for: definition.providerRef)
-    }
-
     func updateProxyStatus(_ status: ProxyStatus, port: UInt16) {
         proxyStatus = status
         proxyPort = port
@@ -485,7 +464,6 @@ final class UniGateAppState: ObservableObject {
             candidates: catalog.candidates,
             providers: catalog.providers,
             customModels: customModels,
-            customProviders: customProviders,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences,
             onApply: { [weak self] preferences, customModels in
@@ -619,7 +597,6 @@ final class UniGateAppState: ObservableObject {
             candidates: catalog.candidates,
             providers: catalog.providers,
             customModels: customModels,
-            customProviders: customProviders,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences
         )

@@ -15,7 +15,6 @@ struct SettingsViewModelTests {
             candidates: [],
             providers: [],
             customModels: CustomModelState(),
-            customProviders: CustomProviderState(),
             uniGateModelScope: UniGateModelScope(),
             preferences: initialPreferences,
             onApply: { _, _ in }
@@ -28,7 +27,6 @@ struct SettingsViewModelTests {
             candidates: [],
             providers: [],
             customModels: CustomModelState(),
-            customProviders: CustomProviderState(),
             uniGateModelScope: UniGateModelScope(),
             preferences: AppPreferences(
                 port: 18000,
@@ -54,7 +52,6 @@ struct SettingsViewModelTests {
             candidates: [],
             providers: [],
             customModels: CustomModelState(),
-            customProviders: CustomProviderState(),
             uniGateModelScope: UniGateModelScope(),
             preferences: initialPreferences,
             onApply: { preferences, _ in
