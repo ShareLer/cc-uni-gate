@@ -2693,6 +2693,7 @@ private struct InlineCustomProviderEditorView: View {
                     }
                     .pickerStyle(.menu)
                 }
+                protocolHintPanel
                 field(title: "API Key") {
                     SecureField(existingHasResolvableSecret ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
                         .textFieldStyle(.roundedBorder)
@@ -2770,6 +2771,43 @@ private struct InlineCustomProviderEditorView: View {
             .buttonStyle(.plain)
             .disabled(!canSave || isPreviewingModels)
         }
+    }
+
+    private var protocolHintPanel: some View {
+        let hint = CustomProviderProtocolHints.hint(
+            appType: appType,
+            apiFormat: apiFormat,
+            baseURL: baseURL,
+            isFullUrl: isFullUrl
+        )
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .frame(width: 14)
+                Text(hint.endpointDescription)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let warning = hint.warning {
+                HStack(alignment: .top, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .frame(width: 14)
+                    Text(warning)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UGPopoverStyle.cardBorder))
     }
 
     @ViewBuilder

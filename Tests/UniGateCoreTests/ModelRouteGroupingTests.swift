@@ -272,6 +272,41 @@ struct ModelRouteGroupingTests {
         ])
     }
 
+    @Test
+    func visibleConfiguredBaseRouteKeysExcludeCustomProviderDiscoveredModels() {
+        let configuredRef = ProviderRef(appType: "codex", id: "configured")
+        let customRef = ProviderRef(appType: "codex", id: "unigate-custom")
+        let catalog = ProviderCatalog(providers: [], candidates: [
+            candidate(
+                logicalModel: "gpt-5.5",
+                upstreamModel: "gpt-5.5",
+                providerRef: configuredRef,
+                appType: "codex"
+            ),
+            candidate(
+                logicalModel: "qwen3.6",
+                upstreamModel: "qwen3.6",
+                providerRef: customRef,
+                appType: "codex",
+                source: .discovered
+            )
+        ])
+        let scope = UniGateModelScope(modelsByApp: [
+            "codex": ["gpt-5.5", "qwen3.6"]
+        ])
+
+        let routeKeys = ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: catalog,
+            customModels: CustomModelState(),
+            uniGateModelScope: scope,
+            preferences: AppPreferences()
+        )
+
+        #expect(routeKeys.map(\.description) == [
+            "codex:gpt-5.5"
+        ])
+    }
+
     private func candidate(
         logicalModel: String,
         upstreamModel: String,

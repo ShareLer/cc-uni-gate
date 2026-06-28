@@ -227,7 +227,7 @@ struct ProviderModelDiscoveryTests {
     }
 
     @Test
-    func discoveredCandidatesForCustomProviderSeedRouteKeysWithoutStrippingSuffix() {
+    func discoveredCandidatesForCustomProviderDoNotStripSuffix() {
         let provider = ImportedProvider(
             id: "unigate-test",
             appType: "codex",
@@ -255,16 +255,16 @@ struct ProviderModelDiscoveryTests {
 
         let candidates = ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog)
 
-        // 自定义供应商的探测结果产 .custom（可 seed 路由键），且不 strip -1m 后缀
+        // 自定义供应商的探测结果仍是探测来源，不能 seed 主模型列表；只保留“不改模型名”的差异。
         #expect(candidates.map(\.logicalModel) == ["gpt-5.5", "gpt-5.5-1m"])
-        #expect(candidates.allSatisfy { $0.source == .custom })
-        #expect(candidates.allSatisfy { $0.source.isRouteKeySeed })
+        #expect(candidates.allSatisfy { $0.source == .discovered })
+        #expect(candidates.allSatisfy { !$0.source.isRouteKeySeed })
         // logicalModel 与 upstreamModel 相同（用户决策：探测名即实际名）
         #expect(candidates.allSatisfy { $0.logicalModel == $0.upstreamModel })
     }
 
     @Test
-    func discoveredCandidatesForCustomProviderKeepStaleResultsAsRouteKeySeed() {
+    func discoveredCandidatesForCustomProviderKeepStaleResultsAsDiscovered() {
         let provider = ImportedProvider(
             id: "unigate-test",
             appType: "codex",
@@ -306,9 +306,9 @@ struct ProviderModelDiscoveryTests {
         let catalog = ProviderCatalog(providers: [provider], candidates: [])
         let candidates = ProviderModelDiscovery.discoveredCandidates(from: state, catalog: catalog)
 
-        // 自定义供应商的 stale 结果仍保留 .custom source，路由入口不因探测抖动消失
+        // 自定义供应商的 stale 结果仍走 stale discovered 语义，避免失败探测 seed 主模型列表。
         #expect(candidates.map(\.logicalModel) == ["gpt-5.5"])
-        #expect(candidates.allSatisfy { $0.source == .custom })
-        #expect(candidates.allSatisfy { $0.source.isRouteKeySeed })
+        #expect(candidates.allSatisfy { $0.source == .staleDiscovered })
+        #expect(candidates.allSatisfy { !$0.source.isRouteKeySeed })
     }
 }

@@ -139,14 +139,7 @@ public enum ProviderModelDiscovery {
             }
 
             let isCustom = isCustomProvider(provider)
-            let source: ModelCandidateSource
-            if isCustom {
-                // 自定义供应商的探测结果（含上次成功的 stale 结果）都能 seed 路由键，
-                // 让用户主动添加的供应商不会因探测抖动丢失路由入口。
-                source = .custom
-            } else {
-                source = result.errorMessage == nil ? .discovered : .staleDiscovered
-            }
+            let source: ModelCandidateSource = result.errorMessage == nil ? .discovered : .staleDiscovered
             return mergedModelIDs(result.modelIDs).map { modelID in
                 let logicalModel = isCustom ? modelID : ModelNameNormalizer.stripOneMSuffix(modelID)
                 return ModelCandidate(

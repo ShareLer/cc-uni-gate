@@ -221,6 +221,84 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
 
 }
 
+public struct CustomProviderProtocolHint: Equatable, Sendable {
+    public let endpointDescription: String
+    public let warning: String?
+
+    public init(endpointDescription: String, warning: String? = nil) {
+        self.endpointDescription = endpointDescription
+        self.warning = warning
+    }
+}
+
+public enum CustomProviderProtocolHints {
+    public static func hint(
+        appType: String,
+        apiFormat: ApiFormat,
+        baseURL: String,
+        isFullUrl: Bool
+    ) -> CustomProviderProtocolHint {
+        let endpoint = endpointDescription(
+            appType: appType,
+            apiFormat: apiFormat,
+            isFullUrl: isFullUrl
+        )
+        return CustomProviderProtocolHint(
+            endpointDescription: endpoint,
+            warning: warning(appType: appType, apiFormat: apiFormat, baseURL: baseURL)
+        )
+    }
+
+    private static func endpointDescription(
+        appType: String,
+        apiFormat: ApiFormat,
+        isFullUrl: Bool
+    ) -> String {
+        if isFullUrl {
+            return "将使用填写的完整 URL"
+        }
+        if UniGateAppRegistry.isClaudeLike(appType) {
+            switch apiFormat {
+            case .anthropic:
+                return "Claude 请求将发送到 /v1/messages"
+            case .openaiChat:
+                return "Claude 请求将转换并发送到 /v1/chat/completions"
+            default:
+                return "Claude 请求可能需要协议转换"
+            }
+        }
+        if appType == UniGateAppRegistry.codex {
+            switch apiFormat {
+            case .openaiResponses:
+                return "Codex 请求将发送到 /v1/responses"
+            case .openaiChat:
+                return "Codex 请求将发送到 /v1/chat/completions"
+            default:
+                return "Codex 请求可能需要协议转换"
+            }
+        }
+        return "请求路径由 API 格式决定"
+    }
+
+    private static func warning(
+        appType: String,
+        apiFormat: ApiFormat,
+        baseURL: String
+    ) -> String? {
+        guard UniGateAppRegistry.isClaudeLike(appType), apiFormat == .anthropic else {
+            return nil
+        }
+        let normalized = baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else {
+            return nil
+        }
+        if normalized.contains("anthropic") || normalized.contains("/v1/messages") {
+            return nil
+        }
+        return "如果上游是 OpenAI 兼容接口，API 格式应选择 OpenAI Chat；否则 Claude 会请求 /v1/messages。"
+    }
+}
+
 public struct CustomProviderState: Codable, Sendable, Equatable {
     public var definitions: [CustomProviderDefinition]
 
