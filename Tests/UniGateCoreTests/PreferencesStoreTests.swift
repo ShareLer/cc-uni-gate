@@ -167,4 +167,82 @@ struct PreferencesStoreTests {
 
         #expect(loaded.brandColor == .ember)
     }
+
+    @Test
+    func networkPolicyMissingFieldsUseDefaultsWithoutResettingPreferences() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        try FileManager.default.createDirectory(
+            at: tmp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"port":17988,"networkPolicy":{}}"#.utf8).write(to: tmp)
+        let store = PreferencesStore(fileURL: tmp)
+
+        let loaded = try store.load()
+
+        #expect(loaded.port == 17988)
+        #expect(loaded.networkPolicy.globalMode == .system)
+        #expect(loaded.networkPolicy.providerOverrides.isEmpty)
+        #expect(loaded.networkPolicy.directDomainRules.isEmpty)
+    }
+
+    @Test
+    func unknownProtocolOverrideValuesAreIgnoredWithoutResettingPreferences() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        try FileManager.default.createDirectory(
+            at: tmp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("""
+        {
+          "port": 17988,
+          "protocolOverrides": {
+            "cc-switch:codex:p1": "openai_responses",
+            "cc-switch:codex:p2": "future_format"
+          }
+        }
+        """.utf8).write(to: tmp)
+        let store = PreferencesStore(fileURL: tmp)
+
+        let loaded = try store.load()
+
+        #expect(loaded.port == 17988)
+        #expect(loaded.protocolOverrides == ["cc-switch:codex:p1": .openaiResponses])
+    }
+
+    @Test
+    func unknownProviderNetworkOverrideValuesAreIgnoredWithoutResettingPreferences() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("preferences.json")
+        try FileManager.default.createDirectory(
+            at: tmp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("""
+        {
+          "port": 17988,
+          "networkPolicy": {
+            "globalMode": "direct",
+            "providerOverrides": {
+              "cc-switch:claude:p1": "system",
+              "cc-switch:claude:p2": "future_mode"
+            },
+            "directDomainRules": ["intra.example.com"]
+          }
+        }
+        """.utf8).write(to: tmp)
+        let store = PreferencesStore(fileURL: tmp)
+
+        let loaded = try store.load()
+
+        #expect(loaded.port == 17988)
+        #expect(loaded.networkPolicy.globalMode == .direct)
+        #expect(loaded.networkPolicy.providerOverrides == ["cc-switch:claude:p1": .system])
+        #expect(loaded.networkPolicy.directDomainRules == ["intra.example.com"])
+    }
 }

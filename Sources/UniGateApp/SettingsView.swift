@@ -57,15 +57,24 @@ final class SettingsViewModel: ObservableObject {
         self.providers = providers
         self.customModels = customModels
         self.uniGateModelScope = uniGateModelScope
+        let shouldUpdatePortText = portText == "\(self.preferences.normalizedPort)"
+        let shouldUpdateDBPathText = ccSwitchDBPathText == self.preferences.resolvedCcSwitchDBPath
+        let shouldUpdateDirectDomainRulesText = directDomainRulesText == self.preferences.networkPolicy.directDomainRules.joined(separator: "\n")
         self.preferences = preferences
-        self.portText = "\(preferences.normalizedPort)"
-        self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
+        if shouldUpdatePortText {
+            self.portText = "\(preferences.normalizedPort)"
+        }
+        if shouldUpdateDBPathText {
+            self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
+        }
         self.brandColor = preferences.brandColor
         self.bubbleNotificationsEnabled = preferences.bubbleNotificationsEnabled
         self.launchAtLoginEnabled = preferences.launchAtLoginEnabled
         self.networkGlobalMode = preferences.networkPolicy.globalMode
         self.providerNetworkOverrides = preferences.networkPolicy.providerOverrides
-        self.directDomainRulesText = preferences.networkPolicy.directDomainRules.joined(separator: "\n")
+        if shouldUpdateDirectDomainRulesText {
+            self.directDomainRulesText = preferences.networkPolicy.directDomainRules.joined(separator: "\n")
+        }
     }
 
     var generalSettingsValidationText: String? {
@@ -76,7 +85,7 @@ final class SettingsViewModel: ObservableObject {
         return nil
     }
 
-    func applyGeneralSettings(commitDatabasePath: Bool = true) -> Bool {
+    func applyGeneralSettings(commitDatabasePath: Bool = false) -> Bool {
         guard let nextPreferences = currentPreferences(
             brandColor: brandColor,
             commitDatabasePath: commitDatabasePath

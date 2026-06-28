@@ -1386,7 +1386,7 @@ private struct InlineSettingsPanel: View {
         }
         .onChange(of: focusedField) { oldValue, newValue in
             if oldValue == .databasePath, newValue != .databasePath {
-                applyNow()
+                applyDatabasePathNow()
             }
         }
         .onDisappear {
@@ -1609,7 +1609,7 @@ private struct InlineSettingsPanel: View {
                         .focused($focusedField, equals: .databasePath)
                         .background(fieldFill(isFocused: focusedField == .databasePath), in: RoundedRectangle(cornerRadius: 6))
                         .overlay(fieldBorder(isFocused: focusedField == .databasePath, cornerRadius: 6))
-                        .onSubmit(applyNow)
+                        .onSubmit(applyDatabasePathNow)
 
                     if let loadError {
                         inlineFieldError(loadError)
@@ -1990,6 +1990,11 @@ private struct InlineSettingsPanel: View {
     private func applyNow() {
         applyTask?.cancel()
         _ = model.applyGeneralSettings()
+    }
+
+    private func applyDatabasePathNow() {
+        applyTask?.cancel()
+        _ = model.applyGeneralSettings(commitDatabasePath: true)
     }
 }
 

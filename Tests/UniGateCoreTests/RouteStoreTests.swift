@@ -210,9 +210,14 @@ struct RouteStoreTests {
         ]))
 
         let loaded = try store.load(catalog: scopedCatalog)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode(RouteState.self, from: Data(contentsOf: tmp))
 
         #expect(loaded.routes["codex:gpt-5.4"] == nil)
         #expect(loaded.routes["codex:gpt-5.5"]?.providerRef == free)
+        #expect(persisted.routes["codex:gpt-5.4"]?.providerRef == dasu)
+        #expect(persisted.routes["codex:gpt-5.5"]?.providerRef == free)
     }
 
     @Test
@@ -284,6 +289,82 @@ struct RouteStoreTests {
         #expect(loaded.routes.isEmpty)
         #expect(persisted.routes[routeKey.description]?.providerRef == selectedProvider)
         #expect(reloaded.routes[routeKey.description]?.providerRef == selectedProvider)
+    }
+
+    @Test
+    func loadDoesNotPersistPartialCatalogOverExistingRoutes() throws {
+        let missingProvider = ProviderRef(appType: "codex", id: "missing")
+        let visibleProvider = ProviderRef(appType: "codex", id: "visible")
+        let missingKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.4")
+        let visibleKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(RouteState(routes: [
+            missingKey.description: ActiveRoute(
+                appType: missingKey.appType,
+                logicalModel: missingKey.logicalModel,
+                providerRef: missingProvider,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            ),
+            visibleKey.description: ActiveRoute(
+                appType: visibleKey.appType,
+                logicalModel: visibleKey.logicalModel,
+                providerRef: visibleProvider,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ]))
+
+        let partialCatalog = ProviderCatalog(providers: [], candidates: [
+            candidate(routeKey: visibleKey, providerRef: visibleProvider, providerName: "Visible Provider")
+        ])
+        let loaded = try store.load(catalog: partialCatalog)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode(RouteState.self, from: Data(contentsOf: tmp))
+
+        #expect(loaded.routes[missingKey.description] == nil)
+        #expect(loaded.routes[visibleKey.description]?.providerRef == visibleProvider)
+        #expect(persisted.routes[missingKey.description]?.providerRef == missingProvider)
+        #expect(persisted.routes[visibleKey.description]?.providerRef == visibleProvider)
+    }
+
+    @Test
+    func defaultStatePrefersConfiguredCandidateOverDiscoveredCandidate() {
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let discovered = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: ProviderRef(appType: "codex", id: "discovered"),
+            providerName: "A Discovered Provider",
+            appType: routeKey.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: routeKey.logicalModel,
+            baseURL: "https://discovered.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .discovered
+        )
+        let configured = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: ProviderRef(appType: "codex", id: "configured"),
+            providerName: "Z Configured Provider",
+            appType: routeKey.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: routeKey.logicalModel,
+            baseURL: "https://configured.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .configured
+        )
+
+        let state = RouteStore.defaultState(candidates: [discovered, configured])
+
+        #expect(state.routes[routeKey.description]?.providerRef == configured.providerRef)
     }
 
     @Test

@@ -40,6 +40,12 @@ public struct NetworkPolicyPreferences: Codable, Sendable, Equatable {
     public var providerOverrides: [String: ProviderNetworkPolicyOverride]
     public var directDomainRules: [String]
 
+    fileprivate enum CodingKeys: String, CodingKey {
+        case globalMode
+        case providerOverrides
+        case directDomainRules
+    }
+
     public init(
         globalMode: NetworkPolicyMode = .system,
         providerOverrides: [String: ProviderNetworkPolicyOverride] = [:],
@@ -48,6 +54,22 @@ public struct NetworkPolicyPreferences: Codable, Sendable, Equatable {
         self.globalMode = globalMode
         self.providerOverrides = providerOverrides.filter { $0.value != .inherit }
         self.directDomainRules = Self.normalizedDomainRules(directDomainRules)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            globalMode: try container.decodeIfPresent(NetworkPolicyMode.self, forKey: .globalMode) ?? .system,
+            providerOverrides: try container.decodeProviderOverrides(),
+            directDomainRules: try container.decodeIfPresent([String].self, forKey: .directDomainRules) ?? []
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(globalMode, forKey: .globalMode)
+        try container.encode(providerOverrides, forKey: .providerOverrides)
+        try container.encode(directDomainRules, forKey: .directDomainRules)
     }
 
     public static func normalizedDomainRules(_ rules: [String]) -> [String] {
@@ -128,6 +150,18 @@ public struct NetworkPolicyPreferences: Codable, Sendable, Equatable {
             return "\(ruleKind),\(rule)"
         }
         return rule
+    }
+}
+
+private extension KeyedDecodingContainer where Key == NetworkPolicyPreferences.CodingKeys {
+    func decodeProviderOverrides() throws -> [String: ProviderNetworkPolicyOverride] {
+        let rawValues = try decodeIfPresent([String: String].self, forKey: .providerOverrides) ?? [:]
+        return Dictionary(uniqueKeysWithValues: rawValues.compactMap { key, value in
+            guard let override = ProviderNetworkPolicyOverride(rawValue: value) else {
+                return nil
+            }
+            return (key, override)
+        })
     }
 }
 

@@ -4,6 +4,7 @@ import Foundation
 import Network
 import Testing
 
+@Suite(.serialized)
 struct LocalProxyServerTests {
     @Test
     @MainActor
@@ -87,6 +88,371 @@ struct LocalProxyServerTests {
         #expect(runtime.failures.contains { $0.contains("SSE error") }, "\(runtime.events)")
         #expect(rawResponse.contains("event: error"), "\(rawResponse)\n\(runtime.events)")
         #expect(rawResponse.contains("Upstream OpenAI Chat stream chunk must be a JSON object"), "\(rawResponse)\n\(runtime.events)")
+    }
+
+    @Test
+    @MainActor
+    func logsUpstreamUsageForTransformedOpenAIChatResponse() async throws {
+        let upstream = try MockSSEUpstream(
+            contentType: "application/json",
+            body: Data("""
+            {
+              "id": "chatcmpl-1",
+              "model": "luban-glm",
+              "choices": [
+                {
+                  "message": {"role": "assistant", "content": "ok"},
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "prompt_tokens_details": {"cached_tokens": 40}
+              }
+            }
+            """.utf8)
+        )
+        let upstreamPort = try await upstream.start()
+        defer { upstream.stop() }
+
+        let provider = ImportedProvider(
+            id: "openai-chat",
+            appType: UniGateAppRegistry.claudeCode,
+            name: "OpenAI Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "http://127.0.0.1:\(upstreamPort)",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("test-key")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.claudeCode, logicalModel: "claude-sonnet")
+        let candidate = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .openaiChat,
+            upstreamModel: "luban-glm",
+            baseURL: provider.baseURL,
+            requiresTransform: true,
+            label: nil,
+            supportsLongContext: false
+        )
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [provider], candidates: [candidate]),
+            routes: RouteState(routes: [
+                routeKey.description: ActiveRoute(
+                    appType: routeKey.appType,
+                    logicalModel: routeKey.logicalModel,
+                    providerRef: provider.ref,
+                    updatedAt: Date(timeIntervalSince1970: 1)
+                )
+            ]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let requestBody = """
+        {
+          "model": "claude-sonnet",
+          "max_tokens": 16,
+          "messages": [
+            {"role": "user", "content": "hello"}
+          ]
+        }
+        """
+        let rawResponse = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /v1/messages HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Content-Type: application/json\r
+            Content-Length: \(Data(requestBody.utf8).count)\r
+            \r
+            \(requestBody)
+            """
+        )
+
+        #expect(rawResponse.contains("HTTP/1.1 200 OK"))
+        #expect(runtime.events.contains { event in
+            event.contains("phase=transform-complete")
+                && event.contains("usage=present")
+                && event.contains("inputTokens=100")
+                && event.contains("outputTokens=5")
+                && event.contains("cachedTokens=40")
+                && event.contains("cacheHitRate=0.4000")
+        }, "\(runtime.events)")
+    }
+
+    @Test
+    @MainActor
+    func logsUpstreamUsageForTransformedOpenAIChatStream() async throws {
+        let upstream = try MockSSEUpstream(
+            body: Data("""
+            data: {"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{"content":"ok"},"finish_reason":null}]}
+
+            data: {"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+            data: {"id":"chatcmpl-1","model":"luban-glm","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":40}}}
+
+            data: [DONE]
+
+            """.utf8)
+        )
+        let upstreamPort = try await upstream.start()
+        defer { upstream.stop() }
+
+        let provider = ImportedProvider(
+            id: "openai-chat",
+            appType: UniGateAppRegistry.claudeCode,
+            name: "OpenAI Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "http://127.0.0.1:\(upstreamPort)",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("test-key")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.claudeCode, logicalModel: "claude-sonnet")
+        let candidate = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .openaiChat,
+            upstreamModel: "luban-glm",
+            baseURL: provider.baseURL,
+            requiresTransform: true,
+            label: nil,
+            supportsLongContext: false
+        )
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [provider], candidates: [candidate]),
+            routes: RouteState(routes: [
+                routeKey.description: ActiveRoute(
+                    appType: routeKey.appType,
+                    logicalModel: routeKey.logicalModel,
+                    providerRef: provider.ref,
+                    updatedAt: Date(timeIntervalSince1970: 1)
+                )
+            ]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let requestBody = """
+        {
+          "model": "claude-sonnet",
+          "max_tokens": 16,
+          "stream": true,
+          "messages": [
+            {"role": "user", "content": "hello"}
+          ]
+        }
+        """
+        let rawResponse = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /v1/messages HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Content-Type: application/json\r
+            Accept: text/event-stream\r
+            Content-Length: \(Data(requestBody.utf8).count)\r
+            \r
+            \(requestBody)
+            """
+        )
+
+        #expect(rawResponse.contains("HTTP/1.1 200 OK"))
+        #expect(runtime.events.contains { event in
+            event.contains("phase=transform-stream-complete")
+                && event.contains("usage=present")
+                && event.contains("inputTokens=100")
+                && event.contains("outputTokens=5")
+                && event.contains("cachedTokens=40")
+                && event.contains("cacheHitRate=0.4000")
+        }, "\(runtime.events)")
+    }
+
+    @Test
+    @MainActor
+    func forwardsExpectContinueBeforeReadingBody() async throws {
+        let upstream = try MockSSEUpstream(
+            body: Data("data: [DONE]\n\n".utf8)
+        )
+        let upstreamPort = try await upstream.start()
+        defer { upstream.stop() }
+
+        let provider = ImportedProvider(
+            id: "openai-chat",
+            appType: UniGateAppRegistry.claudeCode,
+            name: "OpenAI Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "http://127.0.0.1:\(upstreamPort)",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("test-key")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.claudeCode, logicalModel: "claude-sonnet")
+        let candidate = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .openaiChat,
+            upstreamModel: "luban-glm",
+            baseURL: provider.baseURL,
+            requiresTransform: true,
+            label: nil,
+            supportsLongContext: false
+        )
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [provider], candidates: [candidate]),
+            routes: RouteState(routes: [
+                routeKey.description: ActiveRoute(
+                    appType: routeKey.appType,
+                    logicalModel: routeKey.logicalModel,
+                    providerRef: provider.ref,
+                    updatedAt: Date(timeIntervalSince1970: 1)
+                )
+            ]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let body = #"{"model":"claude-sonnet","messages":[{"role":"user","content":"hello"}]}"#
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /v1/messages HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Expect: 100-continue\r
+            Content-Type: application/json\r
+            Content-Length: \(Data(body.utf8).count)\r
+            \r
+            \(body)
+            """
+        )
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+    }
+
+    @Test
+    @MainActor
+    func stripsContentEncodingFromForwardedResponseHeaders() async throws {
+        let upstream = try MockSSEUpstream(
+            contentType: "application/json",
+            headers: ["content-encoding": "identity"],
+            body: Data("""
+            {
+              "id": "chatcmpl-1",
+              "model": "luban-glm",
+              "choices": [
+                {
+                  "message": {"role": "assistant", "content": "ok"},
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 1,
+                "total_tokens": 11
+              }
+            }
+            """.utf8)
+        )
+        let upstreamPort = try await upstream.start()
+        defer { upstream.stop() }
+
+        let provider = ImportedProvider(
+            id: "openai-chat",
+            appType: UniGateAppRegistry.claudeCode,
+            name: "OpenAI Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "http://127.0.0.1:\(upstreamPort)",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("test-key")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.claudeCode, logicalModel: "claude-sonnet")
+        let candidate = ModelCandidate(
+            logicalModel: routeKey.logicalModel,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: routeKey.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: .openaiChat,
+            upstreamModel: "luban-glm",
+            baseURL: provider.baseURL,
+            requiresTransform: true,
+            label: nil,
+            supportsLongContext: false
+        )
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [provider], candidates: [candidate]),
+            routes: RouteState(routes: [
+                routeKey.description: ActiveRoute(
+                    appType: routeKey.appType,
+                    logicalModel: routeKey.logicalModel,
+                    providerRef: provider.ref,
+                    updatedAt: Date(timeIntervalSince1970: 1)
+                )
+            ]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let body = #"{"model":"claude-sonnet","messages":[{"role":"user","content":"hello"}]}"#
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /v1/messages HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Content-Type: application/json\r
+            Content-Length: \(Data(body.utf8).count)\r
+            \r
+            \(body)
+            """
+        )
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+        #expect(!response.lowercased().contains("content-encoding"))
     }
 
     @Test
@@ -347,11 +713,15 @@ private final class MockProxyRuntime: LocalProxyRuntime {
 }
 
 private final class MockSSEUpstream: @unchecked Sendable {
+    private let contentType: String
+    private let headers: [String: String]
     private let body: Data
     private let queue = DispatchQueue(label: "unigate.test.upstream")
     private let listener: NWListener
 
-    init(body: Data) throws {
+    init(contentType: String = "text/event-stream", headers: [String: String] = [:], body: Data) throws {
+        self.contentType = contentType
+        self.headers = headers
         self.body = body
         self.listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: 0)!)
     }
@@ -401,7 +771,12 @@ private final class MockSSEUpstream: @unchecked Sendable {
     }
 
     private func sendResponse(on connection: NWConnection) {
-        let head = Data("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ncontent-length: \(body.count)\r\n\r\n".utf8)
+        var headerText = "HTTP/1.1 200 OK\r\ncontent-type: \(contentType)\r\ncache-control: no-cache\r\ncontent-length: \(body.count)\r\n"
+        for (key, value) in headers {
+            headerText += "\(key): \(value)\r\n"
+        }
+        headerText += "\r\n"
+        let head = Data(headerText.utf8)
         connection.send(content: head + body, completion: .contentProcessed { _ in
             self.queue.asyncAfter(deadline: .now() + 0.05) {
                 connection.cancel()

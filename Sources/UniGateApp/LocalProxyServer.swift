@@ -50,6 +50,12 @@ final class LocalProxyServer: @unchecked Sendable {
         var sseFailureSinceLastChunkMilliseconds: Int?
         var sawSSEFailure = false
         var sseFailureDetail: String?
+        var upstreamUsage: UpstreamUsageSummary?
+    }
+
+    private struct ProxyTransformedResponseResult {
+        let status: Int
+        let upstreamUsage: UpstreamUsageSummary?
     }
 
     private enum ProxyTransferError: Error {
@@ -156,13 +162,9 @@ final class LocalProxyServer: @unchecked Sendable {
         }
     }
 
-    private func receive(on connection: NWConnection, data: Data) {
+    private func receive(on connection: NWConnection, data: Data, sentContinue: Bool = false) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1_048_576) { [weak self] chunk, _, isComplete, error in
             guard let self else {
-                connection.cancel()
-                return
-            }
-            if error != nil || isComplete {
                 connection.cancel()
                 return
             }
@@ -176,10 +178,17 @@ final class LocalProxyServer: @unchecked Sendable {
                 Task {
                     await self.handle(request, on: connection)
                 }
+            } else if !sentContinue, HTTPRequest.expectsContinue(next) {
+                let pendingData = next
+                connection.send(content: Data("HTTP/1.1 100 Continue\r\n\r\n".utf8), completion: .contentProcessed { [weak self] _ in
+                    self?.receive(on: connection, data: pendingData, sentContinue: true)
+                })
             } else if next.count > 10_485_760 {
                 send(.json(status: 413, body: ["error": "Request too large"], allowsCORS: true), on: connection)
+            } else if error != nil || isComplete {
+                connection.cancel()
             } else {
-                receive(on: connection, data: next)
+                receive(on: connection, data: next, sentContinue: sentContinue)
             }
         }
     }
@@ -475,19 +484,20 @@ final class LocalProxyServer: @unchecked Sendable {
                         LogField("bytes", stats.bytesForwarded),
                         LogField("chunks", stats.chunksForwarded),
                         LogField("error", transformedStreamFailure)
-                    ]
+                    ] + Self.usageLogFields(stats.upstreamUsage)
                 )
                 connection.cancel()
                 return
             }
             if resolved.responseTransform != .none {
-                let transformedStatus = try await sendTransformedResponse(
+                let transformedResponse = try await sendTransformedResponse(
                     bytes: bytes,
                     status: status,
                     headers: headers,
                     resolved: resolved,
                     on: connection
                 )
+                let transformedStatus = transformedResponse.status
                 let transformedRequestFailure = transformedStatus < 200 || transformedStatus >= 400
                 let transformedProviderFailure = providerFailure || Self.isProviderFailureStatus(transformedStatus)
                 await MainActor.run {
@@ -514,7 +524,7 @@ final class LocalProxyServer: @unchecked Sendable {
                             transformedProviderFailure ? "provider_failure" : (transformedRequestFailure ? "request_failure" : "ok")
                         ),
                         LogField("durationMs", Int(Self.elapsedMilliseconds(since: startedAt)))
-                    ]
+                    ] + Self.usageLogFields(transformedResponse.upstreamUsage)
                 )
                 return
             }
@@ -571,7 +581,7 @@ final class LocalProxyServer: @unchecked Sendable {
                     LogField("sseFailed", sseFailure != nil),
                     LogField("sseFailureMs", stats.sseFailureSinceLastChunkMilliseconds),
                     LogField("error", sseFailure)
-                ]
+                ] + Self.usageLogFields(stats.upstreamUsage)
             )
             connection.cancel()
         } catch let error as ProxyResolverError {
@@ -751,6 +761,7 @@ final class LocalProxyServer: @unchecked Sendable {
         var buffer = Data()
         buffer.reserveCapacity(8_192)
         var inspector = SSEFailureInspector()
+        var usageInspector = SSEUsageInspector()
 
         do {
             for try await byte in bytes {
@@ -776,6 +787,9 @@ final class LocalProxyServer: @unchecked Sendable {
                             LogField("error", failureDetail)
                         ]
                     )
+                }
+                if let usage = usageInspector.append(byte) {
+                    stats.upstreamUsage = usage
                 }
                 if buffer.count >= 8_192 || byte == 10 {
                     do {
@@ -833,6 +847,9 @@ final class LocalProxyServer: @unchecked Sendable {
                     lineBuffer.removeAll(keepingCapacity: true)
                     if line.isEmpty {
                         if let data = Self.sseDataPayload(from: blockLines) {
+                            if let usage = UpstreamUsageSummary.fromSSEData(data) {
+                                stats.upstreamUsage = usage
+                            }
                             let events = try state.events(forOpenAIChatStreamData: data, fallbackModel: resolved.outboundModel)
                             for event in events {
                                 if event.event == "error" {
@@ -866,6 +883,9 @@ final class LocalProxyServer: @unchecked Sendable {
                 blockLines.append(Self.sseLine(from: lineBuffer))
             }
             if let data = Self.sseDataPayload(from: blockLines) {
+                if let usage = UpstreamUsageSummary.fromSSEData(data) {
+                    stats.upstreamUsage = usage
+                }
                 let events = try state.events(forOpenAIChatStreamData: data, fallbackModel: resolved.outboundModel)
                 for event in events {
                     if event.event == "error" {
@@ -989,6 +1009,13 @@ final class LocalProxyServer: @unchecked Sendable {
             LogField("provider", resolved.providerName),
             LogField("upstreamModel", resolved.outboundModel)
         ]
+    }
+
+    private static func usageLogFields(_ usage: UpstreamUsageSummary?) -> [LogField] {
+        guard let usage else {
+            return [LogField("usage", "missing")]
+        }
+        return [LogField("usage", "present")] + usage.logFields
     }
 
     private static func unresolvedLogFields() -> [LogField] {
@@ -1199,15 +1226,16 @@ final class LocalProxyServer: @unchecked Sendable {
         headers: [String: String],
         resolved: ResolvedRoute,
         on connection: NWConnection
-    ) async throws -> Int {
+    ) async throws -> ProxyTransformedResponseResult {
         var body = Data()
         for try await byte in bytes {
             body.append(byte)
             if body.count > 10_485_760 {
                 send(.json(status: 413, body: ["error": "Response too large"]), on: connection)
-                return 413
+                return ProxyTransformedResponseResult(status: 413, upstreamUsage: nil)
             }
         }
+        let upstreamUsage = UpstreamUsageSummary.fromBody(body)
 
         guard status >= 200 && status < 300 else {
             if resolved.responseTransform == .openAIChatToCodexResponse,
@@ -1222,7 +1250,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 )
                 let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
                 send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
-                return status
+                return ProxyTransformedResponseResult(status: status, upstreamUsage: upstreamUsage)
             }
             if resolved.responseTransform == .openAIChatToAnthropicMessages,
                let value = try? JSONSerialization.jsonObject(with: body),
@@ -1236,7 +1264,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 )
                 let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
                 send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
-                return status
+                return ProxyTransformedResponseResult(status: status, upstreamUsage: upstreamUsage)
             }
             let response = HTTPResponse(
                 status: status,
@@ -1244,7 +1272,7 @@ final class LocalProxyServer: @unchecked Sendable {
                 body: body
             )
             send(response, on: connection)
-            return status
+            return ProxyTransformedResponseResult(status: status, upstreamUsage: upstreamUsage)
         }
 
         switch resolved.responseTransform {
@@ -1279,7 +1307,7 @@ final class LocalProxyServer: @unchecked Sendable {
             let responseBody = try JSONSerialization.data(withJSONObject: transformed, options: [])
             send(HTTPResponse(status: status, headers: responseHeaders, body: responseBody), on: connection)
         }
-        return status
+        return ProxyTransformedResponseResult(status: status, upstreamUsage: upstreamUsage)
     }
 
     private func removeEntityHeaders(from headers: inout [String: String]) {
@@ -1507,6 +1535,7 @@ final class LocalProxyServer: @unchecked Sendable {
         let blocked = Set([
             "connection",
             "content-length",
+            "content-encoding",
             "keep-alive",
             "proxy-authenticate",
             "proxy-authorization",
@@ -1572,6 +1601,27 @@ private struct HTTPRequest {
             headers: headers,
             body: Data(data[bodyStart..<(bodyStart + bodyLength)])
         )
+    }
+
+    static func expectsContinue(_ data: Data) -> Bool {
+        guard let headerRange = data.range(of: Data("\r\n\r\n".utf8)) else {
+            return false
+        }
+        let headerData = data[..<headerRange.lowerBound]
+        guard let headerText = String(data: headerData, encoding: .utf8) else {
+            return false
+        }
+        for line in headerText.components(separatedBy: "\r\n").dropFirst() {
+            guard let separator = line.firstIndex(of: ":") else {
+                continue
+            }
+            let name = line[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let value = line[line.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if name == "expect", value == "100-continue" {
+                return true
+            }
+        }
+        return false
     }
 }
 
@@ -1735,6 +1785,171 @@ private struct SSEFailureInspector {
     }
 }
 
+private struct SSEUsageInspector {
+    private var currentLine = Data()
+    private var currentDataLines: [String] = []
+
+    mutating func append(_ byte: UInt8) -> UpstreamUsageSummary? {
+        if byte == 10 {
+            defer { currentLine.removeAll(keepingCapacity: true) }
+            if currentLine.last == 13 {
+                currentLine.removeLast()
+            }
+            guard let line = String(data: currentLine, encoding: .utf8) else {
+                return nil
+            }
+            return processLine(line)
+        }
+        currentLine.append(byte)
+        if currentLine.count > 65_536 {
+            currentLine.removeAll(keepingCapacity: true)
+        }
+        return nil
+    }
+
+    private mutating func processLine(_ line: String) -> UpstreamUsageSummary? {
+        if line.isEmpty {
+            defer {
+                currentDataLines.removeAll(keepingCapacity: true)
+            }
+            return UpstreamUsageSummary.fromSSEData(currentDataLines.joined(separator: "\n"))
+        }
+
+        if line.hasPrefix(":") {
+            return nil
+        }
+
+        let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let rawField = parts.first, rawField == "data" else {
+            return nil
+        }
+        var value = parts.count > 1 ? String(parts[1]) : ""
+        if value.first == " " {
+            value.removeFirst()
+        }
+        currentDataLines.append(value)
+        return nil
+    }
+}
+
+private struct UpstreamUsageSummary: Equatable, Sendable {
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let totalTokens: Int?
+    let cachedTokens: Int?
+    let cacheCreationTokens: Int?
+    let cacheDenominatorTokens: Int?
+
+    var logFields: [LogField] {
+        [
+            LogField("inputTokens", inputTokens),
+            LogField("outputTokens", outputTokens),
+            LogField("totalTokens", totalTokens),
+            LogField("cachedTokens", cachedTokens),
+            LogField("cacheCreationTokens", cacheCreationTokens),
+            LogField("cacheHitRate", cacheHitRate)
+        ]
+    }
+
+    private var cacheHitRate: String? {
+        guard let cachedTokens, cachedTokens > 0 else {
+            return "0.0000"
+        }
+        guard let cacheDenominatorTokens, cacheDenominatorTokens > 0 else {
+            return nil
+        }
+        return String(format: "%.4f", Double(cachedTokens) / Double(cacheDenominatorTokens))
+    }
+
+    static func fromBody(_ body: Data) -> UpstreamUsageSummary? {
+        guard
+            let value = try? JSONSerialization.jsonObject(with: body),
+            let object = value as? [String: Any]
+        else {
+            return nil
+        }
+        return fromObject(object)
+    }
+
+    static func fromSSEData(_ data: String) -> UpstreamUsageSummary? {
+        let trimmed = data.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "[DONE]" else {
+            return nil
+        }
+        guard
+            let jsonData = trimmed.data(using: .utf8),
+            let value = try? JSONSerialization.jsonObject(with: jsonData),
+            let object = value as? [String: Any]
+        else {
+            return nil
+        }
+        return fromObject(object)
+    }
+
+    private static func fromObject(_ object: [String: Any]) -> UpstreamUsageSummary? {
+        if let usage = object["usage"] as? [String: Any] {
+            return fromUsageObject(usage)
+        }
+        if let response = object["response"] as? [String: Any],
+           let usage = response["usage"] as? [String: Any] {
+            return fromUsageObject(usage)
+        }
+        return nil
+    }
+
+    private static func fromUsageObject(_ usage: [String: Any]) -> UpstreamUsageSummary {
+        let inputTokens = intValue(usage["input_tokens"] ?? usage["prompt_tokens"])
+        let cachedTokens = cachedTokens(from: usage)
+        let cacheCreationTokens = intValue(usage["cache_creation_input_tokens"])
+            ?? intValue(usage["cache_creation_tokens"])
+        return UpstreamUsageSummary(
+            inputTokens: inputTokens,
+            outputTokens: intValue(usage["output_tokens"] ?? usage["completion_tokens"]),
+            totalTokens: intValue(usage["total_tokens"]),
+            cachedTokens: cachedTokens,
+            cacheCreationTokens: cacheCreationTokens,
+            cacheDenominatorTokens: cacheDenominatorTokens(
+                usage: usage,
+                inputTokens: inputTokens,
+                cachedTokens: cachedTokens,
+                cacheCreationTokens: cacheCreationTokens
+            )
+        )
+    }
+
+    private static func cachedTokens(from usage: [String: Any]) -> Int? {
+        intValue(usage["cache_read_input_tokens"])
+            ?? intValue(usage["cached_tokens"])
+            ?? intValue((usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"])
+            ?? intValue((usage["input_tokens_details"] as? [String: Any])?["cached_tokens"])
+    }
+
+    private static func cacheDenominatorTokens(
+        usage: [String: Any],
+        inputTokens: Int?,
+        cachedTokens: Int?,
+        cacheCreationTokens: Int?
+    ) -> Int? {
+        guard let inputTokens else {
+            return nil
+        }
+        if usage["cache_read_input_tokens"] != nil || usage["cache_creation_input_tokens"] != nil {
+            return inputTokens + (cachedTokens ?? 0) + (cacheCreationTokens ?? 0)
+        }
+        return inputTokens
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        return nil
+    }
+}
+
 private struct HTTPResponseHead {
     let status: Int
     let headers: [String: String]
@@ -1786,6 +2001,6 @@ private func httpReasonPhrase(_ status: Int) -> String {
     case 504:
         return "Gateway Timeout"
     default:
-        return "OK"
+        return "Error"
     }
 }

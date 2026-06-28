@@ -484,10 +484,15 @@ public enum AnthropicChatBridge {
             ?? intValue((usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"])
             ?? 0
         let cacheCreation = intValue(usage["cache_creation_input_tokens"]) ?? 0
-        let prompt = intValue(usage["prompt_tokens"] ?? usage["input_tokens"]) ?? 0
+        let input: Int
+        if let prompt = intValue(usage["prompt_tokens"]) {
+            input = max(prompt - cached - cacheCreation, 0)
+        } else {
+            input = intValue(usage["input_tokens"]) ?? 0
+        }
         let completion = intValue(usage["completion_tokens"] ?? usage["output_tokens"]) ?? 0
         var result: [String: Any] = [
-            "input_tokens": max(prompt - cached - cacheCreation, 0),
+            "input_tokens": input,
             "output_tokens": completion
         ]
         if cached > 0 {
@@ -519,6 +524,19 @@ public enum AnthropicChatBridge {
     private static func toolResultText(_ value: Any?) -> String {
         if let text = trimmedString(value) {
             return text
+        }
+        if let parts = value as? [[String: Any]] {
+            let text = parts.compactMap { part -> String? in
+                guard let type = trimmedString(part["type"]),
+                      ["text", "output_text", "refusal"].contains(type)
+                else {
+                    return nil
+                }
+                return trimmedString(part["text"] ?? part["refusal"])
+            }
+            if !text.isEmpty {
+                return text.joined(separator: "\n")
+            }
         }
         return jsonString(value ?? "")
     }
@@ -671,6 +689,7 @@ public struct AnthropicChatStreamState {
     private var toolStates: [Int: ToolState] = [:]
     private var latestUsage: [String: Any]?
     private var pendingStopReason: String?
+    private var hasToolUse = false
     private var sentMessageStop = false
     private var sawDone = false
     private var sawStreamError = false
@@ -729,6 +748,9 @@ public struct AnthropicChatStreamState {
         }
         toolStates.removeAll()
         if sentMessageStart {
+            if pendingStopReason == nil, hasToolUse {
+                pendingStopReason = "tool_use"
+            }
             events.append(messageDelta(stopReason: pendingStopReason, usage: latestUsage))
             pendingStopReason = nil
         }
@@ -895,6 +917,7 @@ public struct AnthropicChatStreamState {
         var events: [AnthropicChatStreamEvent] = []
         if !state.started, !state.id.isEmpty, !state.name.isEmpty {
             state.started = true
+            hasToolUse = true
             events.append(event("content_block_start", [
                 "type": "content_block_start",
                 "index": state.anthropicIndex,

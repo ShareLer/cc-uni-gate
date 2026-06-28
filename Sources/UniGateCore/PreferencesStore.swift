@@ -56,7 +56,7 @@ public struct AppPreferences: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.visibleModels = try container.decodeIfPresent(Set<String>.self, forKey: .visibleModels)
-        self.protocolOverrides = try container.decodeIfPresent([String: ApiFormat].self, forKey: .protocolOverrides) ?? [:]
+        self.protocolOverrides = try container.decodeProtocolOverrides()
         self.port = try container.decodeIfPresent(UInt16.self, forKey: .port) ?? 17888
         self.ccSwitchDBPath = try container.decodeIfPresent(String.self, forKey: .ccSwitchDBPath)
         let brandColorValue = try container.decodeIfPresent(String.self, forKey: .brandColor)
@@ -111,6 +111,18 @@ public struct AppPreferences: Codable, Sendable {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cc-switch/cc-switch.db")
             .path
+    }
+}
+
+private extension KeyedDecodingContainer where Key == AppPreferences.CodingKeys {
+    func decodeProtocolOverrides() throws -> [String: ApiFormat] {
+        let rawValues = try decodeIfPresent([String: String].self, forKey: .protocolOverrides) ?? [:]
+        return Dictionary(uniqueKeysWithValues: rawValues.compactMap { key, value in
+            guard let apiFormat = ApiFormat(rawValue: value) else {
+                return nil
+            }
+            return (key, apiFormat)
+        })
     }
 }
 

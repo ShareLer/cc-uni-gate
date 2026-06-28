@@ -112,6 +112,11 @@ public enum ProxyResolver {
         } else if responseTransform == .openAIChatToAnthropicMessages {
             outboundBody = try AnthropicChatBridge.chatRequest(from: outboundBody)
         }
+        injectPromptCacheKeyIfConfigured(
+            into: &outboundBody,
+            provider: provider,
+            apiFormat: candidate.apiFormat
+        )
         let outboundData = try JSONSerialization.data(withJSONObject: outboundBody, options: [])
         let upstreamURL = try buildUpstreamURL(
             provider: provider,
@@ -154,6 +159,27 @@ public enum ProxyResolver {
             return .openAIChatToCodexResponse
         }
         return .none
+    }
+
+    private static func injectPromptCacheKeyIfConfigured(
+        into body: inout [String: Any],
+        provider: ImportedProvider,
+        apiFormat: ApiFormat
+    ) {
+        guard apiFormat == .openaiChat || apiFormat == .openaiResponses else {
+            return
+        }
+        guard let promptCacheKey = promptCacheKey(for: provider) else {
+            return
+        }
+        body["prompt_cache_key"] = promptCacheKey
+    }
+
+    private static func promptCacheKey(for provider: ImportedProvider) -> String? {
+        JSONValueParser.string(provider.meta, ["promptCacheKey"])
+            ?? JSONValueParser.string(provider.meta, ["prompt_cache_key"])
+            ?? JSONValueParser.string(provider.settings, ["promptCacheKey"])
+            ?? JSONValueParser.string(provider.settings, ["prompt_cache_key"])
     }
 
     private static func unsupportedProtocolPair(protocolKind: ClientProtocolKind, apiFormat: ApiFormat) -> Bool {
@@ -261,13 +287,7 @@ public enum ProxyResolver {
         )
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let raw: String
-        if provider.appType == UniGateAppRegistry.codex,
-           apiFormat == .openaiChat,
-           base.lowercased().hasSuffix("/chat/completions") {
-            raw = base
-        } else if UniGateAppRegistry.isClaudeLike(provider.appType),
-                  apiFormat == .openaiChat,
-                  base.lowercased().hasSuffix("/chat/completions") {
+        if baseEndsWithAnyEndpoint(base, endpoints: endpointSuffixVariants(for: endpoint)) {
             raw = base
         } else if provider.appType == UniGateAppRegistry.codex, isOriginOnlyURL(baseURL) {
             raw = "\(base)/v1/\(endpoint)"
@@ -331,5 +351,24 @@ public enum ProxyResolver {
             return false
         }
         return url.path.isEmpty || url.path == "/"
+    }
+
+    private static func baseEndsWithAnyEndpoint(_ base: String, endpoints: [String]) -> Bool {
+        let base = base.lowercased()
+        return endpoints.contains { endpoint in
+            base.hasSuffix(endpoint.lowercased())
+        }
+    }
+
+    private static func endpointSuffixVariants(for endpoint: String) -> [String] {
+        let trimmed = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else {
+            return []
+        }
+        var variants = ["/\(trimmed)"]
+        if trimmed.hasPrefix("v1/") {
+            variants.append("/\(trimmed.dropFirst(3))")
+        }
+        return variants
     }
 }

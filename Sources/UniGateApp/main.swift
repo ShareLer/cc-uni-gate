@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentProxyServerID: UUID?
     private var healthCheckTask: Task<Void, Never>?
     private var automaticModelDiscoveryTask: Task<Void, Never>?
+    private var userModelDiscoveryTask: Task<Void, Never>?
+    private var providerIssueClearTask: Task<Void, Never>?
     private let dbWatcher = CcSwitchDatabaseWatcher()
     private var ccSwitchConfigurationFingerprint: CcSwitchConfigurationFingerprint?
     private let logger = FileLogger()
@@ -53,9 +55,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         healthCheckTask?.cancel()
         automaticModelDiscoveryTask?.cancel()
+        userModelDiscoveryTask?.cancel()
+        providerIssueClearTask?.cancel()
         dbWatcher.stop()
         currentProxyServerID = nil
         proxyServer?.stop()
+        NetworkPolicySession.invalidateSharedSessions()
     }
 
     private func reloadCatalog(recordEventMessage: String? = nil) {
@@ -91,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startProxyServer() {
         do {
             healthCheckTask?.cancel()
+            providerIssueClearTask?.cancel()
             currentProxyServerID = nil
             proxyServer?.stop()
             updateProxyStatus(.starting, eventLevel: .info, eventMessage: "代理启动中 \(managerBaseURL())")
@@ -372,7 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshModelDiscovery(appType: String?) {
         automaticModelDiscoveryTask?.cancel()
-        guard !appState.isRefreshingModelDiscovery else {
+        guard userModelDiscoveryTask == nil, !appState.isRefreshingModelDiscovery else {
             return
         }
         do {
@@ -386,18 +392,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             appState.updateModelDiscoveryRefreshing(true)
-            Task { [importedSnapshot, providers] in
+            userModelDiscoveryTask = Task { [importedSnapshot, providers] in
                 defer {
                     appState.updateModelDiscoveryRefreshing(false)
+                    userModelDiscoveryTask = nil
                 }
                 var nextState = discoveryState.pruning(validProviders: importedSnapshot.catalog.providers)
                 for provider in providers {
                     let result = await discoverModels(for: provider)
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     nextState.upsert(result)
                     discoveryState = nextState
                     appState.updateDiscoveryState(nextState)
                 }
                 do {
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     nextState = nextState.pruning(validProviders: importedSnapshot.catalog.providers)
                     discoveryState = nextState
                     appState.updateDiscoveryState(nextState)
@@ -418,7 +431,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func scheduleAutomaticModelDiscoveryRefresh() {
-        guard !appState.isRefreshingModelDiscovery else {
+        guard userModelDiscoveryTask == nil, !appState.isRefreshingModelDiscovery else {
             return
         }
         automaticModelDiscoveryTask?.cancel()
@@ -444,10 +457,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             let result = await discoverModels(for: provider)
+            guard !Task.isCancelled else {
+                return
+            }
             nextState.upsert(result)
             didRefreshProvider = true
         }
-        guard !Task.isCancelled, didRefreshProvider, !appState.isRefreshingModelDiscovery else {
+        guard !Task.isCancelled, didRefreshProvider, userModelDiscoveryTask == nil, !appState.isRefreshingModelDiscovery else {
             return
         }
         do {
@@ -953,6 +969,8 @@ extension AppDelegate: LocalProxyRuntime {
         guard proxyStatus.isProviderIssue else {
             return
         }
+        providerIssueClearTask?.cancel()
+        providerIssueClearTask = nil
         updateProxyStatus(
             .running,
             eventLevel: .info,
@@ -973,6 +991,7 @@ extension AppDelegate: LocalProxyRuntime {
                 detail: message
             )
         )
+        scheduleProviderIssueClear(serverID: currentProxyServerID)
     }
 
     func proxyProviderDidFail(appType: String, message: String) {
@@ -986,6 +1005,28 @@ extension AppDelegate: LocalProxyRuntime {
             eventLevel: .error,
             eventMessage: eventMessage
         )
+        scheduleProviderIssueClear(serverID: currentProxyServerID)
+    }
+
+    private func scheduleProviderIssueClear(serverID: UUID?) {
+        providerIssueClearTask?.cancel()
+        providerIssueClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            guard
+                !Task.isCancelled,
+                let self,
+                serverID == self.currentProxyServerID,
+                self.proxyStatus.isProviderIssue
+            else {
+                return
+            }
+            self.providerIssueClearTask = nil
+            self.updateProxyStatus(
+                .running,
+                eventLevel: .info,
+                eventMessage: "供应商异常提示已自动恢复"
+            )
+        }
     }
 
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID) {

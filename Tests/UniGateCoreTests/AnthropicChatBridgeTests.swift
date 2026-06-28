@@ -482,6 +482,67 @@ struct AnthropicChatBridgeTests {
     }
 
     @Test
+    func streamsToolUseWithMissingFinishReasonStillStopsAsToolUse() throws {
+        var state = AnthropicChatStreamState()
+
+        _ = try state.events(
+            forOpenAIChatStreamData: #"{"id":"chatcmpl-1","model":"luban-glm","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]},"finish_reason":null}]}"#,
+            fallbackModel: "fallback"
+        )
+        let events = state.finishEvents()
+        let messageDelta = try #require(events.first { $0.event == "message_delta" })
+        let message = try eventData(messageDelta)
+        let delta = try #require(message["delta"] as? [String: Any])
+
+        #expect(delta["stop_reason"] as? String == "tool_use")
+    }
+
+    @Test
+    func anthropicUsageDoesNotSubtractCachedTokensFromInputTokensStyleUsage() throws {
+        let usage = try AnthropicChatBridge.anthropicBody(
+            from: [
+                "id": "chatcmpl-1",
+                "model": "luban-glm",
+                "choices": [[
+                    "message": ["role": "assistant", "content": "ok"],
+                    "finish_reason": "stop"
+                ]],
+                "usage": [
+                    "input_tokens": 100,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 40
+                ]
+            ],
+            fallbackModel: "fallback"
+        )["usage"] as? [String: Any]
+
+        #expect(usage?["input_tokens"] as? Int == 100)
+        #expect(usage?["cache_read_input_tokens"] as? Int == 40)
+    }
+
+    @Test
+    func toolResultTextPrefersTextBlocksOverJsonStringification() throws {
+        let request: [String: Any] = [
+            "model": "luban-glm",
+            "messages": [[
+                "role": "user",
+                "content": [[
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": [
+                        ["type": "text", "text": "hello"],
+                        ["type": "image", "source": ["type": "url", "url": "https://example.com/image.png"]]
+                    ]
+                ]]
+            ]]
+        ]
+
+        let chat = try AnthropicChatBridge.chatRequest(from: request)
+        let messages = try #require(chat["messages"] as? [[String: Any]])
+        #expect(messages.first?["content"] as? String == "hello")
+    }
+
+    @Test
     func streamsReasoningDetailsSignatureAndSynthesizesMissingToolCallID() throws {
         var state = AnthropicChatStreamState()
         var events: [AnthropicChatStreamEvent] = []

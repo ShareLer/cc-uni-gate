@@ -29,7 +29,7 @@ public final class RouteStore: @unchecked Sendable {
         }
 
         let merged = merge(state, catalog: catalog)
-        if !merged.routes.isEmpty || state.routes.isEmpty {
+        if state.routes.isEmpty || (!merged.routes.isEmpty && !dropsExistingRouteKeys(state, catalog: catalog)) {
             try save(merged)
         }
         return merged
@@ -120,9 +120,10 @@ public final class RouteStore: @unchecked Sendable {
 
         var routes: [String: ActiveRoute] = [:]
         for (key, candidates) in grouped {
+            let sortedCandidates = candidates.sorted(by: defaultCandidateSort)
             guard
-                let selected = candidates.first(where: { !$0.requiresTransform })
-                    ?? candidates.first
+                let selected = sortedCandidates.first(where: { !$0.requiresTransform })
+                    ?? sortedCandidates.first
             else {
                 continue
             }
@@ -154,6 +155,33 @@ public final class RouteStore: @unchecked Sendable {
             merged.routes[key] = route
         }
         return merged
+    }
+
+    private func dropsExistingRouteKeys(_ state: RouteState, catalog: ProviderCatalog) -> Bool {
+        let availableRouteKeys = Set(catalog.routeKeys)
+        return state.routes.contains { rawKey, route in
+            let routeKey = ModelRouteKey(description: rawKey)
+                ?? ModelRouteKey(appType: route.appType, logicalModel: route.logicalModel)
+            return !availableRouteKeys.contains(routeKey)
+        }
+    }
+
+    private static func defaultCandidateSort(_ lhs: ModelCandidate, _ rhs: ModelCandidate) -> Bool {
+        if lhs.source != rhs.source {
+            return sourcePriority(lhs.source) < sourcePriority(rhs.source)
+        }
+        return lhs.providerName.localizedStandardCompare(rhs.providerName) == .orderedAscending
+    }
+
+    private static func sourcePriority(_ source: ModelCandidateSource) -> Int {
+        switch source {
+        case .configured:
+            return 0
+        case .discovered:
+            return 1
+        case .staleDiscovered:
+            return 2
+        }
     }
 
     private func isSwitchableCandidate(_ candidate: ModelCandidate, in catalog: ProviderCatalog) -> Bool {

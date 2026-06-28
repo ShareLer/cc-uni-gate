@@ -2,14 +2,24 @@ import Foundation
 import UniGateCore
 
 enum NetworkPolicySession {
-    static func makeSession(for mode: NetworkPolicyMode) -> URLSession {
+    private static let systemSession = URLSession(configuration: .default)
+    private static let directSession: URLSession = {
         let configuration = URLSessionConfiguration.default
+        configuration.connectionProxyDictionary = [:]
+        return URLSession(configuration: configuration)
+    }()
+
+    static func makeSession(for mode: NetworkPolicyMode) -> URLSession {
         switch mode {
         case .system:
-            return URLSession(configuration: configuration)
+            return systemSession
         case .direct:
-            configuration.connectionProxyDictionary = [:]
-            return URLSession(configuration: configuration)
+            return directSession
         }
+    }
+
+    static func invalidateSharedSessions() {
+        systemSession.invalidateAndCancel()
+        directSession.invalidateAndCancel()
     }
 }
