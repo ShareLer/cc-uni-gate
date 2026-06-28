@@ -140,6 +140,44 @@ struct RouteStoreTests {
     }
 
     @Test
+    func defaultStatePrefersCustomCandidateOverDiscoveredCandidate() {
+        let discoveredProvider = ProviderRef(appType: "codex", id: "discovered")
+        let customProvider = ProviderRef(appType: "codex", id: "custom")
+        let discoveredCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: discoveredProvider,
+            providerName: "Discovered Provider",
+            appType: "codex",
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: "https://discovered.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .discovered
+        )
+        let customCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: customProvider,
+            providerName: "Custom Provider",
+            appType: "codex",
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: "https://custom.example.com",
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .custom
+        )
+
+        let state = RouteStore.defaultState(candidates: [discoveredCandidate, customCandidate])
+
+        #expect(state.routes["codex:gpt-5.5"]?.providerRef == customProvider)
+    }
+
+    @Test
     func switchesGroupedModelProvidersTogether() throws {
         let provider1 = ProviderRef(appType: "claude-desktop", id: "p1")
         let provider2 = ProviderRef(appType: "claude-desktop", id: "p2")

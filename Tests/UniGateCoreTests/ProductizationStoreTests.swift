@@ -183,6 +183,23 @@ struct ProductizationStoreTests {
             ]),
             customModels: CustomModelState(models: [
                 CustomModelDefinition(appType: "codex", name: "uni")
+            ]),
+            customProviders: CustomProviderState(definitions: [
+                CustomProviderDefinition(
+                    id: "unigate-test-provider",
+                    appType: "codex",
+                    name: "Custom Provider",
+                    baseURL: "https://api.example.com",
+                    apiFormat: .openaiResponses,
+                    enableDiscovery: false,
+                    manualModels: [
+                        CustomProviderManualModel(
+                            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+                            logicalModel: "gpt-5.5",
+                            upstreamModel: "gpt-5.5"
+                        )
+                    ]
+                )
             ])
         )
 
@@ -194,6 +211,7 @@ struct ProductizationStoreTests {
         #expect(loaded.preferences.port == backup.preferences.port)
         #expect(loaded.routes.routes.keys == backup.routes.routes.keys)
         #expect(loaded.customModels.models == backup.customModels.models)
+        #expect(loaded.customProviders.definitions == backup.customProviders.definitions)
     }
 
     @Test

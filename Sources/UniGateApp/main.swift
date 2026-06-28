@@ -320,6 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func performImportConfiguration() {
         let previousPort = currentProxyPort()
+        let previousCustomProviders = customProviders
         let panel = NSOpenPanel()
         panel.title = "恢复 Uni Gate 配置"
         panel.allowedContentTypes = [.json]
@@ -345,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             try customProviderStore.save(customProviders)
+            try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
             try routeStore.save(routes)
             syncLaunchAtLoginPreference()
             reloadCatalog(recordEventMessage: "已恢复 Uni Gate 配置")
@@ -372,6 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         do {
+            let previousCustomProviders = customProviders
             preferences = AppPreferences()
             customModels = CustomModelState()
             customProviders = CustomProviderState()
@@ -379,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
             try customProviderStore.save(customProviders)
+            try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
@@ -430,7 +434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         do {
             let importedSnapshot = try loadImportedConfigurationSnapshot()
-            let providers = importedSnapshot.catalog.providers.filter { provider in
+            let discoverable = discoverableProviders(from: importedSnapshot.catalog.providers + customProviders.importedProviders())
+            let providers = discoverable.filter { provider in
                 appType == nil || provider.appType == appType
             }
             guard !providers.isEmpty else {
@@ -444,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     appState.updateModelDiscoveryRefreshing(false)
                     userModelDiscoveryTask = nil
                 }
-                var nextState = discoveryState.pruning(validProviders: importedSnapshot.catalog.providers)
+                var nextState = discoveryState.pruning(validProviders: discoverable)
                 for provider in providers {
                     let result = await discoverModels(for: provider)
                     guard !Task.isCancelled else {
@@ -458,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard !Task.isCancelled else {
                         return
                     }
-                    nextState = nextState.pruning(validProviders: importedSnapshot.catalog.providers)
+                    nextState = nextState.pruning(validProviders: discoverable)
                     discoveryState = nextState
                     appState.updateDiscoveryState(nextState)
                     try discoveryStore.save(nextState)
@@ -482,11 +487,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         automaticModelDiscoveryTask?.cancel()
-        let providers = catalog.providers
+        let providers = discoverableProviders(from: catalog.providers)
         guard !providers.isEmpty else {
             return
         }
-        let validProviders = catalog.providers
+        let validProviders = providers
         automaticModelDiscoveryTask = Task { [providers, validProviders] in
             await refreshModelDiscoverySilently(providers: providers, validProviders: validProviders)
         }
@@ -514,7 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            discoveryState = nextState.pruning(validProviders: catalog.providers)
+            discoveryState = nextState.pruning(validProviders: validProviders)
             try discoveryStore.save(discoveryState)
             catalog = try loadExpandedCatalog()
             routes = try routeStore.load(catalog: proxyCatalog())
@@ -726,25 +731,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadExpandedCatalog(imported: ProviderCatalog) -> ProviderCatalog {
-        let customImportedProviders = customProviders.importedProviders()
-        let customProviderCatalog = ProviderCatalog(
-            providers: imported.providers + customImportedProviders,
+        let manualCandidates = customProviders.manualCandidates()
+        let manualCandidateIDs = Set(manualCandidates.map(\.id))
+        let allProviders = imported.providers + customProviders.importedProviders()
+        let discoverableCatalog = ProviderCatalog(
+            providers: discoverableProviders(from: allProviders),
             candidates: imported.candidates
         )
         let discoveredCandidates = ProviderModelDiscovery.discoveredCandidates(
             from: discoveryState,
-            catalog: customProviderCatalog
-        )
-        let manualCandidates = customProviders.manualCandidates()
-        let manualCandidateIDs = Set(manualCandidates.map(\.id))
-        let filteredDiscoveredCandidates = discoveredCandidates.filter {
-            !manualCandidateIDs.contains($0.id)
-        }
+            catalog: discoverableCatalog
+        ).filter { !manualCandidateIDs.contains($0.id) }
         let baseCatalog = ProviderCatalog(
-            providers: customProviderCatalog.providers,
-            candidates: imported.candidates + filteredDiscoveredCandidates
+            providers: allProviders,
+            candidates: imported.candidates + manualCandidates + discoveredCandidates
         )
-        let customCandidates = manualCandidates + customModels.expandedCandidates(from: baseCatalog)
+        let customCandidates = customModels.expandedCandidates(from: baseCatalog)
         return ProviderCatalog(
             providers: baseCatalog.providers,
             candidates: baseCatalog.candidates + customCandidates
@@ -769,14 +771,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pruneDiscoveryState(for catalog: ProviderCatalog) {
-        let nextState = discoveryState.pruning(validProviders: catalog.providers)
+        let allProviders = catalog.providers + customProviders.importedProviders()
+        let nextState = discoveryState.pruning(validProviders: discoverableProviders(from: allProviders))
         guard nextState != discoveryState else {
-            pruneNetworkDiagnostics(for: catalog)
+            pruneNetworkDiagnostics(for: ProviderCatalog(providers: allProviders, candidates: []))
             return
         }
         discoveryState = nextState
         try? discoveryStore.save(nextState)
-        pruneNetworkDiagnostics(for: catalog)
+        pruneNetworkDiagnostics(for: ProviderCatalog(providers: allProviders, candidates: []))
     }
 
     private func pruneNetworkDiagnostics(for catalog: ProviderCatalog) {
@@ -801,6 +804,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func currentProxyPort() -> UInt16 {
         defaultProxyPort()
+    }
+
+    private func discoverableProviders(from providers: [ImportedProvider]) -> [ImportedProvider] {
+        providers.filter { provider in
+            guard let definition = customProviders.definition(for: provider.ref) else {
+                return true
+            }
+            return definition.enableDiscovery
+        }
+    }
+
+    private func reconcileCustomProviderSecrets(previous: CustomProviderState, next: CustomProviderState) throws {
+        let removedIdentifiers = previous.secretIdentifiers().subtracting(next.secretIdentifiers())
+        for identifier in removedIdentifiers {
+            try customProviderKeychain.delete(identifier: identifier)
+        }
     }
 
     private func managerBaseURL() -> String {
@@ -842,6 +861,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.onApplySettings = { [weak self] preferences, customModels in
             self?.applySettings(preferences, customModels: customModels)
         }
+        appState.onSaveCustomProvider = { [weak self] definition, secret, existing in
+            self?.saveCustomProvider(definition, secret: secret, replacing: existing)
+        }
+        appState.onDeleteCustomProvider = { [weak self] definition in
+            self?.deleteCustomProvider(definition)
+        }
         appState.onRefreshModelDiscovery = { [weak self] appType in
             self?.refreshModelDiscovery(appType: appType)
         }
@@ -868,6 +893,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             routes: routes,
             preferences: preferences,
             customModels: customModels,
+            customProviders: customProviders,
             uniGateModelScope: uniGateModelScope,
             proxyStatus: proxyStatus,
             proxyPort: currentProxyPort(),

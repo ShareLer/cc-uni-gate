@@ -58,9 +58,10 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
     }
 
     public func pruning(validProviders providers: [ImportedProvider]) -> ProviderModelDiscoveryState {
-        let fingerprintsByRef = Dictionary(uniqueKeysWithValues: providers.map {
-            ($0.ref, ProviderModelDiscoveryFingerprint.value(for: $0))
-        })
+        var fingerprintsByRef: [ProviderRef: String] = [:]
+        for provider in providers {
+            fingerprintsByRef[provider.ref] = ProviderModelDiscoveryFingerprint.value(for: provider)
+        }
         return ProviderModelDiscoveryState(results: results.filter { _, result in
             guard let fingerprint = fingerprintsByRef[result.providerRef] else {
                 return false

@@ -42,6 +42,47 @@ struct UniGateAppRegistryTests {
     }
 
     @Test
+    func customCandidatesSeedVisibleRouteKeys() {
+        let provider = ImportedProvider(
+            id: "custom",
+            appType: "codex",
+            name: "Custom Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [
+            ModelCandidate(
+                logicalModel: "uni",
+                providerRef: provider.ref,
+                providerName: provider.name,
+                appType: provider.appType,
+                clientProtocol: .codexResponses,
+                apiFormat: .openaiResponses,
+                upstreamModel: "uni",
+                baseURL: provider.baseURL,
+                requiresTransform: false,
+                label: nil,
+                supportsLongContext: false,
+                source: .custom
+            )
+        ])
+
+        let routeKeys = ModelRouteVisibility.configuredBaseRouteKeys(
+            catalog: catalog,
+            customModels: CustomModelState(),
+            uniGateModelScope: UniGateModelScope()
+        )
+
+        #expect(routeKeys.map(\.description) == ["codex:uni"])
+    }
+
+    @Test
     func proxyRequestPathsUseSharedAppTypeDefaults() {
         #expect(ProxyRequestPath("/v1/messages") == .proxy(
             protocolKind: .anthropicMessages,

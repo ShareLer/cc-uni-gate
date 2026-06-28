@@ -447,27 +447,6 @@ final class UniGateAppState: ObservableObject {
         onSaveSettings?(nextPreferences, nextCustomModels)
     }
 
-    func customProviders(for appType: String? = nil) -> [CustomProviderDefinition] {
-        let definitions = customProviders.definitions
-        guard let appType else {
-            return definitions.sorted {
-                ProviderDisplay.appTypeLabel($0.appType)
-                    .localizedStandardCompare(ProviderDisplay.appTypeLabel($1.appType)) == .orderedAscending
-            }
-        }
-        return definitions.filter { $0.appType == appType }.sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-    }
-
-    func customProvider(for ref: ProviderRef) -> CustomProviderDefinition? {
-        customProviders.definition(for: ref)
-    }
-
-    func hasCustomProviderSecret(_ definition: CustomProviderDefinition) -> Bool {
-        customProviders.hasSecret(for: definition.providerRef)
-    }
-
     func saveCustomProvider(
         _ definition: CustomProviderDefinition,
         secret: String?,

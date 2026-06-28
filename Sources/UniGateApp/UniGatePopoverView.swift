@@ -1323,12 +1323,24 @@ private struct BubbleTail: Shape {
     }
 }
 
+private extension Array where Element == String {
+    func uniqueSortedAppTypes() -> [String] {
+        Array(Set(self)).sorted {
+            ProviderDisplay.appTypeLabel($0).localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
+        }
+    }
+}
+
 private struct InlineSettingsPanel: View {
     @Environment(\.ugBrandColor) private var brand
     @ObservedObject var state: UniGateAppState
     @ObservedObject var model: SettingsViewModel
     let loadError: String?
     @State private var applyTask: Task<Void, Never>?
+    @State private var isEditingCustomProvider = false
+    @State private var customProviderEditorID = UUID()
+    @State private var editingCustomProvider: CustomProviderDefinition?
+    @State private var pendingDeleteCustomProviderID: String?
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -1338,20 +1350,15 @@ private struct InlineSettingsPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
+        ZStack(alignment: .topLeading) {
+            settingsContent
+                .opacity(isEditingCustomProvider ? 0.18 : 1)
+                .blur(radius: isEditingCustomProvider ? 0.4 : 0)
+                .allowsHitTesting(!isEditingCustomProvider)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    healthCheckCard
-                    generalSettingsCard
-                    networkPolicyCard
-                    endpointCard
-                    diagnosticsCard
-                    backupRestoreCard
-                    themeSettingsCard
-                }
-                .padding(.trailing, 4)
+            if isEditingCustomProvider {
+                customProviderEditor
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1394,6 +1401,40 @@ private struct InlineSettingsPanel: View {
         .onDisappear {
             applyTask?.cancel()
         }
+    }
+
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    healthCheckCard
+                    generalSettingsCard
+                    networkPolicyCard
+                    customProvidersCard
+                    endpointCard
+                    diagnosticsCard
+                    backupRestoreCard
+                    themeSettingsCard
+                }
+                .padding(.trailing, 4)
+            }
+        }
+    }
+
+    private var customProviderEditor: some View {
+        InlineCustomProviderEditorView(
+            existing: editingCustomProvider,
+            appTypes: customProviderAppTypes(),
+            onSave: { definition, secret in
+                state.saveCustomProvider(definition, secret: secret, replacing: editingCustomProvider)
+                closeCustomProviderEditor()
+            },
+            onCancel: closeCustomProviderEditor
+        )
+        .id(customProviderEditorID)
+        .padding(12)
     }
 
     private var header: some View {
@@ -1477,6 +1518,32 @@ private struct InlineSettingsPanel: View {
                     state.resetConfiguration()
                 }
             }
+        }
+    }
+
+    private func openCustomProviderEditor() {
+        pendingDeleteCustomProviderID = nil
+        editingCustomProvider = nil
+        customProviderEditorID = UUID()
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isEditingCustomProvider = true
+        }
+    }
+
+    private func editCustomProvider(_ definition: CustomProviderDefinition) {
+        pendingDeleteCustomProviderID = nil
+        editingCustomProvider = definition
+        customProviderEditorID = UUID()
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isEditingCustomProvider = true
+        }
+    }
+
+    private func closeCustomProviderEditor() {
+        editingCustomProvider = nil
+        pendingDeleteCustomProviderID = nil
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isEditingCustomProvider = false
         }
     }
 
@@ -1684,6 +1751,167 @@ private struct InlineSettingsPanel: View {
                 }
             }
         }
+    }
+
+    private var customProvidersCard: some View {
+        settingsCard(spacing: 10) {
+            HStack(spacing: 8) {
+                Text("自定义供应商")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("\(model.sortedCustomProviders.count) 个")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .background(UGPopoverStyle.disabledTagFill, in: RoundedRectangle(cornerRadius: 5))
+                Spacer()
+                compactAction("新增", systemImage: "plus") {
+                    openCustomProviderEditor()
+                }
+            }
+
+            if model.sortedCustomProviders.isEmpty {
+                Text("尚未添加自定义供应商。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(model.sortedCustomProviders, id: \.id) { definition in
+                        customProviderRow(definition)
+                    }
+                }
+            }
+        }
+    }
+
+    private func customProviderRow(_ definition: CustomProviderDefinition) -> some View {
+        let hasSecret = model.customProviderHasSecret(definition)
+        let isConfirmingDelete = pendingDeleteCustomProviderID == definition.id
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(definition.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .lineLimit(1)
+                        providerStatusBadge(
+                            hasSecret ? "密钥已保存" : "缺少密钥",
+                            color: hasSecret ? .green : .orange
+                        )
+                    }
+                    Text("\(ProviderDisplay.appTypeLabel(definition.appType)) · \(definition.apiFormat.rawValue)")
+                        .font(.caption2)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .lineLimit(1)
+                    Text(definition.baseURL)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 8)
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(spacing: 6) {
+                        providerStatusBadge(
+                            definition.enableDiscovery ? "发现开启" : "发现关闭",
+                            color: definition.enableDiscovery ? .blue : .secondary
+                        )
+                        providerStatusBadge("\(definition.manualModels.count) 个手动模型", color: .secondary)
+                    }
+                    customProviderMenu(definition)
+                }
+            }
+
+            if isConfirmingDelete {
+                customProviderDeleteConfirmation(for: definition)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(UGPopoverStyle.cardFill, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isConfirmingDelete ? UGPopoverStyle.deleteConfirmBorder : UGPopoverStyle.cardBorder)
+        )
+    }
+
+    private func customProviderMenu(_ definition: CustomProviderDefinition) -> some View {
+        Menu {
+            Button("编辑") {
+                editCustomProvider(definition)
+            }
+            Button("删除...", role: .destructive) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    pendingDeleteCustomProviderID = definition.id
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .help("自定义供应商操作")
+    }
+
+    private func customProviderDeleteConfirmation(for definition: CustomProviderDefinition) -> some View {
+        HStack(spacing: 8) {
+            Text("删除这个自定义供应商？")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button("取消") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    pendingDeleteCustomProviderID = nil
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+
+            Button("删除") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    pendingDeleteCustomProviderID = nil
+                }
+                state.deleteCustomProvider(definition)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(UGPopoverStyle.destructive)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(UGPopoverStyle.deleteConfirmFill, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(UGPopoverStyle.deleteConfirmBorder))
+    }
+
+    private func providerStatusBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.24)))
+    }
+
+    private func customProviderAppTypes() -> [String] {
+        let known = [
+            UniGateAppRegistry.codex,
+            UniGateAppRegistry.claudeCode,
+            UniGateAppRegistry.claudeDesktop,
+            "gemini"
+        ]
+        let candidates = Set(model.candidates.map(\.appType))
+        let customProviders = Set(model.sortedCustomProviders.map(\.appType))
+        return (known + Array(candidates) + Array(customProviders)).uniqueSortedAppTypes()
     }
 
     private var endpointCard: some View {
@@ -2433,6 +2661,244 @@ private struct InlineCustomModelEditorView: View {
             parts.append("自定义")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct InlineCustomProviderEditorView: View {
+    @Environment(\.ugBrandColor) private var brand
+    let existing: CustomProviderDefinition?
+    let appTypes: [String]
+    let onSave: (CustomProviderDefinition, String?) -> Void
+    let onCancel: () -> Void
+
+    @State private var appType: String
+    @State private var name: String
+    @State private var baseURL: String
+    @State private var apiFormat: ApiFormat
+    @State private var enableDiscovery: Bool
+    @State private var isFullUrl: Bool
+    @State private var modelsUrl: String
+    @State private var customUserAgent: String
+    @State private var secret: String
+    @State private var manualModelName: String
+    @State private var manualUpstreamModel: String
+    @State private var manualModelLabel: String
+    @State private var manualModelSupportsLongContext: Bool
+
+    init(
+        existing: CustomProviderDefinition?,
+        appTypes: [String],
+        onSave: @escaping (CustomProviderDefinition, String?) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.existing = existing
+        self.appTypes = appTypes
+        self.onSave = onSave
+        self.onCancel = onCancel
+
+        _appType = State(initialValue: existing?.appType ?? appTypes.first ?? "")
+        _name = State(initialValue: existing?.name ?? "")
+        _baseURL = State(initialValue: existing?.baseURL ?? "")
+        _apiFormat = State(initialValue: existing?.apiFormat ?? .openaiResponses)
+        _enableDiscovery = State(initialValue: existing?.enableDiscovery ?? true)
+        _isFullUrl = State(initialValue: existing?.isFullUrl ?? false)
+        _modelsUrl = State(initialValue: existing?.modelsUrl ?? "")
+        _customUserAgent = State(initialValue: existing?.customUserAgent ?? "")
+        _secret = State(initialValue: "")
+        let firstManual = existing?.manualModels.first
+        _manualModelName = State(initialValue: firstManual?.logicalModel ?? "")
+        _manualUpstreamModel = State(initialValue: firstManual?.upstreamModel ?? "")
+        _manualModelLabel = State(initialValue: firstManual?.label ?? "")
+        _manualModelSupportsLongContext = State(initialValue: firstManual?.supportsLongContext ?? false)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            formPanel
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(UGPopoverStyle.inputFieldBorder))
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(existing == nil ? "新增自定义供应商" : "编辑自定义供应商")
+                .font(.system(size: 16, weight: .semibold))
+            Text("至少保留一个手动模型；API key 只写入 Keychain。")
+                .font(.caption)
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+        }
+    }
+
+    private var formPanel: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    field(title: "应用") {
+                        appTypeSelector
+                    }
+                    field(title: "名称") {
+                        TextField("例如 DeepSeek", text: $name)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    field(title: "基础地址") {
+                        TextField("https://api.example.com", text: $baseURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    field(title: "API 格式") {
+                        Picker("", selection: $apiFormat) {
+                            Text("OpenAI Responses").tag(ApiFormat.openaiResponses)
+                            Text("OpenAI Chat").tag(ApiFormat.openaiChat)
+                            Text("Anthropic").tag(ApiFormat.anthropic)
+                            Text("Gemini Native").tag(ApiFormat.geminiNative)
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    Toggle(isOn: $enableDiscovery) {
+                        Text("启用模型发现")
+                    }
+                    Toggle(isOn: $isFullUrl) {
+                        Text("使用完整模型 URL")
+                    }
+                    field(title: "Models URL") {
+                        TextField("可选", text: $modelsUrl)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    field(title: "自定义 User-Agent") {
+                        TextField("可选", text: $customUserAgent)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    field(title: "API Key") {
+                        SecureField(existing?.hasSecret == true ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Divider()
+                    Text("手动模型")
+                        .font(.system(size: 12, weight: .semibold))
+                    field(title: "模型名") {
+                        TextField("例如 gpt-5.5", text: $manualModelName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    field(title: "上游模型") {
+                        TextField("例如 gpt-5.5", text: $manualUpstreamModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    field(title: "标签") {
+                        TextField("可选", text: $manualModelLabel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Toggle(isOn: $manualModelSupportsLongContext) {
+                        Text("支持长上下文")
+                    }
+                }
+                .padding(12)
+            }
+
+            Divider()
+
+            footer
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+        }
+    }
+
+    private func field<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+            content()
+        }
+    }
+
+    private var appTypeSelector: some View {
+        HStack(spacing: 6) {
+            ForEach(appTypes, id: \.self) { item in
+                let selected = appType == item
+                Button {
+                    appType = item
+                } label: {
+                    Text(ProviderDisplay.appTypeLabel(item))
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .foregroundStyle(selected ? .white : UGPopoverStyle.textSecondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(Capsule().fill(selected ? brand : UGPopoverStyle.tabFill))
+                        .overlay(Capsule().stroke(selected ? Color.clear : UGPopoverStyle.tabBorder))
+                }
+                .buttonStyle(.plain)
+                .disabled(existing != nil)
+                .opacity(existing != nil && !selected ? 0.55 : 1)
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button("取消") {
+                onCancel()
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+
+            Spacer()
+
+            Button {
+                save()
+            } label: {
+                Text("保存")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(canSave ? .white : UGPopoverStyle.textSecondary)
+                    .padding(.horizontal, 14)
+                    .frame(height: 30)
+                    .background(canSave ? brand : UGPopoverStyle.tabFill, in: RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSave)
+        }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !appType.isEmpty
+            && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !manualModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !manualUpstreamModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func save() {
+        guard canSave else {
+            NSSound.beep()
+            return
+        }
+        let manual = CustomProviderManualModel(
+            id: existing?.manualModels.first?.id ?? UUID(),
+            logicalModel: manualModelName,
+            upstreamModel: manualUpstreamModel,
+            label: manualModelLabel,
+            supportsLongContext: manualModelSupportsLongContext
+        )
+        let definition = CustomProviderDefinition(
+            id: existing?.id ?? CustomProviderDefinition.makeID(),
+            appType: appType,
+            name: name,
+            baseURL: baseURL,
+            apiFormat: apiFormat,
+            isCurrent: existing?.isCurrent ?? false,
+            enableDiscovery: enableDiscovery,
+            manualModels: [manual],
+            apiKeyIdentifier: existing?.apiKeyIdentifier,
+            isFullUrl: isFullUrl,
+            modelsUrl: modelsUrl,
+            customUserAgent: customUserAgent
+        )
+        let trimmedSecret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        onSave(definition, trimmedSecret.isEmpty ? nil : trimmedSecret)
     }
 }
 
