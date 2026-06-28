@@ -83,6 +83,9 @@ public enum ModelRouteVisibility {
         _ candidate: ModelCandidate,
         uniGateModelScope: UniGateModelScope
     ) -> Bool {
+        if candidate.source == .custom {
+            return true
+        }
         guard isUniGateScopedApp(candidate.appType) else {
             return true
         }
@@ -114,7 +117,7 @@ public enum ModelRouteVisibility {
         })
         let visibleRouteKeys = Set(catalog.candidates.compactMap { candidate -> ModelRouteKey? in
             guard candidate.providerRef == candidate.upstreamProviderRef,
-                  candidate.source == .configured,
+                  candidate.source.isRouteKeySeed,
                   isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope),
                   !customModelIdentities.contains(NormalizedRouteKeyIdentity(routeKey: candidate.routeKey))
             else {

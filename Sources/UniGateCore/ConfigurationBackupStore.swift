@@ -6,19 +6,51 @@ public struct UniGateConfigurationBackup: Codable, Sendable {
     public var preferences: AppPreferences
     public var routes: RouteState
     public var customModels: CustomModelState
+    public var customProviders: CustomProviderState
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case exportedAt
+        case preferences
+        case routes
+        case customModels
+        case customProviders
+    }
 
     public init(
-        version: Int = 1,
+        version: Int = 2,
         exportedAt: Date = Date(),
         preferences: AppPreferences,
         routes: RouteState,
-        customModels: CustomModelState
+        customModels: CustomModelState,
+        customProviders: CustomProviderState = CustomProviderState()
     ) {
         self.version = version
         self.exportedAt = exportedAt
         self.preferences = preferences
         self.routes = routes
         self.customModels = customModels
+        self.customProviders = customProviders
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        self.exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+        self.preferences = try container.decode(AppPreferences.self, forKey: .preferences)
+        self.routes = try container.decode(RouteState.self, forKey: .routes)
+        self.customModels = try container.decode(CustomModelState.self, forKey: .customModels)
+        self.customProviders = try container.decodeIfPresent(CustomProviderState.self, forKey: .customProviders) ?? CustomProviderState()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(exportedAt, forKey: .exportedAt)
+        try container.encode(preferences, forKey: .preferences)
+        try container.encode(routes, forKey: .routes)
+        try container.encode(customModels, forKey: .customModels)
+        try container.encode(customProviders, forKey: .customProviders)
     }
 }
 

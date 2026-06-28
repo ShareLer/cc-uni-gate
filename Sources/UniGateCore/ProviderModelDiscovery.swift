@@ -126,7 +126,7 @@ public enum ProviderModelDiscovery {
         from state: ProviderModelDiscoveryState,
         catalog: ProviderCatalog
     ) -> [ModelCandidate] {
-        let providersByRef = Dictionary(uniqueKeysWithValues: catalog.providers.map { ($0.ref, $0) })
+        let providersByRef = providersByRef(in: catalog)
         return state.results.values.flatMap { result -> [ModelCandidate] in
             guard
                 let provider = providersByRef[result.providerRef],
@@ -155,6 +155,14 @@ public enum ProviderModelDiscovery {
                 )
             }
         }
+    }
+
+    public static func providersByRef(in catalog: ProviderCatalog) -> [ProviderRef: ImportedProvider] {
+        var result: [ProviderRef: ImportedProvider] = [:]
+        for provider in catalog.providers {
+            result[provider.ref] = provider
+        }
+        return result
     }
 
     public static func mergedModelIDs(_ ids: [String]) -> [String] {

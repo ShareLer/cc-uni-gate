@@ -1211,6 +1211,8 @@ struct UniGatePopoverRootView: View {
             parts.append("探测失效")
         case .configured:
             break
+        case .custom:
+            parts.append("自定义")
         }
         return parts.joined(separator: " · ")
     }
@@ -2427,6 +2429,8 @@ private struct InlineCustomModelEditorView: View {
             parts.append("探测失效")
         case .configured:
             break
+        case .custom:
+            parts.append("自定义")
         }
         return parts.joined(separator: " · ")
     }

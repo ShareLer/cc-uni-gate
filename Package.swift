@@ -20,6 +20,9 @@ let package = Package(
             name: "UniGateCore",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift")
+            ],
+            linkerSettings: [
+                .linkedFramework("Security")
             ]
         ),
         .executableTarget(

@@ -23,6 +23,7 @@ final class UniGateAppState: ObservableObject {
     @Published var routes = RouteState()
     @Published var preferences = AppPreferences()
     @Published var customModels = CustomModelState()
+    @Published var customProviders = CustomProviderState()
     @Published var uniGateModelScope = UniGateModelScope()
     @Published var proxyStatus: ProxyStatus = .starting
     @Published var proxyPort: UInt16 = 17888
@@ -44,6 +45,8 @@ final class UniGateAppState: ObservableObject {
     var onQuit: (() -> Void)?
     var onSaveSettings: ((AppPreferences, CustomModelState) -> Void)?
     var onApplySettings: ((AppPreferences, CustomModelState) -> Void)?
+    var onSaveCustomProvider: ((CustomProviderDefinition, String?, CustomProviderDefinition?) -> Void)?
+    var onDeleteCustomProvider: ((CustomProviderDefinition) -> Void)?
     var onRefreshModelDiscovery: ((String?) -> Void)?
     var onCopyDiagnostics: (() -> Void)?
     var onExportConfiguration: (() -> Void)?
@@ -59,6 +62,7 @@ final class UniGateAppState: ObservableObject {
         routes: RouteState,
         preferences: AppPreferences,
         customModels: CustomModelState,
+        customProviders: CustomProviderState = CustomProviderState(),
         uniGateModelScope: UniGateModelScope,
         proxyStatus: ProxyStatus,
         proxyPort: UInt16,
@@ -69,6 +73,7 @@ final class UniGateAppState: ObservableObject {
         self.routes = routes
         self.preferences = preferences
         self.customModels = customModels
+        self.customProviders = customProviders
         self.uniGateModelScope = uniGateModelScope
         self.proxyStatus = proxyStatus
         self.proxyPort = proxyPort
@@ -76,6 +81,27 @@ final class UniGateAppState: ObservableObject {
         self.loadError = loadError
         syncSelectedAppType()
         updateSettingsViewModel()
+    }
+
+    func customProviders(for appType: String? = nil) -> [CustomProviderDefinition] {
+        let definitions = customProviders.definitions
+        guard let appType else {
+            return definitions.sorted {
+                ProviderDisplay.appTypeLabel($0.appType)
+                    .localizedStandardCompare(ProviderDisplay.appTypeLabel($1.appType)) == .orderedAscending
+            }
+        }
+        return definitions.filter { $0.appType == appType }.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func customProvider(for ref: ProviderRef) -> CustomProviderDefinition? {
+        customProviders.definition(for: ref)
+    }
+
+    func hasCustomProviderSecret(_ definition: CustomProviderDefinition) -> Bool {
+        customProviders.hasSecret(for: definition.providerRef)
     }
 
     func updateProxyStatus(_ status: ProxyStatus, port: UInt16) {
@@ -421,6 +447,39 @@ final class UniGateAppState: ObservableObject {
         onSaveSettings?(nextPreferences, nextCustomModels)
     }
 
+    func customProviders(for appType: String? = nil) -> [CustomProviderDefinition] {
+        let definitions = customProviders.definitions
+        guard let appType else {
+            return definitions.sorted {
+                ProviderDisplay.appTypeLabel($0.appType)
+                    .localizedStandardCompare(ProviderDisplay.appTypeLabel($1.appType)) == .orderedAscending
+            }
+        }
+        return definitions.filter { $0.appType == appType }.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func customProvider(for ref: ProviderRef) -> CustomProviderDefinition? {
+        customProviders.definition(for: ref)
+    }
+
+    func hasCustomProviderSecret(_ definition: CustomProviderDefinition) -> Bool {
+        customProviders.hasSecret(for: definition.providerRef)
+    }
+
+    func saveCustomProvider(
+        _ definition: CustomProviderDefinition,
+        secret: String?,
+        replacing existing: CustomProviderDefinition? = nil
+    ) {
+        onSaveCustomProvider?(definition, secret, existing)
+    }
+
+    func deleteCustomProvider(_ definition: CustomProviderDefinition) {
+        onDeleteCustomProvider?(definition)
+    }
+
     func reload() {
         onReload?()
     }
@@ -447,6 +506,7 @@ final class UniGateAppState: ObservableObject {
             candidates: catalog.candidates,
             providers: catalog.providers,
             customModels: customModels,
+            customProviders: customProviders,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences,
             onApply: { [weak self] preferences, customModels in
@@ -580,6 +640,7 @@ final class UniGateAppState: ObservableObject {
             candidates: catalog.candidates,
             providers: catalog.providers,
             customModels: customModels,
+            customProviders: customProviders,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences
         )

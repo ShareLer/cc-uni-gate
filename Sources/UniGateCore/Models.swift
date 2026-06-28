@@ -61,10 +61,20 @@ public enum ProxyResponseTransform: String, Codable, Sendable {
     case openAIChatToAnthropicMessages = "openai_chat_to_anthropic_messages"
 }
 
-public enum ModelCandidateSource: String, Sendable {
+public enum ModelCandidateSource: String, Codable, Sendable {
     case configured
+    case custom
     case discovered
     case staleDiscovered
+
+    public var isRouteKeySeed: Bool {
+        switch self {
+        case .configured, .custom:
+            return true
+        case .discovered, .staleDiscovered:
+            return false
+        }
+    }
 }
 
 public enum ProxyRequestPath: Equatable, Sendable {
@@ -455,7 +465,7 @@ public extension ModelCandidate {
         switch source {
         case .staleDiscovered:
             return true
-        case .discovered, .configured:
+        case .discovered, .configured, .custom:
             break
         }
         guard providerRef != upstreamProviderRef else {

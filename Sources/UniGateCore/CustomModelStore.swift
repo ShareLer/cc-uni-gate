@@ -266,7 +266,7 @@ public struct CustomModelState: Codable, Sendable {
             return candidateIsPreserved
         }
         if candidate.source != existing.source {
-            return candidate.source == .configured
+            return sourcePriority(candidate.source) < sourcePriority(existing.source)
         }
         if candidate.supportsLongContext != existing.supportsLongContext {
             return candidate.supportsLongContext
@@ -279,6 +279,19 @@ public struct CustomModelState: Codable, Sendable {
         }
 
         return candidate.logicalModel.localizedStandardCompare(existing.logicalModel) == .orderedAscending
+    }
+
+    private static func sourcePriority(_ source: ModelCandidateSource) -> Int {
+        switch source {
+        case .configured:
+            return 0
+        case .custom:
+            return 1
+        case .discovered:
+            return 2
+        case .staleDiscovered:
+            return 3
+        }
     }
 
     private func missingTargetCandidate(

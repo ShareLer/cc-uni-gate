@@ -7,6 +7,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var candidates: [ModelCandidate]
     @Published var providers: [ImportedProvider]
     @Published var customModels: CustomModelState
+    @Published var customProviders: CustomProviderState
     @Published var preferences: AppPreferences
     @Published var portText: String
     @Published var ccSwitchDBPathText: String
@@ -26,6 +27,7 @@ final class SettingsViewModel: ObservableObject {
         candidates: [ModelCandidate],
         providers: [ImportedProvider],
         customModels: CustomModelState,
+        customProviders: CustomProviderState,
         uniGateModelScope: UniGateModelScope,
         preferences: AppPreferences,
         onApply: @escaping (AppPreferences, CustomModelState) -> Void
@@ -33,6 +35,7 @@ final class SettingsViewModel: ObservableObject {
         self.candidates = candidates
         self.providers = providers
         self.customModels = customModels
+        self.customProviders = customProviders
         self.uniGateModelScope = uniGateModelScope
         self.preferences = preferences
         self.portText = "\(preferences.normalizedPort)"
@@ -50,12 +53,14 @@ final class SettingsViewModel: ObservableObject {
         candidates: [ModelCandidate],
         providers: [ImportedProvider],
         customModels: CustomModelState,
+        customProviders: CustomProviderState,
         uniGateModelScope: UniGateModelScope,
         preferences: AppPreferences
     ) {
         self.candidates = candidates
         self.providers = providers
         self.customModels = customModels
+        self.customProviders = customProviders
         self.uniGateModelScope = uniGateModelScope
         let shouldUpdatePortText = portText == "\(self.preferences.normalizedPort)"
         let shouldUpdateDBPathText = ccSwitchDBPathText == self.preferences.resolvedCcSwitchDBPath
@@ -151,6 +156,21 @@ final class SettingsViewModel: ObservableObject {
             }
             return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    var sortedCustomProviders: [CustomProviderDefinition] {
+        customProviders.definitions.sorted { lhs, rhs in
+            let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)
+                .localizedStandardCompare(ProviderDisplay.appTypeLabel(rhs.appType))
+            if appCompare != .orderedSame {
+                return appCompare == .orderedAscending
+            }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    func customProviderHasSecret(_ definition: CustomProviderDefinition) -> Bool {
+        customProviders.hasSecret(for: definition.providerRef)
     }
 
     func copyBaseURL(path: String) {

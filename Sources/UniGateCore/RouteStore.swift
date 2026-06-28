@@ -177,10 +177,12 @@ public final class RouteStore: @unchecked Sendable {
         switch source {
         case .configured:
             return 0
-        case .discovered:
+        case .custom:
             return 1
-        case .staleDiscovered:
+        case .discovered:
             return 2
+        case .staleDiscovered:
+            return 3
         }
     }
 

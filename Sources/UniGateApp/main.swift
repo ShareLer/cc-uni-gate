@@ -15,12 +15,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var routes = RouteState()
     private var preferences = AppPreferences()
     private var customModels = CustomModelState()
+    private var customProviders = CustomProviderState()
     private var requestMetrics = RequestMetricsState()
     private var discoveryState = ProviderModelDiscoveryState()
     private var networkDiagnostics: [String: NetworkPolicyDiagnostic] = [:]
     private lazy var routeStore = RouteStore(fileURL: defaultRouteStoreURL())
     private lazy var preferencesStore = PreferencesStore(fileURL: defaultPreferencesStoreURL())
     private lazy var customModelStore = CustomModelStore()
+    private lazy var customProviderStore = CustomProviderStore()
     private lazy var discoveryStore = ProviderModelDiscoveryStore()
     private let backupStore = ConfigurationBackupStore()
     private var proxyServer: LocalProxyServer?
@@ -67,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
+            customProviders = try customProviderStore.load()
             discoveryState = try discoveryStore.load()
             let importedSnapshot = try loadImportedConfigurationSnapshot()
             ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
@@ -159,6 +162,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         persistSettings(preferences, customModels: customModels, closeAfterSave: false)
     }
 
+    private func saveCustomProvider(
+        _ definition: CustomProviderDefinition,
+        secret: String?,
+        replacing existing: CustomProviderDefinition? = nil
+    ) {
+        do {
+            let identifier = existing?.apiKeyIdentifier ?? existing?.id ?? definition.id
+            var nextDefinition = definition
+            let nextSecret = secret?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let nextSecret, !nextSecret.isEmpty {
+                try customProviderKeychain.save(nextSecret, identifier: identifier)
+                nextDefinition.apiKeyIdentifier = identifier
+            } else if existing?.hasSecret == true {
+                nextDefinition.apiKeyIdentifier = identifier
+            } else {
+                nextDefinition.apiKeyIdentifier = nil
+            }
+            customProviders = customProviders.replacingDefinition(nextDefinition)
+            try customProviderStore.save(customProviders)
+            reloadCatalog(recordEventMessage: "已保存自定义供应商")
+        } catch {
+            showError("保存自定义供应商失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func deleteCustomProvider(_ definition: CustomProviderDefinition) {
+        do {
+            let identifier = definition.apiKeyIdentifier ?? definition.id
+            try customProviderKeychain.delete(identifier: identifier)
+            customProviders = customProviders.removingDefinition(id: definition.id)
+            try customProviderStore.save(customProviders)
+            reloadCatalog(recordEventMessage: "已删除自定义供应商")
+        } catch {
+            showError("删除自定义供应商失败：\(error.localizedDescription)")
+        }
+    }
+
     private func persistSettings(
         _ preferences: AppPreferences,
         customModels: CustomModelState,
@@ -244,6 +284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private lazy var customProviderKeychain = CustomProviderKeychain()
+
     private func performExportConfiguration() {
         let panel = NSSavePanel()
         panel.title = "导出 Uni Gate 配置"
@@ -260,7 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let backup = UniGateConfigurationBackup(
                 preferences: preferences,
                 routes: routes,
-                customModels: customModels
+                customModels: customModels,
+                customProviders: customProviders
             )
             try backupStore.save(backup, to: url)
             appState.showToast("配置已导出")
@@ -297,9 +340,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences = backup.preferences
             routes = backup.routes
             customModels = backup.customModels
+            customProviders = backup.customProviders
             networkDiagnostics.removeAll()
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
+            try customProviderStore.save(customProviders)
             try routeStore.save(routes)
             syncLaunchAtLoginPreference()
             reloadCatalog(recordEventMessage: "已恢复 Uni Gate 配置")
@@ -329,9 +374,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             preferences = AppPreferences()
             customModels = CustomModelState()
+            customProviders = CustomProviderState()
             networkDiagnostics.removeAll()
             try preferencesStore.save(preferences)
             try customModelStore.save(customModels)
+            try customProviderStore.save(customProviders)
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
@@ -679,17 +726,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadExpandedCatalog(imported: ProviderCatalog) -> ProviderCatalog {
+        let customImportedProviders = customProviders.importedProviders()
+        let customProviderCatalog = ProviderCatalog(
+            providers: imported.providers + customImportedProviders,
+            candidates: imported.candidates
+        )
         let discoveredCandidates = ProviderModelDiscovery.discoveredCandidates(
             from: discoveryState,
-            catalog: imported
+            catalog: customProviderCatalog
         )
+        let manualCandidates = customProviders.manualCandidates()
+        let manualCandidateIDs = Set(manualCandidates.map(\.id))
+        let filteredDiscoveredCandidates = discoveredCandidates.filter {
+            !manualCandidateIDs.contains($0.id)
+        }
         let baseCatalog = ProviderCatalog(
-            providers: imported.providers,
-            candidates: imported.candidates + discoveredCandidates
+            providers: customProviderCatalog.providers,
+            candidates: imported.candidates + filteredDiscoveredCandidates
         )
-        let customCandidates = customModels.expandedCandidates(from: baseCatalog)
+        let customCandidates = manualCandidates + customModels.expandedCandidates(from: baseCatalog)
         return ProviderCatalog(
-            providers: imported.providers,
+            providers: baseCatalog.providers,
             candidates: baseCatalog.candidates + customCandidates
         )
     }
