@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ApplicationMenu.install()
         NSApp.setActivationPolicy(.accessory)
         configureAppStateActions()
         statusItemController.install(state: appState)
@@ -1298,6 +1299,54 @@ private enum ProxyHealthProbe {
         } catch {
             return .failure(error.localizedDescription)
         }
+    }
+}
+
+@MainActor
+enum ApplicationMenu {
+    static func install() {
+        let app = NSApplication.shared
+        let mainMenu = NSMenu(title: "Main Menu")
+
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu(title: "CC Uni Gate")
+        appMenu.addItem(makeItem(
+            title: "Quit CC Uni Gate",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        ))
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(makeItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(makeItem(
+            title: "Redo",
+            action: Selector(("redo:")),
+            keyEquivalent: "z",
+            modifiers: [.command, .shift]
+        ))
+        editMenu.addItem(.separator())
+        editMenu.addItem(makeItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(makeItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(makeItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(makeItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        app.mainMenu = mainMenu
+    }
+
+    private static func makeItem(
+        title: String,
+        action: Selector,
+        keyEquivalent: String,
+        modifiers: NSEvent.ModifierFlags = .command
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.keyEquivalentModifierMask = modifiers
+        return item
     }
 }
 

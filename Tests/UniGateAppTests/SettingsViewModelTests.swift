@@ -1,9 +1,25 @@
 @testable import UniGateApp
+import AppKit
 import UniGateCore
 import Testing
 
 @MainActor
 struct SettingsViewModelTests {
+    @Test
+    func applicationMenuIncludesTextEditingShortcuts() {
+        ApplicationMenu.install()
+
+        let editMenu = NSApp.mainMenu?.items.first { $0.submenu?.title == "Edit" }?.submenu
+        #expect(editMenu?.item(withTitle: "Cut")?.action == #selector(NSText.cut(_:)))
+        #expect(editMenu?.item(withTitle: "Cut")?.keyEquivalent == "x")
+        #expect(editMenu?.item(withTitle: "Copy")?.action == #selector(NSText.copy(_:)))
+        #expect(editMenu?.item(withTitle: "Copy")?.keyEquivalent == "c")
+        #expect(editMenu?.item(withTitle: "Paste")?.action == #selector(NSText.paste(_:)))
+        #expect(editMenu?.item(withTitle: "Paste")?.keyEquivalent == "v")
+        #expect(editMenu?.item(withTitle: "Select All")?.action == #selector(NSText.selectAll(_:)))
+        #expect(editMenu?.item(withTitle: "Select All")?.keyEquivalent == "a")
+    }
+
     @Test
     func updatePreservesDirtyTextFields() {
         let initialPreferences = AppPreferences(
