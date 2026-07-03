@@ -406,6 +406,129 @@ struct RouteStoreTests {
     }
 
     @Test
+    func defaultStatePrefersSelectedCustomModelTarget() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let fast = ModelCandidate(
+            logicalModel: "fast",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "fast-upstream",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let pro = ModelCandidate(
+            logicalModel: "pro",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "pro-upstream",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let fastTarget = CustomModelTarget(routeKey: fast.routeKey, providerRef: provider.ref)
+        let proTarget = CustomModelTarget(routeKey: pro.routeKey, providerRef: provider.ref)
+        let imported = ProviderCatalog(providers: [provider], candidates: [fast, pro])
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                targets: [fastTarget, proTarget],
+                selectedTargetID: proTarget.id
+            )
+        ])
+        let catalog = ProviderCatalog(
+            providers: imported.providers,
+            candidates: imported.candidates + customModels.expandedCandidates(from: imported)
+        )
+
+        let state = RouteStore.defaultState(
+            candidates: catalog.candidates,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+        )
+
+        #expect(
+            state.routes["codex:customer_model"]?.providerRef
+                == CustomModelState.syntheticProviderRef(appType: "codex", target: proTarget)
+        )
+    }
+
+    @Test
+    func defaultStateDoesNotFallBackWhenSelectedCustomModelTargetIsMissing() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let fast = ModelCandidate(
+            logicalModel: "fast",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "fast-upstream",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let fastTarget = CustomModelTarget(routeKey: fast.routeKey, providerRef: provider.ref)
+        let missingTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "pro"),
+            providerRef: provider.ref
+        )
+        let imported = ProviderCatalog(providers: [provider], candidates: [fast])
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "customer_model",
+                targets: [fastTarget, missingTarget],
+                selectedTargetID: missingTarget.id
+            )
+        ])
+        let catalog = ProviderCatalog(
+            providers: imported.providers,
+            candidates: imported.candidates + customModels.expandedCandidates(from: imported)
+        )
+
+        let state = RouteStore.defaultState(
+            candidates: catalog.candidates,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+        )
+
+        #expect(state.routes["codex:customer_model"] == nil)
+    }
+
+    @Test
     func keepsSameModelSeparateAcrossApps() {
         let candidates = [
             ModelCandidate(

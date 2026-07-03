@@ -5,6 +5,12 @@ import Network
 @MainActor
 protocol LocalProxyRuntime: AnyObject {
     func proxySnapshot() -> ProxyRuntimeSnapshot
+    // /v1/models must be generated from the full imported catalog, not the
+    // proxy-scoped catalog. The UI intentionally hides some discovered models
+    // by default, but cc-switch still depends on /v1/models to discover the
+    // broader model set that UniGate can route to. If this ever switches to the
+    // proxy-scoped catalog, UniGate visibility and cc-switch discovery become a
+    // circular dependency and discovered models disappear from model listing.
     func modelListSnapshot() -> ProxyRuntimeSnapshot
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
@@ -1389,11 +1395,15 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot, appType: String?) async -> HTTPResponse {
         let appType = appType ?? "codex"
+        // Keep /v1/models tied to the full model catalog semantics above.
+        // Do not replace this with proxyCatalog()/proxy route keys just because
+        // the main UniGate UI is scope-filtered; the UI and cc-switch model
+        // discovery are intentionally not the same surface.
         let routeKeys = ProviderModelListing.routeKeys(from: snapshot.catalog, appType: appType)
         let modelIDs = Array(Set(routeKeys.map(\.logicalModel))).sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }
         let models: Any = appType == UniGateAppRegistry.codex
-            ? codexModelCatalog(routeKeys: routeKeys, candidates: snapshot.catalog.candidates)
+            ? Self.codexModelCatalog(routeKeys: routeKeys, candidates: snapshot.catalog.candidates)
             : modelIDs
         return .json(status: 200, body: [
             "object": "list",
@@ -1402,20 +1412,21 @@ final class LocalProxyServer: @unchecked Sendable {
         ], allowsCORS: true)
     }
 
-    private func codexModelCatalog(routeKeys: [ModelRouteKey], candidates: [ModelCandidate]) -> [[String: Any]] {
+    static func codexModelCatalog(routeKeys: [ModelRouteKey], candidates: [ModelCandidate]) -> [[String: Any]] {
         routeKeys.map { key in
             let routeCandidates = candidates.filter {
                 $0.appType == key.appType && $0.logicalModel == key.logicalModel
             }
+            let hasSyntheticCandidates = routeCandidates.contains { $0.providerRef != $0.upstreamProviderRef }
             let displayName = routeCandidates
                 .compactMap(\.label)
                 .first { !$0.isEmpty && $0 != routeCandidates.first?.providerName }
-                ?? key.logicalModel
+            let resolvedDisplayName = hasSyntheticCandidates ? key.logicalModel : (displayName ?? key.logicalModel)
             let contextWindow = routeCandidates.contains(where: \.supportsLongContext) ? 1_000_000 : 128_000
             return [
                 "slug": key.logicalModel,
-                "display_name": displayName,
-                "description": displayName,
+                "display_name": resolvedDisplayName,
+                "description": resolvedDisplayName,
                 "context_window": contextWindow,
                 "max_context_window": contextWindow
             ]

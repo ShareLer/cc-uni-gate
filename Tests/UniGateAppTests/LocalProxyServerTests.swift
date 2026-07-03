@@ -8,6 +8,66 @@ import Testing
 struct LocalProxyServerTests {
     @Test
     @MainActor
+    func codexModelCatalogKeepsCustomAliasDisplayName() {
+        let provider = ImportedProvider(
+            id: "configured",
+            appType: UniGateAppRegistry.codex,
+            name: "Configured Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://configured.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: UniGateAppRegistry.codex,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: "gpt-5.5",
+            supportsLongContext: false
+        )
+        let customTarget = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let customCandidate = ModelCandidate(
+            logicalModel: "gpt-5.4",
+            providerRef: CustomModelState.syntheticProviderRef(
+                appType: UniGateAppRegistry.codex,
+                target: customTarget
+            ),
+            providerName: provider.name,
+            appType: UniGateAppRegistry.codex,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: "gpt-5.5",
+            supportsLongContext: false,
+            upstreamProviderRef: provider.ref,
+            source: .configured
+        )
+
+        let models = LocalProxyServer.codexModelCatalog(
+            routeKeys: [ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: "gpt-5.4")],
+            candidates: [baseCandidate, customCandidate]
+        )
+
+        #expect(models.count == 1)
+        #expect(models.first?["slug"] as? String == "gpt-5.4")
+        #expect(models.first?["display_name"] as? String == "gpt-5.4")
+        #expect(models.first?["description"] as? String == "gpt-5.4")
+    }
+
+    @Test
+    @MainActor
     func malformedOpenAIChatStreamChunkBecomesAnthropicErrorEvent() async throws {
         let upstream = try MockSSEUpstream(
             body: Data("data: {not json}\n\n".utf8)

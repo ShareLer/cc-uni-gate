@@ -1155,7 +1155,13 @@ struct ProxyResolverTests {
         )
 
         #expect(customCandidates.count == 2)
-        #expect(RouteStore.defaultState(candidates: catalog.candidates).routes["codex:customer_model"]?.providerRef != fastCandidate.providerRef)
+        #expect(
+            RouteStore.defaultState(
+                candidates: catalog.candidates,
+                preferredProviderRefsByRouteKey: custom.preferredProviderRefsByRouteKey()
+            ).routes["codex:customer_model"]?.providerRef
+                != fastCandidate.providerRef
+        )
         #expect(resolved.outboundModel == "fast-upstream")
     }
 

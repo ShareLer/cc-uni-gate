@@ -76,7 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
             pruneDiscoveryState(for: importedSnapshot.catalog)
             applyImportedConfigurationSnapshot(importedSnapshot)
-            routes = try routeStore.load(catalog: proxyCatalog())
+            routes = try routeStore.load(
+                catalog: proxyCatalog(),
+                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+            )
             catalogLoadError = nil
             if let recordEventMessage {
                 recordEvent(.info, recordEventMessage)
@@ -409,7 +412,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
-            routes = RouteStore.defaultState(candidates: proxyCatalog().candidates)
+            routes = RouteStore.defaultState(
+                candidates: proxyCatalog().candidates,
+                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+            )
             try routeStore.save(routes)
             syncLaunchAtLoginPreference()
             publishState()
@@ -491,7 +497,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     appState.updateDiscoveryState(nextState)
                     try discoveryStore.save(nextState)
                     applyImportedConfigurationSnapshot(importedSnapshot)
-                    routes = try routeStore.load(catalog: proxyCatalog())
+                    routes = try routeStore.load(
+                        catalog: proxyCatalog(),
+                        preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+                    )
                     catalogLoadError = nil
                     recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
                     publishState()
@@ -545,7 +554,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             discoveryState = nextState.pruning(validProviders: validProviders)
             try discoveryStore.save(discoveryState)
             catalog = try loadExpandedCatalog()
-            routes = try routeStore.load(catalog: proxyCatalog())
+            routes = try routeStore.load(
+                catalog: proxyCatalog(),
+                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+            )
             recordEvent(.info, "已自动刷新模型探测缓存")
             publishState()
         } catch {
@@ -1017,6 +1029,16 @@ extension AppDelegate: LocalProxyRuntime {
     }
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
+        // Model listing must use the full catalog, not proxyCatalog().
+        // UniGate's main UI is allowed to hide discovered models by default,
+        // but cc-switch still calls /v1/models to learn the broader set that
+        // UniGate can route to. If this ever follows proxyCatalog(), you create
+        // a chicken-and-egg loop:
+        // 1. UniGate UI only shows cc-switch-configured + force-enabled models.
+        // 2. cc-switch only sees what /v1/models returns.
+        // 3. /v1/models would then only return what the UI already shows.
+        // The result is that discovered-but-hidden models can never be learned
+        // by cc-switch again.
         ProxyRuntimeSnapshot(catalog: catalog, routes: routes, networkPolicy: preferences.networkPolicy)
     }
 
@@ -1029,7 +1051,10 @@ extension AppDelegate: LocalProxyRuntime {
         ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
         pruneDiscoveryState(for: importedSnapshot.catalog)
         applyImportedConfigurationSnapshot(importedSnapshot)
-        routes = try routeStore.load(catalog: proxyCatalog())
+        routes = try routeStore.load(
+            catalog: proxyCatalog(),
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+        )
         catalogLoadError = nil
         recordEvent(.info, "已重新加载 cc-switch DB")
         publishState()

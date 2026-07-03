@@ -19,16 +19,26 @@ public final class RouteStore: @unchecked Sendable {
             .appendingPathComponent("routes.json", isDirectory: false)
     }
 
-    public func load(catalog: ProviderCatalog) throws -> RouteState {
+    public func load(
+        catalog: ProviderCatalog,
+        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:]
+    ) throws -> RouteState {
         let state: RouteState
         if FileManager.default.fileExists(atPath: fileURL.path) {
             let data = try Data(contentsOf: fileURL)
             state = try decoder.decode(RouteState.self, from: data)
         } else {
-            state = RouteStore.defaultState(candidates: catalog.candidates)
+            state = RouteStore.defaultState(
+                candidates: catalog.candidates,
+                preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey
+            )
         }
 
-        let merged = merge(state, catalog: catalog)
+        let merged = merge(
+            state,
+            catalog: catalog,
+            preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey
+        )
         if state.routes.isEmpty || (!merged.routes.isEmpty && !dropsExistingRouteKeys(state, catalog: catalog)) {
             try save(merged)
         }
@@ -109,7 +119,10 @@ public final class RouteStore: @unchecked Sendable {
         return next
     }
 
-    public static func defaultState(candidates: [ModelCandidate]) -> RouteState {
+    public static func defaultState(
+        candidates: [ModelCandidate],
+        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:]
+    ) -> RouteState {
         var grouped: [String: [ModelCandidate]] = [:]
         for candidate in candidates {
             guard candidate.source != .staleDiscovered else {
@@ -120,6 +133,17 @@ public final class RouteStore: @unchecked Sendable {
 
         var routes: [String: ActiveRoute] = [:]
         for (key, candidates) in grouped {
+            if let preferredProviderRef = preferredProviderRefsByRouteKey[key] {
+                if let preferred = candidates.first(where: { $0.providerRef == preferredProviderRef }) {
+                    routes[key] = ActiveRoute(
+                        appType: preferred.appType,
+                        logicalModel: preferred.logicalModel,
+                        providerRef: preferred.providerRef,
+                        updatedAt: Date(timeIntervalSince1970: 0)
+                    )
+                }
+                continue
+            }
             let sortedCandidates = candidates.sorted(by: defaultCandidateSort)
             guard
                 let selected = sortedCandidates.first(where: { !$0.requiresTransform })
@@ -137,7 +161,11 @@ public final class RouteStore: @unchecked Sendable {
         return RouteState(routes: routes)
     }
 
-    private func merge(_ state: RouteState, catalog: ProviderCatalog) -> RouteState {
+    private func merge(
+        _ state: RouteState,
+        catalog: ProviderCatalog,
+        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:]
+    ) -> RouteState {
         let availableRouteKeys = Set(catalog.routeKeys)
         var merged = RouteState()
 
@@ -150,7 +178,10 @@ public final class RouteStore: @unchecked Sendable {
             merged.routes[routeKey.description] = route
         }
 
-        let defaults = RouteStore.defaultState(candidates: catalog.candidates)
+        let defaults = RouteStore.defaultState(
+            candidates: catalog.candidates,
+            preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey
+        )
         for (key, route) in defaults.routes where merged.routes[key] == nil {
             merged.routes[key] = route
         }

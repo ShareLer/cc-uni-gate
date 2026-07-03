@@ -362,7 +362,8 @@ final class UniGateAppState: ObservableObject {
             preserving: definition?.targets ?? [],
             preservingRouteKeys: definition.map {
                 [ModelRouteKey(appType: $0.appType, logicalModel: $0.name)]
-            } ?? []
+            } ?? [],
+            includeCandidate: isCurrentDiscoveryCandidate
         )
     }
 
@@ -636,6 +637,22 @@ final class UniGateAppState: ObservableObject {
 
     private func isCandidateInUniGateScope(_ candidate: ModelCandidate) -> Bool {
         ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
+    }
+
+    private func isCurrentDiscoveryCandidate(_ candidate: ModelCandidate) -> Bool {
+        guard candidate.source == .configured else {
+            return true
+        }
+        let currentDiscoveredTargets = catalog.candidates.filter {
+            $0.providerRef == candidate.providerRef && $0.source == .discovered
+        }
+        guard !currentDiscoveredTargets.isEmpty else {
+            return true
+        }
+        let candidateIdentity = ModelCandidateTargetIdentity(candidate: candidate)
+        return currentDiscoveredTargets.contains {
+            ModelCandidateTargetIdentity(candidate: $0) == candidateIdentity
+        }
     }
 
     private func activeProviderRef(for routeGroup: ModelRouteGroup) -> ProviderRef? {

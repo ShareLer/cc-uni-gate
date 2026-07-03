@@ -138,22 +138,36 @@ public struct CustomModelState: Codable, Sendable {
         }
     }
 
+    public func preferredProviderRefsByRouteKey() -> [String: ProviderRef] {
+        Dictionary(uniqueKeysWithValues: models.compactMap { definition in
+            guard
+                let selectedTargetID = definition.selectedTargetID,
+                let target = definition.targets.first(where: { $0.id == selectedTargetID })
+            else {
+                return nil
+            }
+            let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+            return (
+                routeKey.description,
+                Self.syntheticProviderRef(appType: definition.appType, target: target)
+            )
+        })
+    }
+
     public func baseCandidates(
         from catalog: ProviderCatalog,
         preserving targets: [CustomModelTarget] = [],
-        preservingRouteKeys: Set<ModelRouteKey> = []
+        preservingRouteKeys: Set<ModelRouteKey> = [],
+        includeCandidate: (ModelCandidate) -> Bool = { _ in true }
     ) -> [ModelCandidate] {
         let preservingTargetIDs = Set(targets.map { Self.targetID(for: $0) })
-        let customRouteKeys = Set(models.map {
-            ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
-        })
         let baseCandidates = catalog.candidates.filter { candidate in
-                candidate.providerRef == candidate.upstreamProviderRef
-                && (
-                    !customRouteKeys.contains(candidate.routeKey)
-                    || preservingTargetIDs.contains(Self.targetID(for: candidate))
-                    || preservingRouteKeys.contains(candidate.routeKey)
-                )
+            let shouldPreserve = preservingTargetIDs.contains(Self.targetID(for: candidate))
+                || preservingRouteKeys.contains(candidate.routeKey)
+            guard includeCandidate(candidate) || shouldPreserve else {
+                return false
+            }
+            return candidate.providerRef == candidate.upstreamProviderRef
         }
         return Self.deduplicatedTargetCandidates(
             baseCandidates,
