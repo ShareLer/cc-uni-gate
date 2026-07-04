@@ -1799,7 +1799,7 @@ private struct InlineSettingsPanel: View {
             compactAction("不可用", systemImage: "exclamationmark.triangle") {}
                 .disabled(true)
                 .opacity(0.55)
-        case .idle, .failed:
+        case .idle, .noUpdate, .failed:
             compactAction("检查更新", systemImage: "arrow.clockwise") {
                 state.checkForUpdates()
             }
@@ -2120,7 +2120,7 @@ private struct InlineSettingsPanel: View {
              let .installing(snapshot),
              let .failed(.some(snapshot), _):
             return snapshot
-        case .unavailable, .idle, .checking, .failed(nil, _):
+        case .unavailable, .idle, .checking, .noUpdate, .failed(nil, _):
             return nil
         }
     }
@@ -2133,6 +2133,8 @@ private struct InlineSettingsPanel: View {
             return "手动检查新版本；发现新版本后会切换为“下载并更新”。"
         case .checking:
             return "正在检查是否有新版本。"
+        case let .noUpdate(message):
+            return message
         case let .available(snapshot):
             return "发现新版本 \(snapshot.displayVersion)。如果暂时不处理，稍后会恢复为“检查更新”。"
         case let .downloading(snapshot, expectedBytes, downloadedBytes):
@@ -2156,6 +2158,8 @@ private struct InlineSettingsPanel: View {
             return brand
         case .checking, .downloading, .installing:
             return .primary
+        case .noUpdate:
+            return .green
         case .idle:
             return UGPopoverStyle.textSecondary
         }

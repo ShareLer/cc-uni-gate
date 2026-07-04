@@ -21,6 +21,7 @@ Uni Gate 使用 Sparkle 做手动更新：
 
 - 在 `设置` 里点 `检查更新`，只会检查新版本，不会直接下载或安装。
 - 如果发现新版本，按钮会变成 `下载并更新`。
+- 如果没有新版本，卡片会明确提示“未发现新版本”，但不会当成错误。
 - 再点一次才会开始下载，下载完成后由 Sparkle 继续安装并在合适时机重启。
 - 如果新版本放着不点，过一段时间会自动回到 `检查更新`。
 - 检查、下载、安装、重启任一步失败，都只会回到可恢复状态，不会主动退出当前应用，也不会影响当前代理进程继续运行。
@@ -96,7 +97,17 @@ uni
 CC Uni Gate.app
 ```
 
-当前发布包使用 ad-hoc 签名，没有 Apple Developer ID 公证。首次打开时，如果 macOS 拦截直接双击打开，可以按住 Control 点击 app 后选择“打开”。如果系统仍提示 app 已损坏，可以在确认文件来自本项目 GitHub Release 后移除 quarantine 标记：
+公开发布版本应使用 Apple Developer ID 签名并完成 notarization；这样从 GitHub Release 手动下载后，首次打开就不会再被 Gatekeeper 当作未知开发者拦截。历史上如果某个 release 不是通过这条链路打出来的，macOS 仍可能提示风险。
+
+如果你在本机直接运行 `BUILD_ONLY=1 ./scripts/build-install-run.sh` 生成的是 ad-hoc 构建包，那仍然可能触发 Gatekeeper。那类本地构建仅适合开发验证，不适合对外分发。
+
+如果只想先打一个本地 release 包，不上传 GitHub，可以运行：
+
+```bash
+NOTARIZE_RELEASE=0 UPLOAD_TO_GITHUB=0 ./scripts/publish-github-release.sh
+```
+
+如果系统仍提示 app 已损坏，可以在确认文件来自本项目 GitHub Release 后移除 quarantine 标记：
 
 ```bash
 xattr -dr com.apple.quarantine "/path/to/CC Uni Gate.app"

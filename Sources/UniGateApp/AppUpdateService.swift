@@ -8,6 +8,7 @@ enum AppUpdatePhase: Equatable {
     case unavailable(message: String)
     case idle
     case checking
+    case noUpdate(message: String)
     case available(UpdateSnapshot)
     case downloading(UpdateSnapshot, expectedBytes: UInt64?, downloadedBytes: UInt64)
     case installing(UpdateSnapshot)
@@ -113,7 +114,7 @@ final class AppUpdateService: NSObject {
         switch phase {
         case .checking, .downloading, .installing:
             return false
-        case .unavailable, .idle, .available, .failed:
+        case .unavailable, .idle, .noUpdate, .available, .failed:
             return updater.canCheckForUpdates
         }
     }
@@ -191,7 +192,7 @@ final class AppUpdateService: NSObject {
             return snapshot
         case let .failed(snapshot, _):
             return snapshot
-        case .unavailable, .idle, .checking:
+        case .unavailable, .idle, .checking, .noUpdate:
             return nil
         }
     }
@@ -228,13 +229,13 @@ extension AppUpdateService: SPUUpdaterDelegate {
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
         cancelAvailabilityReset()
-        transition(to: .idle)
+        transition(to: .noUpdate(message: "未发现新版本。当前已经是最新版本。"))
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         if Self.isNoUpdateError(error) {
             cancelAvailabilityReset()
-            transition(to: .idle)
+            transition(to: .noUpdate(message: "未发现新版本。当前已经是最新版本。"))
             return
         }
         cancelAvailabilityReset()
@@ -249,7 +250,7 @@ extension AppUpdateService: SPUUpdaterDelegate {
         if let error {
             if Self.isNoUpdateError(error) {
                 cancelAvailabilityReset()
-                transition(to: .idle)
+                transition(to: .noUpdate(message: "未发现新版本。当前已经是最新版本。"))
                 return
             }
             cancelAvailabilityReset()
@@ -258,7 +259,7 @@ extension AppUpdateService: SPUUpdaterDelegate {
         }
 
         if case .checking = phase {
-            transition(to: .idle)
+            transition(to: .noUpdate(message: "未发现新版本。当前已经是最新版本。"))
         }
     }
 }
@@ -319,7 +320,7 @@ private final class AppUpdateUserDriver: NSObject, SPUUserDriver {
     func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) {}
 
     func showUpdateNotFoundWithError(_ error: Error, acknowledgement: @escaping () -> Void) {
-        owner?.transition(to: .idle)
+        owner?.transition(to: .noUpdate(message: "未发现新版本。当前已经是最新版本。"))
         acknowledgement()
     }
 
@@ -338,7 +339,7 @@ private final class AppUpdateUserDriver: NSObject, SPUUserDriver {
         switch owner.currentPhase {
         case let .available(snapshot), let .failed(.some(snapshot), _):
             owner.transition(to: .downloading(snapshot, expectedBytes: nil, downloadedBytes: 0))
-        case .checking, .downloading, .installing, .idle, .failed(nil, _), .unavailable:
+        case .checking, .downloading, .installing, .idle, .noUpdate, .failed(nil, _), .unavailable:
             break
         }
     }

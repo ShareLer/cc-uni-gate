@@ -20,6 +20,10 @@ BUILD_ONLY="${BUILD_ONLY:-0}"
 #
 # Sparkle config is intentionally resolved here so both flows use the same
 # rules: explicit env vars win, otherwise we fall back to repository defaults.
+# The key design rule is that this script only produces a runnable developer
+# bundle. It intentionally does not attempt Apple notarization, because public
+# distribution needs a separate Developer ID signing step and a notary service
+# submission that should fail loudly instead of being hidden in local workflows.
 read_trimmed_file() {
   tr -d '[:space:]' < "$1"
 }
@@ -80,6 +84,9 @@ default_sparkle_public_ed_key() {
 
 cd "$ROOT_DIR"
 
+# Build the executable first, then assemble the app bundle manually.
+# This keeps the local packaging flow close to the release flow while still
+# letting us inject Sparkle configuration and bundle metadata explicitly.
 swift build -c release --product UniGateApp
 
 APP_VERSION="$(read_trimmed_file "$VERSION_FILE")"
@@ -101,6 +108,9 @@ SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY_INPUT:-$(default_sparkle_public_e
 # If both values are absent, we still build a runnable app bundle but leave the
 # updater disabled. If only one value is present, fail early because that
 # produces a half-configured bundle that Sparkle rejects at runtime.
+# This is deliberate: a partially configured updater is harder to diagnose than
+# a disabled one, and historically it is a common source of "can't open / update
+# unavailable" reports.
 if [[ -z "$SPARKLE_FEED_URL" && -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   echo "Warning: Sparkle update configuration is empty; the built app will start with updater disabled." >&2
 elif [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
@@ -114,14 +124,21 @@ fi
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks"
 
+# Manually assemble the .app bundle so the bundle layout is obvious in one
+# place and the release script can reuse the exact same output structure.
 cp ".build/release/$EXECUTABLE_NAME" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 cp "Resources/$ICON_FILE" "$APP_BUNDLE/Contents/Resources/$ICON_FILE"
 cp -R "$SPARKLE_FRAMEWORK_PATH" "$APP_BUNDLE/Contents/Frameworks/"
+# The rpath is required so the embedded executable can load Sparkle.framework
+# from the bundle after we relocate it into /Applications.
 if ! otool -l "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" | grep -q "@executable_path/../Frameworks"; then
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 fi
 
+# Build the minimum required Info.plist fields explicitly so the bundle version
+# is always sourced from VERSION and the update metadata only appears when it is
+# complete and valid.
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -163,6 +180,8 @@ PLIST
 
 if [[ "$SPARKLE_CONFIGURED" == "1" ]]; then
   # Only write Sparkle keys when configuration is complete and validated.
+  # This prevents shipping a bundle that points at a feed without a valid key,
+  # or a key without a feed, both of which later surface as "update unavailable".
   /usr/libexec/PlistBuddy -c "Add :SUFeedURL string \"$SPARKLE_FEED_URL\"" "$APP_BUNDLE/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string \"$SPARKLE_PUBLIC_ED_KEY\"" "$APP_BUNDLE/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$APP_BUNDLE/Contents/Info.plist"
@@ -172,14 +191,25 @@ if [[ "$SPARKLE_CONFIGURED" == "1" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUEnableInstallerLauncherService bool true" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
+# Local build path: ad-hoc sign only so the app bundle is runnable during
+# development. Public release packaging re-signs the same bundle with a
+# Developer ID certificate before notarization.
+# This ad-hoc signature is not enough for public distribution and is the
+# reason manually extracted local builds may still trigger Gatekeeper.
 codesign --force --deep --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 if [[ "$BUILD_ONLY" == "1" ]]; then
+  # BUILD_ONLY means "leave a build artifact for inspection", not "install it".
+  # The release script depends on this path so that the bundle it signs and
+  # notarizes is the same bundle developers can inspect locally.
   echo "Built $APP_BUNDLE"
   exit 0
 fi
 
+# The install path is intentionally destructive because this is a developer
+# convenience path, not a migration tool. It should never be used as the public
+# update mechanism.
 pkill -f UniGateApp 2>/dev/null || true
 pkill -f ApiManagerApp 2>/dev/null || true
 osascript -e 'tell application "API Manager" to quit' 2>/dev/null || true
