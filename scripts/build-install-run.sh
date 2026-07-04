@@ -14,6 +14,12 @@ SPARKLE_PUBLIC_ED_KEY_INPUT="${SPARKLE_PUBLIC_ED_KEY:-}"
 SPARKLE_CONFIGURED=0
 BUILD_ONLY="${BUILD_ONLY:-0}"
 
+# This script serves two purposes:
+# 1) local packaging/install for development
+# 2) the shared build path used by the GitHub release script
+#
+# Sparkle config is intentionally resolved here so both flows use the same
+# rules: explicit env vars win, otherwise we fall back to repository defaults.
 read_trimmed_file() {
   tr -d '[:space:]' < "$1"
 }
@@ -63,6 +69,8 @@ default_sparkle_feed_url() {
   return 1
 }
 
+# The public key is stored in the repository because it is not secret.
+# The private key stays in the local Keychain via Sparkle's generate_keys tool.
 default_sparkle_public_ed_key() {
   local key_file="$ROOT_DIR/config/sparkle-public-ed-key.txt"
   if [[ -f "$key_file" ]]; then
@@ -90,6 +98,9 @@ fi
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL_INPUT:-$(default_sparkle_feed_url || true)}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY_INPUT:-$(default_sparkle_public_ed_key || true)}"
 
+# If both values are absent, we still build a runnable app bundle but leave the
+# updater disabled. If only one value is present, fail early because that
+# produces a half-configured bundle that Sparkle rejects at runtime.
 if [[ -z "$SPARKLE_FEED_URL" && -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
   echo "Warning: Sparkle update configuration is empty; the built app will start with updater disabled." >&2
 elif [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
@@ -151,6 +162,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 PLIST
 
 if [[ "$SPARKLE_CONFIGURED" == "1" ]]; then
+  # Only write Sparkle keys when configuration is complete and validated.
   /usr/libexec/PlistBuddy -c "Add :SUFeedURL string \"$SPARKLE_FEED_URL\"" "$APP_BUNDLE/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string \"$SPARKLE_PUBLIC_ED_KEY\"" "$APP_BUNDLE/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$APP_BUNDLE/Contents/Info.plist"

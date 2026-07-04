@@ -1,6 +1,8 @@
 import Foundation
 import Sparkle
 
+private let appUpdateNoUpdateErrorCode = 1001
+
 @MainActor
 enum AppUpdatePhase: Equatable {
     case unavailable(message: String)
@@ -176,6 +178,11 @@ final class AppUpdateService: NSObject {
         return description.isEmpty ? "更新失败" : description
     }
 
+    nonisolated static func isNoUpdateError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == SUSparkleErrorDomain && nsError.code == appUpdateNoUpdateErrorCode
+    }
+
     fileprivate func failureSnapshot() -> UpdateSnapshot? {
         switch phase {
         case let .available(snapshot),
@@ -225,6 +232,11 @@ extension AppUpdateService: SPUUpdaterDelegate {
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        if Self.isNoUpdateError(error) {
+            cancelAvailabilityReset()
+            transition(to: .idle)
+            return
+        }
         cancelAvailabilityReset()
         transition(to: .failed(failureSnapshot(), message: normalizedErrorMessage(error)))
     }
@@ -235,6 +247,11 @@ extension AppUpdateService: SPUUpdaterDelegate {
         error: Error?
     ) {
         if let error {
+            if Self.isNoUpdateError(error) {
+                cancelAvailabilityReset()
+                transition(to: .idle)
+                return
+            }
             cancelAvailabilityReset()
             transition(to: .failed(failureSnapshot(), message: normalizedErrorMessage(error)))
             return
