@@ -1556,6 +1556,7 @@ private struct InlineSettingsPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     healthCheckCard
+                    updateCard
                     generalSettingsCard
                     networkPolicyCard
                     endpointCard
@@ -1628,6 +1629,46 @@ private struct InlineSettingsPanel: View {
 
             requestMetricsSummary
             networkDiagnosticsSummary
+        }
+    }
+
+    private var updateCard: some View {
+        settingsCard(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("应用更新")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("当前版本 \(state.currentVersionText)")
+                        .font(.caption2)
+                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                }
+                Spacer(minLength: 8)
+                updatePrimaryAction
+            }
+
+            Text(updateStatusText)
+                .font(.system(size: 11))
+                .foregroundStyle(updateStatusColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let snapshot = availableUpdateSnapshot {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("可用版本 \(snapshot.displayVersion)")
+                        .font(.system(size: 11, weight: .medium))
+                    if let title = snapshot.title, !title.isEmpty {
+                        Text(title)
+                            .font(.caption2)
+                            .foregroundStyle(UGPopoverStyle.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    if let url = snapshot.releaseNotesURL {
+                        compactAction("更新说明", systemImage: "doc.text") {
+                            state.openUpdateReleaseNotes(url)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1723,6 +1764,44 @@ private struct InlineSettingsPanel: View {
 
                 Spacer(minLength: 8)
                 themeColorPicker
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updatePrimaryAction: some View {
+        switch state.updatePhase {
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("检查中")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(UGPopoverStyle.tabFill, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.tabBorder))
+        case .downloading:
+            compactAction("下载中", systemImage: "arrow.down.circle") {}
+                .disabled(true)
+                .opacity(0.55)
+        case .installing:
+            compactAction("安装中", systemImage: "arrow.triangle.2.circlepath") {}
+                .disabled(true)
+                .opacity(0.55)
+        case .available:
+            compactAction("下载并更新", systemImage: "square.and.arrow.down") {
+                state.installAvailableUpdate()
+            }
+        case .unavailable:
+            compactAction("不可用", systemImage: "exclamationmark.triangle") {}
+                .disabled(true)
+                .opacity(0.55)
+        case .idle, .failed:
+            compactAction("检查更新", systemImage: "arrow.clockwise") {
+                state.checkForUpdates()
             }
         }
     }
@@ -2032,6 +2111,54 @@ private struct InlineSettingsPanel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(UGPopoverStyle.inputFieldFill, in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.inputFieldBorder))
+    }
+
+    private var availableUpdateSnapshot: UpdateSnapshot? {
+        switch state.updatePhase {
+        case let .available(snapshot),
+             let .downloading(snapshot, _, _),
+             let .installing(snapshot),
+             let .failed(.some(snapshot), _):
+            return snapshot
+        case .unavailable, .idle, .checking, .failed(nil, _):
+            return nil
+        }
+    }
+
+    private var updateStatusText: String {
+        switch state.updatePhase {
+        case let .unavailable(message):
+            return message
+        case .idle:
+            return "手动检查新版本；发现新版本后会切换为“下载并更新”。"
+        case .checking:
+            return "正在检查是否有新版本。"
+        case let .available(snapshot):
+            return "发现新版本 \(snapshot.displayVersion)。如果暂时不处理，稍后会恢复为“检查更新”。"
+        case let .downloading(snapshot, expectedBytes, downloadedBytes):
+            guard let expectedBytes, expectedBytes > 0 else {
+                return "正在下载 \(snapshot.displayVersion)。"
+            }
+            let progress = min(Double(downloadedBytes) / Double(expectedBytes), 1)
+            return "正在下载 \(snapshot.displayVersion)（\(Int(progress * 100))%）。"
+        case let .installing(snapshot):
+            return "正在准备安装 \(snapshot.displayVersion)。当前版本会在安装成功前保持可用。"
+        case let .failed(_, message):
+            return "更新失败：\(message)"
+        }
+    }
+
+    private var updateStatusColor: Color {
+        switch state.updatePhase {
+        case .unavailable, .failed:
+            return .orange
+        case .available:
+            return brand
+        case .checking, .downloading, .installing:
+            return .primary
+        case .idle:
+            return UGPopoverStyle.textSecondary
+        }
     }
 
     private func healthIcon(_ severity: ConfigurationHealthSeverity) -> String {

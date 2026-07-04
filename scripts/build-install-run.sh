@@ -8,19 +8,110 @@ INSTALL_PATH="/Applications/$APP_NAME.app"
 EXECUTABLE_NAME="UniGateApp"
 OLD_INSTALL_PATH="/Applications/API Manager.app"
 ICON_FILE="AppIcon.icns"
+VERSION_FILE="$ROOT_DIR/VERSION"
+SPARKLE_FEED_URL_INPUT="${SPARKLE_FEED_URL:-}"
+SPARKLE_PUBLIC_ED_KEY_INPUT="${SPARKLE_PUBLIC_ED_KEY:-}"
+SPARKLE_CONFIGURED=0
+BUILD_ONLY="${BUILD_ONLY:-0}"
+
+read_trimmed_file() {
+  tr -d '[:space:]' < "$1"
+}
+
+validate_sparkle_configuration() {
+  /usr/bin/python3 - "$1" "$2" <<'PY'
+import base64
+import sys
+from urllib.parse import urlparse
+
+feed_url = sys.argv[1].strip()
+public_key = sys.argv[2].strip()
+
+parsed = urlparse(feed_url)
+if not parsed.scheme:
+    sys.exit("SPARKLE_FEED_URL must be an absolute URL.")
+if parsed.scheme in ("http", "https") and not parsed.netloc:
+    sys.exit("SPARKLE_FEED_URL must include a host for http/https URLs.")
+
+try:
+    key_data = base64.b64decode(public_key, validate=True)
+except Exception:
+    sys.exit("SPARKLE_PUBLIC_ED_KEY must be a base64-encoded Sparkle Ed25519 public key.")
+
+if len(key_data) != 32:
+    sys.exit(f"SPARKLE_PUBLIC_ED_KEY must decode to 32 bytes, got {len(key_data)} bytes.")
+PY
+}
+
+default_sparkle_feed_url() {
+  local remote_url
+  remote_url="$(git remote get-url origin 2>/dev/null || true)"
+  if [[ -z "$remote_url" ]]; then
+    return 1
+  fi
+
+  if [[ "$remote_url" =~ ^https://github.com/([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    printf 'https://github.com/%s/%s/releases/latest/download/appcast.xml\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  if [[ "$remote_url" =~ ^git@github.com:([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    printf 'https://github.com/%s/%s/releases/latest/download/appcast.xml\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  return 1
+}
+
+default_sparkle_public_ed_key() {
+  local key_file="$ROOT_DIR/config/sparkle-public-ed-key.txt"
+  if [[ -f "$key_file" ]]; then
+    tr -d '[:space:]' < "$key_file"
+  fi
+}
 
 cd "$ROOT_DIR"
 
 swift build -c release --product UniGateApp
 
+APP_VERSION="$(read_trimmed_file "$VERSION_FILE")"
+SPARKLE_FRAMEWORK_PATH="$(find .build -path '*/release/Sparkle.framework' -print -quit)"
+
+if [[ -z "$APP_VERSION" ]]; then
+  echo "VERSION file is empty: $VERSION_FILE" >&2
+  exit 1
+fi
+
+if [[ -z "$SPARKLE_FRAMEWORK_PATH" ]]; then
+  echo "Unable to locate Sparkle.framework in .build output" >&2
+  exit 1
+fi
+
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL_INPUT:-$(default_sparkle_feed_url || true)}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY_INPUT:-$(default_sparkle_public_ed_key || true)}"
+
+if [[ -z "$SPARKLE_FEED_URL" && -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+  echo "Warning: Sparkle update configuration is empty; the built app will start with updater disabled." >&2
+elif [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+  echo "SPARKLE_FEED_URL and SPARKLE_PUBLIC_ED_KEY must be set together." >&2
+  exit 1
+else
+  validate_sparkle_configuration "$SPARKLE_FEED_URL" "$SPARKLE_PUBLIC_ED_KEY"
+  SPARKLE_CONFIGURED=1
+fi
+
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks"
 
 cp ".build/release/$EXECUTABLE_NAME" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 cp "Resources/$ICON_FILE" "$APP_BUNDLE/Contents/Resources/$ICON_FILE"
+cp -R "$SPARKLE_FRAMEWORK_PATH" "$APP_BUNDLE/Contents/Frameworks/"
+if ! otool -l "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" | grep -q "@executable_path/../Frameworks"; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
+fi
 
-cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
+cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -41,9 +132,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.11</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>10</string>
+  <string>${APP_VERSION}</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
@@ -59,8 +150,23 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+if [[ "$SPARKLE_CONFIGURED" == "1" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string \"$SPARKLE_FEED_URL\"" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string \"$SPARKLE_PUBLIC_ED_KEY\"" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUAutomaticallyUpdate bool false" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUAllowsAutomaticUpdates bool false" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUVerifyUpdateBeforeExtraction bool true" "$APP_BUNDLE/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SUEnableInstallerLauncherService bool true" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
 codesign --force --deep --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
+
+if [[ "$BUILD_ONLY" == "1" ]]; then
+  echo "Built $APP_BUNDLE"
+  exit 0
+fi
 
 pkill -f UniGateApp 2>/dev/null || true
 pkill -f ApiManagerApp 2>/dev/null || true

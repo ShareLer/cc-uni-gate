@@ -13,7 +13,8 @@ let package = Package(
         .executable(name: "UniGateInspect", targets: ["UniGateInspect"])
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.6.0")
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.6.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.4")
     ],
     targets: [
         .target(
@@ -27,7 +28,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "UniGateApp",
-            dependencies: ["UniGateCore"]
+            dependencies: [
+                "UniGateCore",
+                .product(name: "Sparkle", package: "Sparkle")
+            ]
         ),
         .executableTarget(
             name: "UniGateInspect",

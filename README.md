@@ -15,6 +15,24 @@ Uni Gate 是一个 macOS 菜单栏应用，用来接管 `cc-switch` 的本地路
 
 ## 核心功能
 
+### 应用更新
+
+Uni Gate 使用 Sparkle 做手动更新：
+
+- 在 `设置` 里点 `检查更新`，只会检查新版本，不会直接下载或安装。
+- 如果发现新版本，按钮会变成 `下载并更新`。
+- 再点一次才会开始下载，下载完成后由 Sparkle 继续安装并在合适时机重启。
+- 如果新版本放着不点，过一段时间会自动回到 `检查更新`。
+- 检查、下载、安装、重启任一步失败，都只会回到可恢复状态，不会主动退出当前应用，也不会影响当前代理进程继续运行。
+
+当前实现依赖 Sparkle 的完整 framework。发布版本时需要同时提供：
+
+- `VERSION` 作为唯一版本号来源
+- `SPARKLE_FEED_URL`，默认指向本仓库 GitHub Releases 的 `latest/download/appcast.xml`
+- `SPARKLE_PUBLIC_ED_KEY`，默认读取 `config/sparkle-public-ed-key.txt`
+
+如果本地没有额外覆盖配置，应用会直接使用仓库默认值。只有在默认值也缺失时，更新卡片才会显示为不可用。
+
 ### 多供应商热切换
 
 同一个模型可以对应多个实际供应商。例如 `gpt-5.5` 可以同时有这些上游：
@@ -95,6 +113,18 @@ Uni Gate ●
 - 绿灯：UniGate 代理正常运行。
 - 黄灯：UniGate 正常，但实际供应商请求失败。
 - 红灯：UniGate 本地代理异常，例如端口未监听。
+
+### 1.1 发布更新版本
+
+发布前先更新根目录的 `VERSION`，然后运行一键发布脚本：
+
+```bash
+./scripts/publish-github-release.sh
+```
+
+脚本会把 app bundle、zip 和 appcast 一起发布到 GitHub Releases；app 内置更新源会从 `releases/latest/download/appcast.xml` 读取。
+
+完整更新架构、失败边界和发布检查项见 [docs/updater.md](docs/updater.md)。
 
 ### 2. 配置 cc-switch 数据库路径
 

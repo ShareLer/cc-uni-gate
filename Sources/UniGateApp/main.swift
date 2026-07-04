@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let proxyHost = "127.0.0.1"
     private let appState = UniGateAppState()
     private let statusItemController = StatusItemController()
+    private var appUpdateService: AppUpdateService?
     private var catalog: ProviderCatalog = ProviderCatalog(providers: [], candidates: [])
     private var integrationSnapshot: CcSwitchIntegrationSnapshot?
     private var uniGateModelScope = UniGateModelScope()
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ApplicationMenu.install()
         NSApp.setActivationPolicy(.accessory)
         configureAppStateActions()
+        configureAppUpdateService()
         statusItemController.install(state: appState)
         publishState()
         reloadCatalog()
@@ -388,6 +390,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func resetConfiguration() {
         prepareForSystemModal {
             self.performResetConfiguration()
+        }
+    }
+
+    private func configureAppUpdateService() {
+        do {
+            let service = try AppUpdateService()
+            service.delegate = self
+            appUpdateService = service
+            appState.setUpdatePhase(service.currentPhase)
+        } catch {
+            let message = "更新功能不可用：\(error.localizedDescription)"
+            appUpdateService = nil
+            appState.setUpdatePhase(.unavailable(message: message))
+            logger.log(.error, message)
+        }
+    }
+
+    private func checkForUpdates() {
+        guard let appUpdateService else {
+            return
+        }
+        appUpdateService.checkForUpdates()
+    }
+
+    private func installAvailableUpdate() {
+        guard let appUpdateService else {
+            return
+        }
+        appUpdateService.installAvailableUpdate()
+    }
+
+    private func openUpdateReleaseNotes(_ url: URL) {
+        if !NSWorkspace.shared.open(url) {
+            showError("无法打开更新说明")
         }
     }
 
@@ -931,6 +967,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.onSetProviderNetworkPolicy = { [weak self] providerRef, override in
             self?.setProviderNetworkPolicy(providerRef: providerRef, override: override)
         }
+        appState.onCheckForUpdates = { [weak self] in
+            self?.checkForUpdates()
+        }
+        appState.onInstallAvailableUpdate = { [weak self] in
+            self?.installAvailableUpdate()
+        }
+        appState.onOpenUpdateReleaseNotes = { [weak self] url in
+            self?.openUpdateReleaseNotes(url)
+        }
     }
 
     private func publishState() {
@@ -1289,6 +1334,13 @@ enum ProxyStatus: Equatable {
         case .failed:
             return .systemRed
         }
+    }
+}
+
+@MainActor
+extension AppDelegate: AppUpdateServiceDelegate {
+    func appUpdateService(_ service: AppUpdateService, didChangePhase phase: AppUpdatePhase) {
+        appState.setUpdatePhase(phase)
     }
 }
 

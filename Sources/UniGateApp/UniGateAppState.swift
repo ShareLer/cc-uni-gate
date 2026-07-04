@@ -38,6 +38,7 @@ final class UniGateAppState: ObservableObject {
     @Published var loadError: String?
     @Published var toast: String?
     @Published var isRefreshingModelDiscovery = false
+    @Published var updatePhase: AppUpdatePhase = .idle
 
     var onSwitchProvider: (([ModelRouteKey], ProviderRef) -> Void)?
     var onReload: (() -> Void)?
@@ -54,6 +55,9 @@ final class UniGateAppState: ObservableObject {
     var onImportConfiguration: (() -> Void)?
     var onResetConfiguration: (() -> Void)?
     var onSetProviderNetworkPolicy: ((ProviderRef, ProviderNetworkPolicyOverride) -> Void)?
+    var onCheckForUpdates: (() -> Void)?
+    var onInstallAvailableUpdate: (() -> Void)?
+    var onOpenUpdateReleaseNotes: ((URL) -> Void)?
 
     private var toastToken = UUID()
     private var settingsViewModel: SettingsViewModel?
@@ -513,6 +517,26 @@ final class UniGateAppState: ObservableObject {
 
     func setProviderNetworkPolicy(providerRef: ProviderRef, override: ProviderNetworkPolicyOverride) {
         onSetProviderNetworkPolicy?(providerRef, override)
+    }
+
+    func setUpdatePhase(_ phase: AppUpdatePhase) {
+        updatePhase = phase
+    }
+
+    func checkForUpdates() {
+        onCheckForUpdates?()
+    }
+
+    func installAvailableUpdate() {
+        onInstallAvailableUpdate?()
+    }
+
+    func openUpdateReleaseNotes(_ url: URL) {
+        onOpenUpdateReleaseNotes?(url)
+    }
+
+    var currentVersionText: String {
+        "v\(AppVersion.shortVersion)"
     }
 
     func quit() {
