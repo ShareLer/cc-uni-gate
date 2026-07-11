@@ -646,3 +646,32 @@ HTTP framing parser 不能把“还没收完”和“输入非法”混成一个
 
 ## 经验教训
 “是否需要转换”不是协议路由的充分模型。路由器至少要区分原生、可桥接和不支持，否则布尔值会把能力差异压平，并把错误推迟到真实请求阶段。导入第三方配置时也必须先区分“客户端到代理的协议”和“代理到真实上游的协议”，不能因为字段都叫 wire/API format 就视为同一层语义。
+
+# Fix Report - Official Codex Route Hides Same-Name Third-Party Providers
+
+## Bug 描述
+Codex 官方和多个第三方供应商都成功探测到 `gpt-5.6-luna`，但主路由只能保留官方供应商，无法切到 `ahoo-gpt`、Dasu 等同名候选；`gpt-5.6-sol` 却可以正常切换。
+
+## 根因
+cc-switch 当前给 UniGate 的 Codex 配置只显式声明了 `gpt-5.6-sol`。官方发现模型允许绕过 cc-switch model scope，因此 `gpt-5.6-luna` 能创建可见路由；但候选过滤仍按单个 provider candidate 判断，第三方 `gpt-5.6-luna` 不在 scope 中，进入代理 catalog 前被删除。
+
+结果是同一个 route key 已由官方开放，但该路由下的其他同名供应商仍被错误过滤。scope 实际应控制“模型路由是否开放”，而不是在路由开放后继续限制提供该模型的供应商。
+
+## 尝试记录
+- 尝试 1：比较模型探测缓存。结果：官方、`ahoo-gpt`、`gpt-free` 和 Dasu 的 Luna 均为完全相同的 `appType/logicalModel/upstreamModel`，排除命名和规范化问题。
+- 尝试 2：比较运行中代理 catalog。结果：Luna 仅剩官方候选；Sol 因 cc-switch 显式配置而保留全部供应商，根因锁定在 scope 过滤。
+- 尝试 3：先添加 UI、代理 catalog 和 RouteStore 组合回归测试。结果：修复前稳定失败，证明不是界面点击状态问题。
+
+## 最终方案
+- 从官方候选计算已经开放的 Codex route key 集合。
+- 只要某个 route key 已由 Codex 官方候选开放，同 route key 的当前第三方基础候选也允许进入 UI 和代理 catalog。
+- 不同 route key 的第三方发现模型仍继续受 cc-switch scope 限制，避免把所有探测模型无条件暴露给代理。
+
+## 参考资料
+- `Sources/UniGateCore/ModelRoutingUtilities.swift`
+- `Sources/UniGateCore/Models.swift`
+- `Tests/UniGateCoreTests/ModelRouteGroupingTests.swift`
+- `Tests/UniGateAppTests/UniGateAppStateTests.swift`
+
+## 经验教训
+模型 scope 是 route-level policy，供应商是 route 下的可替换 target。只要某个特殊来源能够创建超出 scope 的 route，就必须同步检查同 route 的 target 过滤，否则会出现“模型可见但同名供应商不可切换”的半开放状态。

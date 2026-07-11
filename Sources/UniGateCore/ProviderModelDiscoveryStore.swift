@@ -10,6 +10,7 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
     public var sourceURL: String?
     public var updatedAt: Date
     public var configurationFingerprint: String?
+    public var authorizationFingerprint: String?
 
     public var id: String {
         providerRef.description
@@ -23,7 +24,8 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
         errorMessage: String?,
         sourceURL: String?,
         updatedAt: Date = Date(),
-        configurationFingerprint: String? = nil
+        configurationFingerprint: String? = nil,
+        authorizationFingerprint: String? = nil
     ) {
         self.providerRef = providerRef
         self.appType = appType
@@ -33,6 +35,23 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
         self.sourceURL = sourceURL
         self.updatedAt = updatedAt
         self.configurationFingerprint = configurationFingerprint
+        self.authorizationFingerprint = authorizationFingerprint
+    }
+
+    public func isCurrent(
+        for provider: ImportedProvider,
+        codexOfficialAuthorizationFingerprint: String?
+    ) -> Bool {
+        guard configurationFingerprint == ProviderModelDiscoveryFingerprint.value(for: provider) else {
+            return false
+        }
+        guard provider.backendKind == .codexOfficial else {
+            return true
+        }
+        guard let codexOfficialAuthorizationFingerprint else {
+            return false
+        }
+        return authorizationFingerprint == codexOfficialAuthorizationFingerprint
     }
 }
 
@@ -58,15 +77,25 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
     }
 
     public func pruning(validProviders providers: [ImportedProvider]) -> ProviderModelDiscoveryState {
-        var fingerprintsByRef: [ProviderRef: String] = [:]
+        pruning(validProviders: providers, codexOfficialAuthorizationFingerprints: [:])
+    }
+
+    public func pruning(
+        validProviders providers: [ImportedProvider],
+        codexOfficialAuthorizationFingerprints: [ProviderRef: String]
+    ) -> ProviderModelDiscoveryState {
+        var providersByRef: [ProviderRef: ImportedProvider] = [:]
         for provider in providers {
-            fingerprintsByRef[provider.ref] = ProviderModelDiscoveryFingerprint.value(for: provider)
+            providersByRef[provider.ref] = provider
         }
         return ProviderModelDiscoveryState(results: results.filter { _, result in
-            guard let fingerprint = fingerprintsByRef[result.providerRef] else {
+            guard let provider = providersByRef[result.providerRef] else {
                 return false
             }
-            return result.configurationFingerprint == fingerprint
+            return result.isCurrent(
+                for: provider,
+                codexOfficialAuthorizationFingerprint: codexOfficialAuthorizationFingerprints[provider.ref]
+            )
         })
     }
 
@@ -77,7 +106,8 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
             result.modelIDs.isEmpty,
             var previous = results[key],
             !previous.modelIDs.isEmpty,
-            previous.configurationFingerprint == result.configurationFingerprint
+            previous.configurationFingerprint == result.configurationFingerprint,
+            previous.authorizationFingerprint == result.authorizationFingerprint
         else {
             results[key] = result
             return
@@ -87,13 +117,17 @@ public struct ProviderModelDiscoveryState: Codable, Sendable, Equatable {
         previous.updatedAt = result.updatedAt
         results[key] = previous
     }
+
+    public mutating func removeResult(for providerRef: ProviderRef) {
+        results.removeValue(forKey: providerRef.description)
+    }
 }
 
 public enum ProviderModelDiscoveryFingerprint {
     public static func value(for provider: ImportedProvider) -> String {
         let plan = ProviderModelDiscovery.fetchPlan(for: provider)
         let secret = ProviderCredentials.secret(for: provider)
-        let components = [
+        var components = [
             "app=\(provider.appType)",
             "format=\(provider.apiFormat.rawValue)",
             "base=\(provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")",
@@ -104,6 +138,9 @@ public enum ProviderModelDiscoveryFingerprint {
             "secretField=\(secret?.field ?? "")",
             "secretHash=\(secret.map { shortHash($0.value) } ?? "")"
         ]
+        if provider.backendKind != .standard {
+            components.insert("backend=\(provider.backendKind.rawValue)", at: 1)
+        }
         return shortHash(components.joined(separator: "\n"))
     }
 

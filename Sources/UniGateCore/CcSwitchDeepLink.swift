@@ -1,13 +1,15 @@
 import Foundation
 
 public enum CcSwitchDeepLink {
+    // Kept for recognizing old cc-switch imports. New imports must pass the
+    // installation-specific token stored by UniGate.
     public static let localAPIKey = "sk-unigate-local"
 
     public static func providerImportURL(
         app: String,
         name: String = "UniGate",
         endpoint: String,
-        apiKey: String = CcSwitchDeepLink.localAPIKey,
+        apiKey: String,
         model: String? = nil,
         homepage: String? = nil,
         enabled: Bool = true
@@ -18,7 +20,12 @@ public enum CcSwitchDeepLink {
             URLQueryItem(name: "name", value: name),
             URLQueryItem(name: "endpoint", value: endpoint),
             URLQueryItem(name: "apiKey", value: apiKey),
-            URLQueryItem(name: "notes", value: "由 UniGate 导入，本地代理不校验该 API Key。")
+            URLQueryItem(
+                name: "notes",
+                value: app == "codex"
+                    ? "由 UniGate 导入；Codex 官方路由会校验此本地凭据，请勿修改。"
+                    : "由 UniGate 导入。"
+            )
         ]
         if let homepage, !homepage.isEmpty {
             items.append(URLQueryItem(name: "homepage", value: homepage))

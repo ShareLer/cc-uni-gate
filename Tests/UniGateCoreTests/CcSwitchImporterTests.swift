@@ -5,6 +5,91 @@ import Testing
 
 struct CcSwitchImporterTests {
     @Test
+    func importsOfficialCodexProviderWithoutCcSwitchOAuthTokens() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "openai-official",
+                appType: "codex",
+                name: "OpenAI Official",
+                settings: """
+                {
+                  "auth": {
+                    "mode": "chatgpt",
+                    "account_id": "account-from-cc-switch",
+                    "tokens": {
+                      "access_token": "cc-switch-access-token",
+                      "refresh_token": "cc-switch-refresh-token"
+                    }
+                  },
+                  "modelCatalog": {
+                    "models": [{"model": "account-a-only-model"}]
+                  }
+                }
+                """,
+                meta: "{}",
+                category: "official"
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let provider = try #require(catalog.providers.first)
+
+        #expect(provider.backendKind == .codexOfficial)
+        #expect(provider.baseURL == CodexOfficial.backendBaseURLString)
+        #expect(provider.apiFormat == .openaiResponses)
+        #expect(!provider.hasSecret)
+        #expect(catalog.candidates.isEmpty)
+        guard case let .object(auth)? = provider.settings["auth"] else {
+            Issue.record("expected non-secret auth metadata to remain")
+            return
+        }
+        #expect(auth["tokens"] == nil)
+        #expect(auth["mode"] != nil)
+    }
+
+    @Test
+    func officialCodexFingerprintExcludesOAuthTokenRotation() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "openai-official",
+                appType: "codex",
+                name: "OpenAI Official",
+                settings: officialSettings(accessToken: "access-1", model: "gpt-5.5"),
+                meta: "{}",
+                category: "official"
+            )
+        }
+        let importer = CcSwitchImporter(dbPath: dbURL.path)
+        let before = try importer.loadConfigurationFingerprint()
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "update providers set settings_config = ? where id = ?",
+                arguments: [officialSettings(accessToken: "access-2", model: "gpt-5.5"), "openai-official"]
+            )
+        }
+        let afterTokenRotation = try importer.loadConfigurationFingerprint()
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "update providers set settings_config = ? where id = ?",
+                arguments: [officialSettings(accessToken: "access-2", model: "gpt-5.6"), "openai-official"]
+            )
+        }
+        let afterConfigurationChange = try importer.loadConfigurationFingerprint()
+
+        #expect(before.providers.first?.settingsConfig.contains("access-1") == false)
+        #expect(afterTokenRotation == before)
+        #expect(afterConfigurationChange != before)
+    }
+
+    @Test
     func codexProxyApiFormatOverridesClientWireAPI() throws {
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -733,7 +818,8 @@ struct CcSwitchImporterTests {
         settings: String,
         meta: String,
         sortIndex: Int = 1,
-        isCurrent: Bool = false
+        isCurrent: Bool = false,
+        category: String? = nil
     ) throws {
         try db.execute(
             sql: """
@@ -741,8 +827,23 @@ struct CcSwitchImporterTests {
                     id, app_type, name, settings_config, category, sort_index, meta, is_current
                 ) values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: [id, appType, name, settings, nil, sortIndex, meta, isCurrent ? 1 : 0]
+            arguments: [id, appType, name, settings, category, sortIndex, meta, isCurrent ? 1 : 0]
         )
+    }
+
+    private func officialSettings(accessToken: String, model: String) -> String {
+        """
+        {
+          "auth": {
+            "auth_mode": "chatgpt",
+            "tokens": {
+              "access_token": "\(accessToken)",
+              "refresh_token": "refresh-token"
+            }
+          },
+          "config": "model = \\"\(model)\\""
+        }
+        """
     }
 
     private func desktopCandidate(upstreamModel: String) -> ModelCandidate {

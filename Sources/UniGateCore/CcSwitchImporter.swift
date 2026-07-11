@@ -10,7 +10,12 @@ public struct CcSwitchImporter: Sendable {
 
     public func loadConfigurationFingerprint() throws -> CcSwitchConfigurationFingerprint {
         return CcSwitchConfigurationFingerprint(
-            providers: try loadProviderRows().map(CcSwitchConfigurationProviderFingerprint.init(row:))
+            providers: try loadProviderRows().map { row in
+                CcSwitchConfigurationProviderFingerprint(
+                    row: row,
+                    settingsConfig: configurationFingerprintSettings(for: row)
+                )
+            }
         )
     }
 
@@ -80,8 +85,12 @@ public struct CcSwitchImporter: Sendable {
         .joined(separator: ", ")
 
     private func importProvider(_ row: ProviderRow) -> ImportedProvider {
-        let settings = JSONValueParser.parseObject(row.settingsConfig)
+        let parsedSettings = JSONValueParser.parseObject(row.settingsConfig)
         let meta = JSONValueParser.parseObject(row.meta)
+        let backendKind: ProviderBackendKind = isCodexOfficial(row) ? .codexOfficial : .standard
+        let settings = backendKind == .codexOfficial
+            ? removingCcSwitchOAuthTokens(from: parsedSettings)
+            : parsedSettings
         return ImportedProvider(
             id: row.id,
             appType: row.appType,
@@ -89,15 +98,81 @@ public struct CcSwitchImporter: Sendable {
             category: row.category,
             sortIndex: row.sortIndex,
             isCurrent: row.isCurrent,
-            apiFormat: inferApiFormat(appType: row.appType, settings: settings, meta: meta),
-            baseURL: extractBaseURL(appType: row.appType, settings: settings),
-            hasSecret: ProviderCredentials.hasSecret(appType: row.appType, settings: settings),
+            apiFormat: backendKind == .codexOfficial
+                ? .openaiResponses
+                : inferApiFormat(appType: row.appType, settings: settings, meta: meta),
+            baseURL: backendKind == .codexOfficial
+                ? CodexOfficial.backendBaseURLString
+                : extractBaseURL(appType: row.appType, settings: settings),
+            hasSecret: backendKind == .standard
+                && ProviderCredentials.hasSecret(appType: row.appType, settings: settings),
             settings: settings,
-            meta: meta
+            meta: meta,
+            backendKind: backendKind
         )
     }
 
+    private func isCodexOfficial(_ row: ProviderRow) -> Bool {
+        row.appType == UniGateAppRegistry.codex
+            && row.category?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "official"
+    }
+
+    private func removingCcSwitchOAuthTokens(
+        from settings: [String: SendableValue]
+    ) -> [String: SendableValue] {
+        guard case let .object(auth)? = settings["auth"] else {
+            return settings
+        }
+        var sanitizedAuth = auth
+        sanitizedAuth.removeValue(forKey: "tokens")
+        var sanitizedSettings = settings
+        if sanitizedAuth.isEmpty {
+            sanitizedSettings.removeValue(forKey: "auth")
+        } else {
+            sanitizedSettings["auth"] = .object(sanitizedAuth)
+        }
+        return sanitizedSettings
+    }
+
+    private func configurationFingerprintSettings(for row: ProviderRow) -> String {
+        guard isCodexOfficial(row) else {
+            return row.settingsConfig
+        }
+        let sanitized = removingCcSwitchOAuthTokens(
+            from: JSONValueParser.parseObject(row.settingsConfig)
+        )
+        let object = sanitized.mapValues(jsonObject)
+        guard
+            JSONSerialization.isValidJSONObject(object),
+            let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+            let value = String(data: data, encoding: .utf8)
+        else {
+            return "{}"
+        }
+        return value
+    }
+
+    private func jsonObject(_ value: SendableValue) -> Any {
+        switch value {
+        case let .string(value):
+            return value
+        case let .bool(value):
+            return value
+        case let .number(value):
+            return value
+        case let .object(value):
+            return value.mapValues(jsonObject)
+        case let .array(value):
+            return value.map(jsonObject)
+        case .null:
+            return NSNull()
+        }
+    }
+
     private func extractCandidates(_ provider: ImportedProvider) -> [ModelCandidate] {
+        guard provider.backendKind != .codexOfficial else {
+            return []
+        }
         switch provider.appType {
         case UniGateAppRegistry.codex:
             return extractCodexCandidates(provider)
@@ -125,6 +200,9 @@ public struct CcSwitchImporter: Sendable {
     }
 
     private func uniGateConfiguredModels(_ provider: ImportedProvider) -> Set<String> {
+        guard provider.backendKind != .codexOfficial else {
+            return []
+        }
         switch provider.appType {
         case UniGateAppRegistry.codex:
             let catalogModels = extractCodexCatalogModels(provider)
@@ -541,12 +619,12 @@ public struct CcSwitchConfigurationProviderFingerprint: Sendable, Equatable {
         self.isCurrent = isCurrent
     }
 
-    fileprivate init(row: ProviderRow) {
+    fileprivate init(row: ProviderRow, settingsConfig: String? = nil) {
         self.init(
             id: row.id,
             appType: row.appType,
             name: row.name,
-            settingsConfig: row.settingsConfig,
+            settingsConfig: settingsConfig ?? row.settingsConfig,
             category: row.category,
             sortIndex: row.sortIndex,
             meta: row.meta,

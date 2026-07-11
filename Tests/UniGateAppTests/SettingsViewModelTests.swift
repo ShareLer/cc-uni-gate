@@ -33,6 +33,7 @@ struct SettingsViewModelTests {
             customModels: CustomModelState(),
             uniGateModelScope: UniGateModelScope(),
             preferences: initialPreferences,
+            localProxyToken: nil,
             onApply: { _, _ in }
         )
         model.portText = "17999"
@@ -70,6 +71,7 @@ struct SettingsViewModelTests {
             customModels: CustomModelState(),
             uniGateModelScope: UniGateModelScope(),
             preferences: initialPreferences,
+            localProxyToken: nil,
             onApply: { preferences, _ in
                 applied.append(preferences)
             }
@@ -83,5 +85,29 @@ struct SettingsViewModelTests {
 
         #expect(model.applyGeneralSettings(commitDatabasePath: true))
         #expect(applied.last?.ccSwitchDBPath == "/half-written")
+    }
+
+    @Test
+    func ccSwitchImportUsesInstallationSpecificLocalProxyToken() throws {
+        let token = "sk-unigate-installation-specific-token"
+        let model = SettingsViewModel(
+            candidates: [],
+            providers: [],
+            customModels: CustomModelState(),
+            uniGateModelScope: UniGateModelScope(),
+            preferences: AppPreferences(),
+            localProxyToken: token,
+            onApply: { _, _ in }
+        )
+
+        let url = try #require(model.ccSwitchImportURL(path: "/codex"))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let params = Dictionary(uniqueKeysWithValues: try #require(components.queryItems).map {
+            ($0.name, $0.value ?? "")
+        })
+
+        #expect(params["apiKey"] == token)
+        #expect(params["endpoint"] == "http://127.0.0.1:17888/codex")
+        #expect(params["notes"]?.contains("Codex 官方路由会校验") == true)
     }
 }

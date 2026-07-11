@@ -2,7 +2,7 @@
 
 Uni Gate 是一个 macOS 菜单栏应用，用来接管 `cc-switch` 的本地路由能力，并在不修改 `cc-switch.db` 的前提下，为 Codex、Claude Code、Claude Desktop 等客户端提供模型级转发。
 
-它读取 `cc-switch` 里已经配置好的供应商、密钥、模型目录和协议信息，然后在 UniGate 内维护“模型 -> 实际供应商”的路由状态。客户端只需要请求 UniGate，本地菜单栏里就可以实时切换每个模型背后的供应商。
+它读取 `cc-switch` 里已经配置好的供应商、密钥、模型目录和协议信息，然后在 UniGate 内维护“模型 -> 实际供应商”的路由状态。客户端只需要请求 UniGate，本地菜单栏里就可以实时切换每个模型背后的供应商。第三方供应商仍使用原有静态 API Key；Codex 官方供应商则由 UniGate 独立管理 OAuth 登录和凭据。
 
 > 说明：当前安装包和 macOS app bundle 仍沿用 `CC Uni Gate.app` 命名；应用界面中显示为 `Uni Gate`。
 
@@ -53,6 +53,14 @@ gpt-5.5
 - 同一个模型有多个供应商，临时切到更快或更稳定的一个。
 - 某个供应商异常时，快速切到备用供应商。
 - 对比不同供应商的速度、稳定性和回答质量。
+
+### Codex 官方订阅
+
+UniGate 会把 `cc-switch` 中 `appType=codex` 且 `category=official` 的记录识别为 Codex 官方供应商。也可以在供应商页手动新建“Codex 官方”，只需设置展示名称。
+
+在对应供应商卡片上点击登录后，UniGate 会自行完成 OAuth PKCE 流程，把 access token、refresh token 和账号信息保存在 macOS Keychain，并用当前登录账号获取模型、刷新凭据和转发请求。UniGate 不会读取或复用 `cc-switch` 与 Codex 已有的 OAuth token；`cc-switch` 中导入的 UniGate 供应商只持有由 UniGate 随机生成并持久化的安装级本地代理凭据。
+
+从旧版本升级时，如果 `cc-switch` 中的 UniGate Codex 供应商仍使用固定凭据 `sk-unigate-local`，需要在 UniGate 的 `设置 -> 通用` 中重新执行一次 Codex“导入”。旧凭据会被官方路由明确拒绝；第三方供应商不受此迁移影响。
 
 ### 自定义 Uni 模型
 
@@ -282,6 +290,7 @@ UniGate 只读 `cc-switch.db`，不会改写供应商配置、密钥或 `is_curr
 - 按应用分栏查看供应商。
 - 查看 Base URL 和协议检测结果。
 - 必要时手动覆盖协议类型。
+- 新建 Codex 官方供应商，并管理登录、重新登录和退出。
 
 协议覆盖只保存在 UniGate 本地，不会写回 `cc-switch.db`。
 
@@ -315,6 +324,8 @@ preferences.json    设置项和可见模型
 custom-models.json  自定义 Uni 模型
 logs/unigate.log    运行日志
 ```
+
+Codex 官方 OAuth 凭据和本地代理凭据保存在 macOS Keychain，不写入上述 JSON、日志或配置备份。
 
 UniGate 会监听 `cc-switch.db` 所在目录，并比较主库、`-wal`、`-shm` 文件变化。检测到数据库变化后，会经过短暂 debounce 自动重新加载供应商、模型和路由候选；也可以在界面中手动点击 `reload` 或调用管理接口重新加载。
 
@@ -384,5 +395,6 @@ swift test
 - Gemini 暂未作为可用供应商导入，因为当前还没有完整的 Gemini 路由支持。
 - UniGate 支持同协议透传，以及 Codex Responses 到 OpenAI Chat 的非流式文本转换。
 - 如果某条路由需要暂不支持的协议转换，UniGate 会直接返回明确错误，而不是静默转发到错误端点。
-- UniGate 不管理供应商密钥，只读取 `cc-switch` 已有配置。
+- 除 Codex 官方 OAuth 凭据外，UniGate 不接管 `cc-switch` 已有供应商的鉴权信息。
+- Codex 官方 OAuth 和 ChatGPT Codex backend 属于兼容性敏感的产品协议，不是面向第三方承诺稳定的公开 API；OpenAI 上游改动可能需要同步更新 UniGate。
 - Claude Desktop 需要依赖 `cc-switch` 的模型映射/模型路由来得到真实请求模型；UniGate 不会猜测或兼容旧的 Claude Desktop 环境变量 fallback。

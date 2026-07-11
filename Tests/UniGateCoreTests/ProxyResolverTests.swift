@@ -33,11 +33,51 @@ struct ProxyResolverTests {
         #expect(resolved.upstreamURL.absoluteString == "https://api.example.com/v1/responses")
         #expect(resolved.requestedModel == "gpt-5.5")
         #expect(resolved.routeKey.description == "codex:gpt-5.5")
+        #expect(resolved.authorizationRequirement == .staticProvider)
         #expect(resolved.headers["authorization"] == "Bearer key-1")
         #expect(resolved.outboundModel == "gpt-5.5")
         let outbound = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
         #expect(outbound?["model"] as? String == "gpt-5.5")
         #expect(outbound?["input"] as? String == "hello")
+    }
+
+    @Test
+    func codexOfficialUsesCanonicalPathsAndOAuthRequirement() throws {
+        let provider = ImportedProvider(
+            id: "official",
+            appType: UniGateAppRegistry.codex,
+            name: "Codex 官方",
+            category: "official",
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://attacker.example.com/steal",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("must-not-leak")])],
+            meta: ["isFullUrl": .bool(true)],
+            backendKind: .codexOfficial
+        )
+        let candidate = candidate(provider: provider)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        for (path, expectedURL) in [
+            ("/openai/v1/responses", "https://chatgpt.com/backend-api/codex/responses"),
+            ("/codex/v1/responses/compact", "https://chatgpt.com/backend-api/codex/responses/compact"),
+            ("/v1/v1/responses?trace=ignored", "https://chatgpt.com/backend-api/codex/responses")
+        ] {
+            let resolved = try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .codexResponses,
+                path: path,
+                body: Data(#"{"model":"gpt-5.5","input":"hello"}"#.utf8)
+            )
+
+            #expect(resolved.upstreamURL.absoluteString == expectedURL)
+            #expect(resolved.authorizationRequirement == .codexOfficial(providerRef: provider.ref))
+            #expect(resolved.headers.isEmpty)
+        }
     }
 
     @Test

@@ -443,6 +443,7 @@ struct UniGatePopoverRootView: View {
             appType: editingCustomProvider?.appType ?? state.currentAppType ?? state.appTypes.first ?? UniGateAppRegistry.codex,
             onSave: { definition, secret in
                 state.saveCustomProvider(definition, secret: secret, replacing: editingCustomProvider)
+                state.selectedAppType = definition.appType
                 closeCustomProviderEditor()
             },
             onPreviewModels: { definition, secret in
@@ -628,6 +629,99 @@ struct UniGatePopoverRootView: View {
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.24)))
     }
 
+    @ViewBuilder
+    private func codexOAuthControl(for provider: ImportedProvider) -> some View {
+        if let operation = state.codexOAuthOperation(for: provider.ref) {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(operation == .signingIn ? "登录中" : "退出中")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(UGPopoverStyle.textSecondary)
+            }
+            .frame(height: 24)
+        } else {
+            switch state.codexOAuthState(for: provider.ref) {
+            case .signedOut:
+                codexOAuthLoginButton(for: provider, title: "登录")
+            case .signedIn(let email):
+                Menu {
+                    if let email, !email.isEmpty {
+                        Text(email)
+                    }
+                    Button("重新登录") {
+                        Task {
+                            await state.loginCodexOfficial(provider.ref)
+                        }
+                    }
+                    Divider()
+                    Button("退出登录", role: .destructive) {
+                        Task {
+                            await state.logoutCodexOfficial(provider.ref)
+                        }
+                    }
+                } label: {
+                    Label("已登录", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.green.opacity(0.22)))
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .help(email.map { "已登录：\($0)" } ?? "Codex 官方已登录")
+            case .expired(let email):
+                Menu {
+                    if let email, !email.isEmpty {
+                        Text(email)
+                    }
+                    Button("重新登录") {
+                        Task {
+                            await state.loginCodexOfficial(provider.ref)
+                        }
+                    }
+                    Divider()
+                    Button("退出登录", role: .destructive) {
+                        Task {
+                            await state.logoutCodexOfficial(provider.ref)
+                        }
+                    }
+                } label: {
+                    Label("登录已过期", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.22)))
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .help("重新登录或清除 Codex 官方凭据")
+            }
+        }
+    }
+
+    private func codexOAuthLoginButton(for provider: ImportedProvider, title: String) -> some View {
+        Button {
+            Task {
+                await state.loginCodexOfficial(provider.ref)
+            }
+        } label: {
+            Label(title, systemImage: "person.crop.circle.badge.plus")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(brand)
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(brand.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(brand.opacity(0.22)))
+        }
+        .buttonStyle(.plain)
+        .help("登录 Codex 官方订阅")
+    }
+
     private func discoveryProviderRow(_ item: ModelDiscoveryProviderItem) -> some View {
         let provider = item.provider
         let result = item.result
@@ -640,27 +734,51 @@ struct UniGatePopoverRootView: View {
                         Text(provider.name)
                             .font(.system(size: 13, weight: .semibold))
                             .lineLimit(1)
-                        if customDefinition != nil {
+                        if provider.backendKind == .codexOfficial {
+                            providerStatusBadge("Codex 官方", color: brand)
+                            switch state.codexOAuthState(for: provider.ref) {
+                            case .expired:
+                                providerStatusBadge("登录已过期", color: .orange)
+                            case .signedIn, .signedOut:
+                                EmptyView()
+                            }
+                        } else if customDefinition != nil {
                             providerStatusBadge("自定义供应商", color: brand)
                         }
-                        if customDefinition != nil, !provider.hasSecret {
+                        if customDefinition != nil,
+                           provider.backendKind == .standard,
+                           !provider.hasSecret {
                             providerStatusBadge("密钥缺失", color: .orange)
                         }
                     }
-                    Text(discoveryProviderSummaryText(item))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
-                        .lineLimit(1)
+                    HStack(spacing: 8) {
+                        Text(discoveryProviderSummaryText(item))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(UGPopoverStyle.textSecondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if let result {
+                            Text(shortDateTime(result.updatedAt))
+                                .font(.caption2)
+                                .foregroundStyle(UGPopoverStyle.textSecondary)
+                        }
+                    }
                 }
                 Spacer()
-                if let result {
-                    Text(shortDateTime(result.updatedAt))
-                        .font(.caption2)
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
+                if provider.backendKind == .codexOfficial {
+                    codexOAuthControl(for: provider)
                 }
                 if let customDefinition {
                     customProviderMenu(customDefinition)
                 }
+            }
+
+            if provider.backendKind == .codexOfficial,
+               let oauthError = state.codexOAuthError(for: provider.ref) {
+                Text(oauthError)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let result {
@@ -2750,6 +2868,7 @@ private struct InlineCustomProviderEditorView: View {
     let onCancel: () -> Void
 
     @State private var name: String
+    @State private var backendKind: ProviderBackendKind
     @State private var baseURL: String
     @State private var apiFormat: ApiFormat
     @State private var isFullUrl: Bool
@@ -2774,6 +2893,7 @@ private struct InlineCustomProviderEditorView: View {
         self.onCancel = onCancel
 
         _name = State(initialValue: existing?.name ?? "")
+        _backendKind = State(initialValue: existing?.backendKind ?? .standard)
         _baseURL = State(initialValue: existing?.baseURL ?? "")
         _apiFormat = State(initialValue: existing?.apiFormat ?? UniGateAppRegistry.defaultApiFormat(for: self.appType))
         _isFullUrl = State(initialValue: existing?.isFullUrl ?? false)
@@ -2789,13 +2909,23 @@ private struct InlineCustomProviderEditorView: View {
         .onDisappear {
             previewTask?.cancel()
         }
+        .onChange(of: backendKind) { _, newKind in
+            previewTask?.cancel()
+            previewTask = nil
+            previewResult = nil
+            isPreviewingModels = false
+            if newKind == .codexOfficial,
+               name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                name = "OpenAI Official"
+            }
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(existing == nil ? "新增自定义供应商" : "编辑自定义供应商")
+            Text(existing == nil ? "新增供应商" : "编辑供应商")
                 .font(.system(size: 16, weight: .semibold))
-            Text(ProviderDisplay.appTypeLabel(appType))
+            Text(ProviderDisplay.appTypeLabel(effectiveAppType))
                 .font(.caption)
                 .foregroundStyle(UGPopoverStyle.textSecondary)
         }
@@ -2805,30 +2935,45 @@ private struct InlineCustomProviderEditorView: View {
     private var formPanel: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
-                field(title: "名称") {
-                    TextField("例如 DeepSeek", text: $name)
-                        .textFieldStyle(.roundedBorder)
-                }
-                field(title: "base_url") {
-                    TextField("https://api.example.com", text: $baseURL)
-                        .textFieldStyle(.roundedBorder)
-                }
-                Toggle(isOn: $isFullUrl) {
-                    Text("填写完整 URL")
-                }
-                field(title: "API 格式") {
-                    Picker("", selection: $apiFormat) {
-                        Text("OpenAI Responses").tag(ApiFormat.openaiResponses)
-                        Text("OpenAI Chat").tag(ApiFormat.openaiChat)
-                        Text("Anthropic").tag(ApiFormat.anthropic)
-                        Text("Gemini Native").tag(ApiFormat.geminiNative)
+                field(title: "类型") {
+                    Picker("", selection: $backendKind) {
+                        Text("普通供应商").tag(ProviderBackendKind.standard)
+                        Text("Codex 官方").tag(ProviderBackendKind.codexOfficial)
                     }
-                    .pickerStyle(.menu)
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(existing != nil)
+                    .help(existing == nil ? "选择供应商类型" : "编辑时不能更改供应商类型")
                 }
-                protocolHintPanel
-                field(title: "API Key") {
-                    SecureField(existingHasResolvableSecret ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
+                field(title: "名称") {
+                    TextField(
+                        backendKind == .codexOfficial ? "OpenAI Official" : "例如 DeepSeek",
+                        text: $name
+                    )
                         .textFieldStyle(.roundedBorder)
+                }
+                if backendKind == .standard {
+                    field(title: "base_url") {
+                        TextField("https://api.example.com", text: $baseURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Toggle(isOn: $isFullUrl) {
+                        Text("填写完整 URL")
+                    }
+                    field(title: "API 格式") {
+                        Picker("", selection: $apiFormat) {
+                            Text("OpenAI Responses").tag(ApiFormat.openaiResponses)
+                            Text("OpenAI Chat").tag(ApiFormat.openaiChat)
+                            Text("Anthropic").tag(ApiFormat.anthropic)
+                            Text("Gemini Native").tag(ApiFormat.geminiNative)
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    protocolHintPanel
+                    field(title: "API Key") {
+                        SecureField(existingHasResolvableSecret ? "留空则保留现有密钥" : "请输入 API key", text: $secret)
+                            .textFieldStyle(.roundedBorder)
+                    }
                 }
                 if isPreviewingModels || previewResult != nil {
                     previewResultPanel
@@ -2870,25 +3015,27 @@ private struct InlineCustomProviderEditorView: View {
 
             Spacer()
 
-            Button {
-                previewModels()
-            } label: {
-                HStack(spacing: 6) {
-                    if isPreviewingModels {
-                        ProgressView()
-                            .controlSize(.small)
+            if backendKind == .standard {
+                Button {
+                    previewModels()
+                } label: {
+                    HStack(spacing: 6) {
+                        if isPreviewingModels {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(isPreviewingModels ? "获取中" : "获取模型列表")
+                            .font(.system(size: 12, weight: .semibold))
                     }
-                    Text(isPreviewingModels ? "获取中" : "获取模型列表")
-                        .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(canPreviewModels ? brand : UGPopoverStyle.textSecondary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
                 }
-                .foregroundStyle(canPreviewModels ? brand : UGPopoverStyle.textSecondary)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(UGPopoverStyle.neutralActionFill, in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(UGPopoverStyle.neutralActionBorder))
+                .buttonStyle(.plain)
+                .disabled(!canPreviewModels || isPreviewingModels)
             }
-            .buttonStyle(.plain)
-            .disabled(!canPreviewModels || isPreviewingModels)
 
             Button {
                 save()
@@ -3005,14 +3152,19 @@ private struct InlineCustomProviderEditorView: View {
     }
 
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !appType.isEmpty
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        if backendKind == .codexOfficial {
+            return true
+        }
+        return !appType.isEmpty
             && !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (existingHasResolvableSecret || !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private var canPreviewModels: Bool {
-        canSave
+        backendKind == .standard && canSave
     }
 
     private func previewModels() {
@@ -3042,11 +3194,19 @@ private struct InlineCustomProviderEditorView: View {
             return
         }
         previewTask?.cancel()
-        onSave(makeDefinition(), trimmedSecret)
+        onSave(makeDefinition(), backendKind == .standard ? trimmedSecret : nil)
     }
 
     private func makeDefinition() -> CustomProviderDefinition {
-        CustomProviderDefinition(
+        if backendKind == .codexOfficial {
+            return .codexOfficial(
+                id: existing?.id ?? CustomProviderDefinition.makeID(),
+                name: name,
+                sortIndex: existing?.sortIndex,
+                isCurrent: existing?.isCurrent ?? false
+            )
+        }
+        return CustomProviderDefinition(
             id: existing?.id ?? CustomProviderDefinition.makeID(),
             appType: appType,
             name: name,
@@ -3059,6 +3219,10 @@ private struct InlineCustomProviderEditorView: View {
             modelsUrl: existing?.modelsUrl,
             customUserAgent: existing?.customUserAgent
         )
+    }
+
+    private var effectiveAppType: String {
+        backendKind == .codexOfficial ? UniGateAppRegistry.codex : appType
     }
 
     private var trimmedSecret: String? {

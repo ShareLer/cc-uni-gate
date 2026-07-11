@@ -1,9 +1,137 @@
 @testable import UniGateApp
+import Foundation
 import UniGateCore
 import Testing
 
 @MainActor
 struct UniGateAppStateTests {
+    @Test
+    func appTypesIncludeProvidersThatDoNotHaveModelsYet() {
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(
+            providers: [codexProvider(id: "official", name: "Codex 官方")],
+            candidates: []
+        )
+
+        #expect(state.appTypes == [UniGateAppRegistry.codex])
+        #expect(state.currentModelDiscoveryItems.map(\.provider.id) == ["official"])
+    }
+
+    @Test
+    func defaultAppPrefersAnAppWithRoutesOverAProviderOnlyApp() {
+        let official = ImportedProvider(
+            id: "official",
+            appType: UniGateAppRegistry.codex,
+            name: "Codex 官方",
+            category: "official",
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let providerOnly = ImportedProvider(
+            id: "claude-provider-only",
+            appType: UniGateAppRegistry.claudeCode,
+            name: "Claude Provider",
+            category: nil,
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .anthropic,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+        let discovered = candidate(
+            provider: official,
+            logicalModel: "gpt-5.5-codex",
+            source: .discovered
+        )
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(
+            providers: [providerOnly, official],
+            candidates: [discovered]
+        )
+
+        #expect(state.appTypes.contains(providerOnly.appType))
+        #expect(state.currentAppType == UniGateAppRegistry.codex)
+    }
+
+    @Test
+    func officialCodexDiscoveredCandidatesRemainSelectableWithoutCcSwitchScope() throws {
+        let provider = ImportedProvider(
+            id: "official",
+            appType: UniGateAppRegistry.codex,
+            name: "Codex 官方",
+            category: "official",
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let discovered = candidate(
+            provider: provider,
+            logicalModel: "gpt-5.5-codex",
+            source: .discovered
+        )
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(providers: [provider], candidates: [discovered])
+        state.uniGateModelScope = UniGateModelScope()
+
+        let group = try #require(state.displayRouteGroups.first)
+
+        #expect(group.routeKey == discovered.routeKey)
+        #expect(state.candidates(for: group).map(\.providerRef) == [provider.ref])
+        #expect(state.customModelBaseCandidates().map(\.providerRef) == [provider.ref])
+    }
+
+    @Test
+    func officialCodexRouteShowsSameNameThirdPartyCandidatesWithoutCcSwitchScope() throws {
+        let official = ImportedProvider(
+            id: "official",
+            appType: UniGateAppRegistry.codex,
+            name: "Codex 官方",
+            category: "official",
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let thirdParty = codexProvider(id: "ahoo-gpt", name: "ahoo-gpt")
+        let officialCandidate = candidate(
+            provider: official,
+            logicalModel: "gpt-5.6-luna",
+            source: .discovered
+        )
+        let thirdPartyCandidate = candidate(
+            provider: thirdParty,
+            logicalModel: "gpt-5.6-luna",
+            source: .discovered
+        )
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(
+            providers: [official, thirdParty],
+            candidates: [officialCandidate, thirdPartyCandidate]
+        )
+        state.uniGateModelScope = UniGateModelScope()
+
+        let group = try #require(state.displayRouteGroups.first)
+
+        #expect(Set(state.candidates(for: group).map(\.providerRef)) == [official.ref, thirdParty.ref])
+    }
+
     @Test
     func customModelBaseCandidatesHideConfiguredModelsMissingFromCurrentDiscovery() {
         let provider = codexProvider()
@@ -205,6 +333,79 @@ struct UniGateAppStateTests {
 
         #expect(!didSave)
         #expect(!didPersist)
+    }
+
+    @Test
+    func codexOAuthStateDefaultsToSignedOutAndAcceptsUpdates() {
+        let state = UniGateAppState()
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+
+        #expect(state.codexOAuthState(for: providerRef) == .signedOut)
+
+        state.updateCodexOAuthState(.signedIn(email: "user@example.com"), for: providerRef)
+
+        #expect(state.codexOAuthState(for: providerRef) == .signedIn(email: "user@example.com"))
+        #expect(state.codexOAuthError(for: providerRef) == nil)
+    }
+
+    @Test
+    func loginCodexOfficialPublishesReturnedStateAndClearsProgress() async {
+        let state = UniGateAppState()
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+        var receivedProviderRef: ProviderRef?
+        state.onLoginCodexOfficial = { ref in
+            receivedProviderRef = ref
+            return .signedIn(email: "user@example.com")
+        }
+
+        await state.loginCodexOfficial(providerRef)
+
+        #expect(receivedProviderRef == providerRef)
+        #expect(state.codexOAuthState(for: providerRef) == .signedIn(email: "user@example.com"))
+        #expect(state.codexOAuthOperation(for: providerRef) == nil)
+        #expect(state.codexOAuthError(for: providerRef) == nil)
+    }
+
+    @Test
+    func loginCodexOfficialPublishesErrorsWithoutDiscardingExistingState() async {
+        let state = UniGateAppState()
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+        state.updateCodexOAuthState(.expired(email: "user@example.com"), for: providerRef)
+        state.onLoginCodexOfficial = { _ in
+            throw OAuthTestError.loginFailed
+        }
+
+        await state.loginCodexOfficial(providerRef)
+
+        #expect(state.codexOAuthState(for: providerRef) == .expired(email: "user@example.com"))
+        #expect(state.codexOAuthOperation(for: providerRef) == nil)
+        #expect(state.codexOAuthError(for: providerRef) == "登录失败")
+    }
+
+    @Test
+    func logoutCodexOfficialPublishesSignedOutState() async {
+        let state = UniGateAppState()
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+        var receivedProviderRef: ProviderRef?
+        state.updateCodexOAuthState(.signedIn(email: "user@example.com"), for: providerRef)
+        state.onLogoutCodexOfficial = { ref in
+            receivedProviderRef = ref
+        }
+
+        await state.logoutCodexOfficial(providerRef)
+
+        #expect(receivedProviderRef == providerRef)
+        #expect(state.codexOAuthState(for: providerRef) == .signedOut)
+        #expect(state.codexOAuthOperation(for: providerRef) == nil)
+        #expect(state.codexOAuthError(for: providerRef) == nil)
+    }
+
+    private enum OAuthTestError: LocalizedError {
+        case loginFailed
+
+        var errorDescription: String? {
+            "登录失败"
+        }
     }
 
     private func codexProvider(id: String = "p1", name: String = "Provider 1") -> ImportedProvider {

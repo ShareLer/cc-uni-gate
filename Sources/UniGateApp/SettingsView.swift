@@ -19,6 +19,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var toast: String?
 
     private var uniGateModelScope: UniGateModelScope
+    private var localProxyToken: String?
     private let onApply: (AppPreferences, CustomModelState) -> Void
     private var toastToken = UUID()
 
@@ -28,12 +29,14 @@ final class SettingsViewModel: ObservableObject {
         customModels: CustomModelState,
         uniGateModelScope: UniGateModelScope,
         preferences: AppPreferences,
+        localProxyToken: String?,
         onApply: @escaping (AppPreferences, CustomModelState) -> Void
     ) {
         self.candidates = candidates
         self.providers = providers
         self.customModels = customModels
         self.uniGateModelScope = uniGateModelScope
+        self.localProxyToken = localProxyToken
         self.preferences = preferences
         self.portText = "\(preferences.normalizedPort)"
         self.ccSwitchDBPathText = preferences.resolvedCcSwitchDBPath
@@ -44,6 +47,10 @@ final class SettingsViewModel: ObservableObject {
         self.providerNetworkOverrides = preferences.networkPolicy.providerOverrides
         self.directDomainRulesText = preferences.networkPolicy.directDomainRules.joined(separator: "\n")
         self.onApply = onApply
+    }
+
+    func updateLocalProxyToken(_ token: String?) {
+        localProxyToken = token
     }
 
     func update(
@@ -160,27 +167,36 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func importToCcSwitch(path: String) {
-        guard let app = ccSwitchApp(for: path) else {
+        guard ccSwitchApp(for: path) != nil else {
             NSSound.beep()
             showToast("不支持导入")
             return
         }
-        guard let url = CcSwitchDeepLink.providerImportURL(
-            app: app,
-            endpoint: baseURL(path: path),
-            model: defaultModel(forAppType: app),
-            homepage: baseURL(path: "")
-        ) else {
+        guard localProxyToken != nil else {
+            NSSound.beep()
+            showToast("本地代理凭据不可用，请重启 UniGate")
+            return
+        }
+        guard let url = ccSwitchImportURL(path: path) else {
             NSSound.beep()
             return
         }
-        if NSWorkspace.shared.open(url) {
-            showToast("已打开 cc-switch")
-        } else {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(url.absoluteString, forType: .string)
-            showToast("已复制导入链接")
+        CcSwitchApplicationLauncher.openImportURL(url) { [weak self] succeeded in
+            self?.showToast(succeeded ? "已打开 cc-switch" : "未找到可信的 cc-switch 官方应用")
         }
+    }
+
+    func ccSwitchImportURL(path: String) -> URL? {
+        guard let app = ccSwitchApp(for: path), let localProxyToken else {
+            return nil
+        }
+        return CcSwitchDeepLink.providerImportURL(
+            app: app,
+            endpoint: baseURL(path: path),
+            apiKey: localProxyToken,
+            model: defaultModel(forAppType: app),
+            homepage: baseURL(path: "")
+        )
     }
 
     func baseURL(path: String) -> String {

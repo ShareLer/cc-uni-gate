@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var customModelStore = CustomModelStore()
     private lazy var customProviderStore = CustomProviderStore()
     private lazy var discoveryStore = ProviderModelDiscoveryStore()
+    private let localProxyCredentialManager = LocalProxyCredentialManager()
+    private let codexOAuthManager = CodexOAuthManager()
     private let backupStore = ConfigurationBackupStore()
     private var proxyServer: LocalProxyServer?
     private var proxyStatus: ProxyStatus = .starting
@@ -36,6 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var automaticModelDiscoveryTask: Task<Void, Never>?
     private var userModelDiscoveryTask: Task<Void, Never>?
     private var providerIssueClearTask: Task<Void, Never>?
+    private var codexOAuthStateTask: Task<Void, Never>?
+    private var codexOAuthLoginAttempts: [ProviderRef: UUID] = [:]
+    private var codexOAuthCallbackServers: [ProviderRef: CodexOAuthCallbackServer] = [:]
+    private var isResettingConfiguration = false
+    private var localProxyToken: String?
     private let dbWatcher = CcSwitchDatabaseWatcher()
     private var ccSwitchConfigurationFingerprint: CcSwitchConfigurationFingerprint?
     private var configurationRevision = ConfigurationRevisionTracker()
@@ -47,12 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let integrationSnapshot: CcSwitchIntegrationSnapshot
     }
 
+    private struct ModelDiscoveryAuthenticationContext {
+        let rejectedAccessToken: String?
+        let authorizationFingerprint: String?
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         ApplicationMenu.install()
         NSApp.setActivationPolicy(.accessory)
         configureAppStateActions()
         configureAppUpdateService()
         statusItemController.install(state: appState)
+        loadLocalProxyToken()
         publishState()
         reloadCatalog()
         startProxyServer()
@@ -63,6 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         automaticModelDiscoveryTask?.cancel()
         userModelDiscoveryTask?.cancel()
         providerIssueClearTask?.cancel()
+        codexOAuthStateTask?.cancel()
+        invalidateAllCodexOAuthLogins()
         dbWatcher.stop()
         currentProxyServerID = nil
         proxyServer?.stop()
@@ -87,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             syncLaunchAtLoginPreference()
             publishState()
+            syncCodexOAuthStates()
             scheduleAutomaticModelDiscoveryRefresh()
         } catch {
             if let recordEventMessage {
@@ -107,6 +123,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         userModelDiscoveryTask?.cancel()
     }
 
+    private func syncCodexOAuthStates() {
+        codexOAuthStateTask?.cancel()
+        let refs = catalog.providers
+            .filter { $0.backendKind == .codexOfficial }
+            .map(\.ref)
+        let validRefs = Set(refs)
+        let catalogGeneration = configurationRevision.current
+        for providerRef in Array(codexOAuthLoginAttempts.keys) where !validRefs.contains(providerRef) {
+            invalidateCodexOAuthLogin(for: providerRef)
+        }
+        codexOAuthStateTask = Task { [weak self] in
+            guard let self else { return }
+            guard !Task.isCancelled else { return }
+            do {
+                try await codexOAuthManager.pruneCredentials(
+                    validProviderRefs: validRefs,
+                    catalogGeneration: catalogGeneration
+                )
+            } catch {
+                recordEvent(.error, formattedIssueMessage(
+                    appName: "Codex",
+                    group: "鉴权清理",
+                    detail: "清理已移除供应商的登录凭据失败：\(error.localizedDescription)"
+                ))
+            }
+            var states: [ProviderRef: CodexOAuthDisplayState] = [:]
+            for providerRef in refs {
+                guard !Task.isCancelled else { return }
+                states[providerRef] = (try? await codexOAuthManager.status(for: providerRef)) ?? .signedOut
+            }
+            guard !Task.isCancelled else { return }
+            appState.replaceCodexOAuthStates(states)
+        }
+    }
+
     private func startProxyServer() {
         do {
             healthCheckTask?.cancel()
@@ -114,7 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentProxyServerID = nil
             proxyServer?.stop()
             updateProxyStatus(.starting, eventLevel: .info, eventMessage: "代理启动中 \(managerBaseURL())")
-            let server = LocalProxyServer(port: currentProxyPort(), runtime: self)
+            let server = LocalProxyServer(
+                port: currentProxyPort(),
+                runtime: self,
+                localProxyToken: localProxyToken,
+                codexOfficialAuthorizer: codexOAuthManager
+            )
             currentProxyServerID = server.id
             try server.start()
             proxyServer = server
@@ -130,6 +186,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     detail: "代理启动失败：\(error.localizedDescription)"
                 )
             )
+        }
+    }
+
+    private func loadLocalProxyToken() {
+        do {
+            localProxyToken = try localProxyCredentialManager.loadOrCreateToken()
+            appState.updateLocalProxyToken(localProxyToken)
+        } catch {
+            localProxyToken = nil
+            appState.updateLocalProxyToken(nil)
+            recordEvent(.error, formattedIssueMessage(
+                appName: "Uni Gate",
+                group: "本地鉴权异常",
+                detail: "无法读取本地代理凭据：\(error.localizedDescription)"
+            ))
         }
     }
 
@@ -180,21 +251,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) {
         do {
             let identifier = existing?.apiKeyIdentifier ?? existing?.id ?? definition.id
-            var nextDefinition = definition
-            let nextSecret = secret?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let nextSecret, !nextSecret.isEmpty {
-                try customProviderKeychain.save(nextSecret, identifier: identifier)
-                nextDefinition.apiKeyIdentifier = identifier
-            } else if let existingIdentifier = CustomProviderSecretRetention.identifierToPreserve(
-                existing: existing,
-                canReadSecret: { identifier in
-                    (try? customProviderKeychain.read(identifier: identifier)) != nil
-                }
-            ) {
-                // 未输入新密钥，且 Keychain 中确有可读的现有密钥 → 保留标识符
-                nextDefinition.apiKeyIdentifier = existingIdentifier
-            } else {
+            var nextDefinition = definition.normalized()
+            if nextDefinition.backendKind == .codexOfficial {
                 nextDefinition.apiKeyIdentifier = nil
+            } else {
+                let nextSecret = secret?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let nextSecret, !nextSecret.isEmpty {
+                    try customProviderKeychain.save(nextSecret, identifier: identifier)
+                    nextDefinition.apiKeyIdentifier = identifier
+                } else if let existingIdentifier = CustomProviderSecretRetention.identifierToPreserve(
+                    existing: existing,
+                    canReadSecret: { identifier in
+                        (try? customProviderKeychain.read(identifier: identifier)) != nil
+                    }
+                ) {
+                    // 未输入新密钥，且 Keychain 中确有可读的现有密钥 → 保留标识符
+                    nextDefinition.apiKeyIdentifier = existingIdentifier
+                } else {
+                    nextDefinition.apiKeyIdentifier = nil
+                }
             }
             customProviders = customProviders.replacingDefinition(nextDefinition)
             try customProviderStore.save(customProviders)
@@ -224,6 +299,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let existingSecret = try? definition.apiKeyIdentifier.flatMap { try customProviderKeychain.read(identifier: $0) }
         let provider = definition.toImportedProvider(apiKey: trimmedSecret?.isEmpty == false ? trimmedSecret : existingSecret)
         return await discoverModels(for: provider, updatesNetworkDiagnostics: false)
+    }
+
+    private func loginCodexOfficial(providerRef: ProviderRef) async throws -> CodexOAuthDisplayState {
+        guard !isResettingConfiguration else {
+            throw CodexOfficialLoginError.configurationResetInProgress
+        }
+        guard catalog.providers.contains(where: {
+            $0.ref == providerRef && $0.backendKind == .codexOfficial
+        }) else {
+            throw CodexOfficialLoginError.providerUnavailable
+        }
+
+        let attemptID = UUID()
+        codexOAuthLoginAttempts[providerRef] = attemptID
+        var callbackServerToStop: CodexOAuthCallbackServer?
+        defer {
+            callbackServerToStop?.stop()
+            if codexOAuthLoginAttempts[providerRef] == attemptID {
+                codexOAuthLoginAttempts.removeValue(forKey: providerRef)
+            }
+            if let callbackServer = callbackServerToStop,
+               codexOAuthCallbackServers[providerRef] === callbackServer {
+                codexOAuthCallbackServers.removeValue(forKey: providerRef)
+            }
+        }
+        let startedCallbackServer = try await CodexOAuthCallbackServer.start()
+        callbackServerToStop = startedCallbackServer
+        guard codexOAuthLoginAttempts[providerRef] == attemptID else {
+            throw CodexOAuthError.loginSuperseded
+        }
+        let callbackServer = startedCallbackServer
+        codexOAuthCallbackServers[providerRef] = callbackServer
+        guard let redirectURI = URL(string: callbackServer.redirectURI) else {
+            throw CodexOfficialLoginError.invalidCallbackURL
+        }
+        let loginRequest = try CodexOAuthLoginRequest.make(redirectURI: redirectURI)
+        callbackServer.configure(expectedState: loginRequest.state)
+        guard NSWorkspace.shared.open(loginRequest.authorizationURL) else {
+            throw CodexOfficialLoginError.browserUnavailable
+        }
+
+        let code = try await callbackServer.waitForAuthorizationCode()
+        guard codexOAuthLoginAttempts[providerRef] == attemptID,
+              catalog.providers.contains(where: {
+                  $0.ref == providerRef && $0.backendKind == .codexOfficial
+              }) else {
+            throw CodexOAuthError.loginSuperseded
+        }
+        _ = try await codexOAuthManager.completeLogin(
+            for: providerRef,
+            code: code,
+            pkce: loginRequest.pkce,
+            redirectURI: redirectURI
+        )
+        guard codexOAuthLoginAttempts[providerRef] == attemptID,
+              catalog.providers.contains(where: {
+                  $0.ref == providerRef && $0.backendKind == .codexOfficial
+              }) else {
+            try await codexOAuthManager.logout(for: providerRef)
+            throw CodexOAuthError.loginSuperseded
+        }
+        clearCodexOfficialDiscoveryResult(for: providerRef)
+        let status = try await codexOAuthManager.status(for: providerRef)
+        recordEvent(.info, "Codex 官方登录成功")
+        Task { [weak self] in
+            await self?.refreshCodexOfficialModels(providerRef: providerRef)
+        }
+        return status
+    }
+
+    private func logoutCodexOfficial(providerRef: ProviderRef) async throws {
+        invalidateCodexOAuthLogin(for: providerRef)
+        try await codexOAuthManager.logout(for: providerRef)
+        clearCodexOfficialDiscoveryResult(for: providerRef)
+        recordEvent(.info, "已退出 Codex 官方登录")
     }
 
     private func persistSettings(
@@ -358,10 +508,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard confirmDestructiveAction(
             title: "恢复配置？",
-            message: "这会覆盖 Uni Gate 当前的本地设置、模型路由、自定义模型和自定义供应商。备份不含 API 密钥，跨设备恢复后自定义供应商需重新输入密钥。cc-switch 数据库不会被修改。"
+            message: "这会覆盖 Uni Gate 当前的本地设置、模型路由、自定义模型和自定义供应商。备份不含 API 密钥或 Codex 登录凭据，恢复后的供应商可能需要重新鉴权。cc-switch 数据库不会被修改。"
         ) else {
             return
         }
+        invalidateAllCodexOAuthLogins()
 
         do {
             let backup = try backupStore.load(from: url)
@@ -433,42 +584,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performResetConfiguration() {
+        guard !isResettingConfiguration else {
+            return
+        }
         guard confirmDestructiveAction(
             title: "重置 Uni Gate 配置？",
-            message: "这会清空本地偏好、自定义模型、自定义供应商及其已保存的 API 密钥，并重新从 cc-switch 生成默认路由。"
+            message: "这会清空本地偏好、自定义模型、自定义供应商、API 密钥和 UniGate 管理的 Codex 登录凭据，并重新从 cc-switch 生成默认路由。"
         ) else {
             return
         }
 
-        invalidateConfigurationRevision()
+        isResettingConfiguration = true
+        invalidateAllCodexOAuthLogins()
+        codexOAuthStateTask?.cancel()
+        codexOAuthStateTask = nil
+        Task { @MainActor [weak self] in
+            await self?.performConfirmedResetConfiguration()
+        }
+    }
+
+    private func performConfirmedResetConfiguration() async {
+        defer { isResettingConfiguration = false }
         do {
-            let previousCustomProviders = customProviders
-            preferences = AppPreferences()
-            customModels = CustomModelState()
-            customProviders = CustomProviderState()
-            networkDiagnostics.removeAll()
-            try preferencesStore.save(preferences)
-            try customModelStore.save(customModels)
-            try customProviderStore.save(customProviders)
-            try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
-            catalog = try loadExpandedCatalog()
-            uniGateModelScope = try currentImporter().loadUniGateModelScope()
-            integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
-            let proxyCatalog = proxyCatalog()
-            routes = RouteStore.defaultState(
-                candidates: proxyCatalog.candidates,
-                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
-                    availableIn: proxyCatalog
-                )
+            try await ConfigurationResetWorkflow.run(
+                logoutAllCodexOAuth: {
+                    try await self.codexOAuthManager.logoutAll()
+                },
+                resetLocalConfiguration: {
+                    try self.resetLocalConfigurationAfterCodexLogout()
+                }
             )
-            try routeStore.save(routes)
-            syncLaunchAtLoginPreference()
-            publishState()
-            startProxyServer()
+            syncCodexOAuthStates()
             appState.showToast("配置已重置")
         } catch {
+            syncCodexOAuthStates()
             showError("配置重置失败：\(error.localizedDescription)")
         }
+    }
+
+    private func resetLocalConfigurationAfterCodexLogout() throws {
+        invalidateConfigurationRevision()
+        let previousCustomProviders = customProviders
+        preferences = AppPreferences()
+        customModels = CustomModelState()
+        customProviders = CustomProviderState()
+        networkDiagnostics.removeAll()
+        try preferencesStore.save(preferences)
+        try customModelStore.save(customModels)
+        try customProviderStore.save(customProviders)
+        try reconcileCustomProviderSecrets(previous: previousCustomProviders, next: customProviders)
+        catalog = try loadExpandedCatalog()
+        discoveryState = validatedDiscoveryState(
+            discoveryState,
+            validProviders: discoverableProviders(from: catalog.providers)
+        )
+        try discoveryStore.save(discoveryState)
+        uniGateModelScope = try currentImporter().loadUniGateModelScope()
+        integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+        let proxyCatalog = proxyCatalog()
+        routes = RouteStore.defaultState(
+            candidates: proxyCatalog.candidates,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: proxyCatalog
+            )
+        )
+        try routeStore.save(routes)
+        syncLaunchAtLoginPreference()
+        publishState()
+        startProxyServer()
     }
 
     private func prepareForSystemModal(_ action: @escaping @MainActor () -> Void) {
@@ -530,13 +713,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
                     return
                 }
-                var nextState = discoveryState.pruning(validProviders: discoverable)
+                var nextState = validatedDiscoveryState(discoveryState, validProviders: discoverable)
                 for provider in providers {
                     let result = await discoverModels(for: provider)
                     guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
                         return
                     }
+                    guard isCurrentDiscoveryResult(result, for: provider) else {
+                        continue
+                    }
                     nextState.upsert(result)
+                    nextState = validatedDiscoveryState(nextState, validProviders: discoverable)
                     discoveryState = nextState
                     appState.updateDiscoveryState(nextState)
                 }
@@ -548,7 +735,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let currentDiscoverable = discoverableProviders(
                         from: currentImportedSnapshot.catalog.providers + customProviders.importedProviders()
                     )
-                    nextState = nextState.pruning(validProviders: currentDiscoverable)
+                    nextState = validatedDiscoveryState(nextState, validProviders: currentDiscoverable)
                     discoveryState = nextState
                     appState.updateDiscoveryState(nextState)
                     try discoveryStore.save(nextState)
@@ -564,6 +751,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } catch {
             showError("模型探测刷新失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func refreshCodexOfficialModels(providerRef: ProviderRef) async {
+        guard let provider = catalog.providers.first(where: {
+            $0.ref == providerRef && $0.backendKind == .codexOfficial
+        }) else {
+            return
+        }
+        let revision = configurationRevision.current
+        let result = await discoverModels(for: provider)
+        guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
+            return
+        }
+
+        do {
+            var nextState = discoveryState
+            guard isCurrentDiscoveryResult(result, for: provider) else {
+                return
+            }
+            nextState.upsert(result)
+            try discoveryStore.save(nextState)
+            discoveryState = nextState
+
+            let importedSnapshot = try loadImportedConfigurationSnapshot()
+            guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
+                return
+            }
+            applyImportedConfigurationSnapshot(importedSnapshot)
+            routes = try loadProxyRoutes()
+            catalogLoadError = nil
+            publishState()
+            if let errorMessage = result.errorMessage {
+                recordEvent(.error, formattedIssueMessage(
+                    appName: "Codex",
+                    group: "模型探测",
+                    detail: errorMessage
+                ))
+            } else {
+                appState.showToast("Codex 官方模型已更新")
+            }
+        } catch {
+            showError("Codex 官方模型刷新失败：\(error.localizedDescription)")
         }
     }
 
@@ -595,19 +825,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
             return
         }
-        var nextState = discoveryState.pruning(validProviders: validProviders)
+        var nextState = validatedDiscoveryState(discoveryState, validProviders: validProviders)
         var didRefreshProvider = nextState != discoveryState
         for provider in providers {
             guard !Task.isCancelled else {
                 return
             }
-            let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
-            if nextState.results[provider.ref.description]?.configurationFingerprint == fingerprint {
+            let authorizationFingerprint = currentCodexOfficialAuthorizationFingerprint(for: provider)
+            if nextState.results[provider.ref.description]?.isCurrent(
+                for: provider,
+                codexOfficialAuthorizationFingerprint: authorizationFingerprint
+            ) == true {
                 continue
             }
             let result = await discoverModels(for: provider)
             guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
                 return
+            }
+            guard isCurrentDiscoveryResult(result, for: provider) else {
+                continue
             }
             nextState.upsert(result)
             didRefreshProvider = true
@@ -622,7 +858,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            discoveryState = nextState.pruning(validProviders: validProviders)
+            discoveryState = validatedDiscoveryState(nextState, validProviders: validProviders)
             try discoveryStore.save(discoveryState)
             catalog = try loadExpandedCatalog()
             routes = try loadProxyRoutes()
@@ -643,6 +879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) async -> ProviderModelDiscoveryResult {
         let now = Date()
         let fingerprint = ProviderModelDiscoveryFingerprint.value(for: provider)
+        var authorizationFingerprint = currentCodexOfficialAuthorizationFingerprint(for: provider)
         guard let plan = ProviderModelDiscovery.fetchPlan(for: provider) else {
             return ProviderModelDiscoveryResult(
                 providerRef: provider.ref,
@@ -652,7 +889,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 errorMessage: "缺少模型接口地址或鉴权信息",
                 sourceURL: provider.baseURL,
                 updatedAt: now,
-                configurationFingerprint: fingerprint
+                configurationFingerprint: fingerprint,
+                authorizationFingerprint: authorizationFingerprint
             )
         }
 
@@ -661,9 +899,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var request = URLRequest(url: url)
             request.httpMethod = "GET"
             request.timeoutInterval = 15
-            for (key, value) in plan.headers {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
             if let userAgent = plan.userAgent {
                 request.setValue(userAgent, forHTTPHeaderField: "user-agent")
             }
@@ -673,13 +908,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 providerRef: provider.ref,
                 host: url.host
             )
-            let session = NetworkPolicySession.makeSession(for: networkPolicy)
+            let isCodexOfficial = provider.backendKind == .codexOfficial
+            let session = isCodexOfficial
+                ? NetworkPolicySession.makeCodexOfficialSession(for: networkPolicy, originURL: url)
+                : NetworkPolicySession.makeSession(for: networkPolicy)
+            defer {
+                if isCodexOfficial {
+                    session.finishTasksAndInvalidate()
+                }
+            }
+            var activeAuthenticationContext: ModelDiscoveryAuthenticationContext?
             do {
-                let (data, response) = try await session.data(for: request)
+                let authenticationContext = try await applyModelDiscoveryAuthentication(
+                    plan.authentication,
+                    staticHeaders: plan.headers,
+                    forceRefresh: false,
+                    rejectingAccessToken: nil,
+                    rejectingAuthorizationFingerprint: nil,
+                    to: &request
+                )
+                activeAuthenticationContext = authenticationContext
+                authorizationFingerprint = authenticationContext.authorizationFingerprint
+                var (data, response) = try await session.data(for: request)
+                var status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 401,
+                   case let .codexOfficialOAuth(providerRef) = plan.authentication {
+                    let refreshedAuthenticationContext = try await applyModelDiscoveryAuthentication(
+                        plan.authentication,
+                        staticHeaders: plan.headers,
+                        forceRefresh: true,
+                        rejectingAccessToken: authenticationContext.rejectedAccessToken,
+                        rejectingAuthorizationFingerprint: authenticationContext.authorizationFingerprint,
+                        to: &request
+                    )
+                    activeAuthenticationContext = refreshedAuthenticationContext
+                    authorizationFingerprint = refreshedAuthenticationContext.authorizationFingerprint
+                    (data, response) = try await session.data(for: request)
+                    status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    if status == 401 {
+                        _ = await codexOAuthManager.markExpired(
+                            for: providerRef,
+                            rejectingAccessToken: refreshedAuthenticationContext.rejectedAccessToken,
+                            rejectingAuthorizationFingerprint: refreshedAuthenticationContext.authorizationFingerprint
+                        )
+                        let authState = (try? await codexOAuthManager.status(for: providerRef))
+                            ?? .expired(email: nil)
+                        appState.updateCodexOAuthState(authState, for: providerRef)
+                    }
+                }
                 guard !Task.isCancelled else {
                     break
                 }
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if (200..<300).contains(status) {
                     if updatesNetworkDiagnostics {
                         clearNetworkDiagnostic(providerRef: provider.ref)
@@ -693,7 +972,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         errorMessage: ids.isEmpty ? "接口返回成功，但未解析到模型" : nil,
                         sourceURL: url.absoluteString,
                         updatedAt: now,
-                        configurationFingerprint: fingerprint
+                        configurationFingerprint: fingerprint,
+                        authorizationFingerprint: authorizationFingerprint
                     )
                 }
                 lastFailure = "networkPolicy=\(networkPolicy.rawValue) HTTP \(status)"
@@ -706,7 +986,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     break
                 }
                 lastFailure = "networkPolicy=\(networkPolicy.rawValue) \(error.localizedDescription)"
-                if updatesNetworkDiagnostics {
+                if let oauthError = error as? CodexOAuthError {
+                    if case let .codexOfficialOAuth(providerRef) = plan.authentication {
+                        if oauthError != .notLoggedIn,
+                           oauthError != .authorizationSuperseded {
+                            if case .tokenRequestFailed = oauthError {
+                                if oauthError.isPermanentRefreshFailure {
+                                    _ = await codexOAuthManager.markExpired(
+                                        for: providerRef,
+                                        rejectingAccessToken: activeAuthenticationContext?.rejectedAccessToken,
+                                        rejectingAuthorizationFingerprint: activeAuthenticationContext?.authorizationFingerprint
+                                    )
+                                }
+                            } else {
+                                _ = await codexOAuthManager.markExpired(
+                                    for: providerRef,
+                                    rejectingAccessToken: activeAuthenticationContext?.rejectedAccessToken,
+                                    rejectingAuthorizationFingerprint: activeAuthenticationContext?.authorizationFingerprint
+                                )
+                            }
+                        }
+                        let authState = (try? await codexOAuthManager.status(for: providerRef))
+                            ?? .expired(email: nil)
+                        appState.updateCodexOAuthState(authState, for: providerRef)
+                    }
+                    lastFailure = oauthError.localizedDescription
+                } else if updatesNetworkDiagnostics {
                     await updateNetworkPolicyDiagnosticIfAlternateResponds(
                         provider: provider,
                         request: request,
@@ -727,7 +1032,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             errorMessage: lastFailure ?? "所有模型接口均不可用",
             sourceURL: plan.urls.first?.absoluteString,
             updatedAt: now,
-            configurationFingerprint: fingerprint
+            configurationFingerprint: fingerprint,
+            authorizationFingerprint: authorizationFingerprint
+        )
+    }
+
+    private func applyModelDiscoveryAuthentication(
+        _ authentication: ProviderModelFetchAuthentication,
+        staticHeaders: [String: String],
+        forceRefresh: Bool,
+        rejectingAccessToken: String?,
+        rejectingAuthorizationFingerprint: String?,
+        to request: inout URLRequest
+    ) async throws -> ModelDiscoveryAuthenticationContext {
+        let headers: [String: String]
+        let accessToken: String?
+        let authorizationFingerprint: String?
+        switch authentication {
+        case .staticHeaders:
+            headers = staticHeaders
+            accessToken = nil
+            authorizationFingerprint = nil
+        case let .codexOfficialOAuth(providerRef):
+            let authorization = try await codexOAuthManager.authorization(
+                for: providerRef,
+                forceRefresh: forceRefresh,
+                rejectingAccessToken: rejectingAccessToken,
+                rejectingAuthorizationFingerprint: rejectingAuthorizationFingerprint
+            )
+            request.setValue(nil, forHTTPHeaderField: CodexOfficial.fedRAMPHeader)
+            headers = authorization.headers
+            accessToken = authorization.accessToken
+            authorizationFingerprint = authorization.authorizationFingerprint
+        }
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        return ModelDiscoveryAuthenticationContext(
+            rejectedAccessToken: accessToken,
+            authorizationFingerprint: authorizationFingerprint
         )
     }
 
@@ -740,7 +1083,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) async {
         let fallbackMode = failedMode.alternate
         do {
-            let session = NetworkPolicySession.makeSession(for: fallbackMode)
+            let isCodexOfficial = provider.backendKind == .codexOfficial
+            let session = isCodexOfficial
+                ? NetworkPolicySession.makeCodexOfficialSession(for: fallbackMode, originURL: url)
+                : NetworkPolicySession.makeSession(for: fallbackMode)
+            defer {
+                if isCodexOfficial {
+                    session.finishTasksAndInvalidate()
+                }
+            }
             let (_, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status > 0 else {
@@ -848,12 +1199,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func loadExpandedCatalog(imported: ProviderCatalog) -> ProviderCatalog {
         let allProviders = imported.providers + customProviders.importedProviders()
+        let discoverableProviders = discoverableProviders(from: allProviders)
         let discoverableCatalog = ProviderCatalog(
-            providers: discoverableProviders(from: allProviders),
+            providers: discoverableProviders,
             candidates: imported.candidates
         )
         let discoveredCandidates = ProviderModelDiscovery.discoveredCandidates(
-            from: discoveryState,
+            from: validatedDiscoveryState(discoveryState, validProviders: discoverableProviders),
             catalog: discoverableCatalog
         )
         let baseCatalog = ProviderCatalog(
@@ -886,7 +1238,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func pruneDiscoveryState(for catalog: ProviderCatalog) {
         let allProviders = catalog.providers + customProviders.importedProviders()
-        let nextState = discoveryState.pruning(validProviders: discoverableProviders(from: allProviders))
+        let nextState = validatedDiscoveryState(
+            discoveryState,
+            validProviders: discoverableProviders(from: allProviders)
+        )
         guard nextState != discoveryState else {
             pruneNetworkDiagnostics(for: ProviderCatalog(providers: allProviders, candidates: []))
             return
@@ -894,6 +1249,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         discoveryState = nextState
         try? discoveryStore.save(nextState)
         pruneNetworkDiagnostics(for: ProviderCatalog(providers: allProviders, candidates: []))
+    }
+
+    private func validatedDiscoveryState(
+        _ state: ProviderModelDiscoveryState,
+        validProviders: [ImportedProvider]
+    ) -> ProviderModelDiscoveryState {
+        var fingerprints: [ProviderRef: String] = [:]
+        for provider in validProviders {
+            fingerprints[provider.ref] = currentCodexOfficialAuthorizationFingerprint(for: provider)
+        }
+        return state.pruning(
+            validProviders: validProviders,
+            codexOfficialAuthorizationFingerprints: fingerprints
+        )
+    }
+
+    private func isCurrentDiscoveryResult(
+        _ result: ProviderModelDiscoveryResult,
+        for provider: ImportedProvider
+    ) -> Bool {
+        result.isCurrent(
+            for: provider,
+            codexOfficialAuthorizationFingerprint: currentCodexOfficialAuthorizationFingerprint(for: provider)
+        )
+    }
+
+    private func currentCodexOfficialAuthorizationFingerprint(
+        for provider: ImportedProvider
+    ) -> String? {
+        guard provider.backendKind == .codexOfficial else {
+            return nil
+        }
+        return try? codexOAuthManager.authorizationFingerprint(for: provider.ref)
+    }
+
+    private func clearCodexOfficialDiscoveryResult(for providerRef: ProviderRef) {
+        guard discoveryState.results[providerRef.description] != nil else {
+            return
+        }
+        discoveryState.removeResult(for: providerRef)
+        catalog = ProviderCatalog(
+            providers: catalog.providers,
+            candidates: catalog.candidates.filter { $0.upstreamProviderRef != providerRef }
+        )
+        appState.updateDiscoveryState(discoveryState)
+        do {
+            try discoveryStore.save(discoveryState)
+        } catch {
+            recordEvent(.error, formattedIssueMessage(
+                appName: "Codex",
+                group: "模型探测",
+                detail: "清理账号模型缓存失败：\(error.localizedDescription)"
+            ))
+        }
+        do {
+            catalog = try loadExpandedCatalog()
+            routes = try loadProxyRoutes()
+            publishState()
+        } catch {
+            recordEvent(.error, formattedIssueMessage(
+                appName: "Codex",
+                group: "模型探测",
+                detail: "应用账号模型缓存清理失败：\(error.localizedDescription)"
+            ))
+            publishState()
+        }
     }
 
     private func pruneNetworkDiagnostics(for catalog: ProviderCatalog) {
@@ -933,6 +1354,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let removedIdentifiers = previous.secretIdentifiers().subtracting(next.secretIdentifiers())
         for identifier in removedIdentifiers {
             try customProviderKeychain.delete(identifier: identifier)
+        }
+    }
+
+    private func invalidateCodexOAuthLogin(for providerRef: ProviderRef) {
+        codexOAuthLoginAttempts.removeValue(forKey: providerRef)
+        codexOAuthCallbackServers.removeValue(forKey: providerRef)?.stop()
+    }
+
+    private func invalidateAllCodexOAuthLogins() {
+        codexOAuthLoginAttempts.removeAll()
+        let callbackServers = Array(codexOAuthCallbackServers.values)
+        codexOAuthCallbackServers.removeAll()
+        for callbackServer in callbackServers {
+            callbackServer.stop()
         }
     }
 
@@ -986,6 +1421,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return nil
             }
             return await self.previewCustomProviderModels(definition, secret: secret)
+        }
+        appState.onLoginCodexOfficial = { [weak self] providerRef in
+            guard let self else {
+                throw CodexOfficialLoginError.providerUnavailable
+            }
+            return try await self.loginCodexOfficial(providerRef: providerRef)
+        }
+        appState.onLogoutCodexOfficial = { [weak self] providerRef in
+            guard let self else {
+                throw CodexOfficialLoginError.providerUnavailable
+            }
+            try await self.logoutCodexOfficial(providerRef: providerRef)
         }
         appState.onRefreshModelDiscovery = { [weak self] appType in
             self?.refreshModelDiscovery(appType: appType)
@@ -1139,6 +1586,7 @@ extension AppDelegate: LocalProxyRuntime {
         catalogLoadError = nil
         recordEvent(.info, "已重新加载 cc-switch DB")
         publishState()
+        syncCodexOAuthStates()
         syncCcSwitchDBWatcher()
         return proxySnapshot()
     }
@@ -1242,6 +1690,14 @@ extension AppDelegate: LocalProxyRuntime {
         scheduleProviderIssueClear(serverID: currentProxyServerID)
     }
 
+    func codexOfficialAuthorizationDidExpire(providerRef: ProviderRef) {
+        Task {
+            let status = (try? await codexOAuthManager.status(for: providerRef))
+                ?? .expired(email: nil)
+            appState.updateCodexOAuthState(status, for: providerRef)
+        }
+    }
+
     private func scheduleProviderIssueClear(serverID: UUID?) {
         providerIssueClearTask?.cancel()
         providerIssueClearTask = Task { @MainActor [weak self] in
@@ -1307,6 +1763,26 @@ extension AppDelegate: LocalProxyRuntime {
                     detail: "代理监听已停止"
                 )
             )
+        }
+    }
+}
+
+private enum CodexOfficialLoginError: LocalizedError {
+    case providerUnavailable
+    case invalidCallbackURL
+    case browserUnavailable
+    case configurationResetInProgress
+
+    var errorDescription: String? {
+        switch self {
+        case .providerUnavailable:
+            return "Codex 官方供应商已不可用，请重新加载后重试"
+        case .invalidCallbackURL:
+            return "无法创建 Codex 登录回调地址"
+        case .browserUnavailable:
+            return "无法打开浏览器完成 Codex 登录"
+        case .configurationResetInProgress:
+            return "Uni Gate 正在重置配置，请稍后再登录 Codex 官方订阅"
         }
     }
 }

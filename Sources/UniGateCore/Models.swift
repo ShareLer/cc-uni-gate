@@ -249,6 +249,7 @@ public struct ImportedProvider: Identifiable, Sendable {
     public let hasSecret: Bool
     public let settings: [String: SendableValue]
     public let meta: [String: SendableValue]
+    public let backendKind: ProviderBackendKind
 
     public var ref: ProviderRef {
         ProviderRef(appType: appType, id: id)
@@ -269,7 +270,8 @@ public struct ImportedProvider: Identifiable, Sendable {
         baseURL: String?,
         hasSecret: Bool,
         settings: [String: SendableValue],
-        meta: [String: SendableValue]
+        meta: [String: SendableValue],
+        backendKind: ProviderBackendKind = .standard
     ) {
         self.id = id
         self.appType = appType
@@ -282,6 +284,7 @@ public struct ImportedProvider: Identifiable, Sendable {
         self.hasSecret = hasSecret
         self.settings = settings
         self.meta = meta
+        self.backendKind = backendKind
     }
 
     public func withApiFormat(_ apiFormat: ApiFormat) -> ImportedProvider {
@@ -296,7 +299,8 @@ public struct ImportedProvider: Identifiable, Sendable {
             baseURL: baseURL,
             hasSecret: hasSecret,
             settings: settings,
-            meta: meta
+            meta: meta,
+            backendKind: backendKind
         )
     }
 }
@@ -468,13 +472,22 @@ public struct ProviderCatalog: Sendable {
             return self
         }
         let providers = providers.map { provider in
-            guard let override = overrides[provider.ref.description] else {
+            guard
+                provider.backendKind != .codexOfficial,
+                let override = overrides[provider.ref.description]
+            else {
                 return provider
             }
             return provider.withApiFormat(override)
         }
+        let codexOfficialProviderRefs = Set(
+            providers.filter { $0.backendKind == .codexOfficial }.map(\.ref)
+        )
         let candidates = candidates.map { candidate in
-            guard let override = overrides[candidate.providerRef.description] else {
+            guard
+                !codexOfficialProviderRefs.contains(candidate.providerRef),
+                let override = overrides[candidate.providerRef.description]
+            else {
                 return candidate
             }
             return candidate.withApiFormat(override)
@@ -486,9 +499,16 @@ public struct ProviderCatalog: Sendable {
         uniGateModelScope: UniGateModelScope,
         customModels: CustomModelState
     ) -> ProviderCatalog {
+        let codexOfficialRouteKeys = ModelRouteVisibility.codexOfficialRouteKeys(in: self)
         let baseCandidates = candidates.filter { candidate in
             candidate.providerRef == candidate.upstreamProviderRef
-                && ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
+                && (
+                    codexOfficialRouteKeys.contains(candidate.routeKey)
+                        || ModelRouteVisibility.isCandidateSelectable(
+                            candidate,
+                            uniGateModelScope: uniGateModelScope
+                        )
+                )
         }
         let baseCatalog = ProviderCatalog(providers: providers, candidates: baseCandidates)
         let baseRouteKeys = Set(baseCandidates.map(\.routeKey))

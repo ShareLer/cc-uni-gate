@@ -3,6 +3,7 @@ import Security
 
 public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendable {
     public let id: String
+    public var backendKind: ProviderBackendKind
     public var appType: String
     public var name: String
     public var baseURL: String
@@ -18,6 +19,7 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case backendKind
         case appType
         case name
         case baseURL
@@ -45,9 +47,11 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         apiKeyIdentifier: String? = nil,
         isFullUrl: Bool = false,
         modelsUrl: String? = nil,
-        customUserAgent: String? = nil
+        customUserAgent: String? = nil,
+        backendKind: ProviderBackendKind = .standard
     ) {
         self.id = id
+        self.backendKind = backendKind
         self.appType = appType
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         self.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -64,12 +68,21 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let backendKind = try container.decodeIfPresent(ProviderBackendKind.self, forKey: .backendKind)
+            ?? .standard
         let appType = try container.decode(String.self, forKey: .appType)
+        let baseURL: String
+        if backendKind == .codexOfficial {
+            baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
+                ?? CodexOfficial.backendBaseURLString
+        } else {
+            baseURL = try container.decode(String.self, forKey: .baseURL)
+        }
         self.init(
             id: try container.decodeIfPresent(String.self, forKey: .id) ?? Self.makeID(),
             appType: appType,
             name: try container.decode(String.self, forKey: .name),
-            baseURL: try container.decode(String.self, forKey: .baseURL),
+            baseURL: baseURL,
             apiFormat: try container.decodeIfPresent(ApiFormat.self, forKey: .apiFormat)
                 ?? UniGateAppRegistry.defaultApiFormat(for: appType),
             category: try container.decodeIfPresent(String.self, forKey: .category),
@@ -79,13 +92,15 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
             apiKeyIdentifier: try container.decodeIfPresent(String.self, forKey: .apiKeyIdentifier),
             isFullUrl: try container.decodeIfPresent(Bool.self, forKey: .isFullUrl) ?? false,
             modelsUrl: try container.decodeIfPresent(String.self, forKey: .modelsUrl),
-            customUserAgent: try container.decodeIfPresent(String.self, forKey: .customUserAgent)
+            customUserAgent: try container.decodeIfPresent(String.self, forKey: .customUserAgent),
+            backendKind: backendKind
         )
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encode(backendKind, forKey: .backendKind)
         try container.encode(appType, forKey: .appType)
         try container.encode(name, forKey: .name)
         try container.encode(baseURL, forKey: .baseURL)
@@ -104,6 +119,26 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
         "unigate-\(UUID().uuidString.lowercased())"
     }
 
+    public static func codexOfficial(
+        id: String = Self.makeID(),
+        name: String,
+        sortIndex: Int? = nil,
+        isCurrent: Bool = false
+    ) -> CustomProviderDefinition {
+        return CustomProviderDefinition(
+            id: id,
+            appType: UniGateAppRegistry.codex,
+            name: name,
+            baseURL: CodexOfficial.backendBaseURLString,
+            apiFormat: .openaiResponses,
+            category: "official",
+            sortIndex: sortIndex,
+            isCurrent: isCurrent,
+            enableDiscovery: true,
+            backendKind: .codexOfficial
+        )
+    }
+
     public var providerRef: ProviderRef {
         ProviderRef(appType: appType, id: id)
     }
@@ -113,11 +148,29 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
     }
 
     public var hasSecret: Bool {
-        apiKeyIdentifier != nil
+        backendKind == .standard && apiKeyIdentifier != nil
     }
 
     public func normalized() -> CustomProviderDefinition {
-        CustomProviderDefinition(
+        if backendKind == .codexOfficial {
+            return CustomProviderDefinition(
+                id: id,
+                appType: UniGateAppRegistry.codex,
+                name: name,
+                baseURL: CodexOfficial.backendBaseURLString,
+                apiFormat: .openaiResponses,
+                category: "official",
+                sortIndex: sortIndex,
+                isCurrent: isCurrent,
+                enableDiscovery: true,
+                apiKeyIdentifier: nil,
+                isFullUrl: false,
+                modelsUrl: nil,
+                customUserAgent: nil,
+                backendKind: .codexOfficial
+            )
+        }
+        return CustomProviderDefinition(
             id: id,
             appType: appType,
             name: name,
@@ -130,13 +183,16 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
             apiKeyIdentifier: apiKeyIdentifier,
             isFullUrl: isFullUrl,
             modelsUrl: modelsUrl,
-            customUserAgent: customUserAgent
+            customUserAgent: customUserAgent,
+            backendKind: backendKind
         )
     }
 
     public func withSecretIdentifier(_ identifier: String?) -> CustomProviderDefinition {
         var next = self
-        next.apiKeyIdentifier = identifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+        next.apiKeyIdentifier = backendKind == .codexOfficial
+            ? nil
+            : identifier?.trimmingCharacters(in: .whitespacesAndNewlines)
         return next
     }
 
@@ -159,22 +215,29 @@ public struct CustomProviderDefinition: Codable, Hashable, Identifiable, Sendabl
     }
 
     public func toImportedProvider(apiKey: String?) -> ImportedProvider {
-        ImportedProvider(
-            id: id,
-            appType: appType,
-            name: name,
-            category: category,
-            sortIndex: sortIndex,
-            isCurrent: isCurrent,
-            apiFormat: apiFormat,
-            baseURL: baseURL,
-            hasSecret: apiKey != nil,
-            settings: Self.settings(appType: appType, apiFormat: apiFormat, apiKey: apiKey),
+        let definition = normalized()
+        let usableAPIKey = definition.backendKind == .standard ? apiKey : nil
+        return ImportedProvider(
+            id: definition.id,
+            appType: definition.appType,
+            name: definition.name,
+            category: definition.category,
+            sortIndex: definition.sortIndex,
+            isCurrent: definition.isCurrent,
+            apiFormat: definition.apiFormat,
+            baseURL: definition.baseURL,
+            hasSecret: usableAPIKey != nil,
+            settings: Self.settings(
+                appType: definition.appType,
+                apiFormat: definition.apiFormat,
+                apiKey: usableAPIKey
+            ),
             meta: Self.meta(
-                isFullUrl: isFullUrl,
-                modelsUrl: modelsUrl,
-                customUserAgent: customUserAgent
-            )
+                isFullUrl: definition.isFullUrl,
+                modelsUrl: definition.modelsUrl,
+                customUserAgent: definition.customUserAgent
+            ),
+            backendKind: definition.backendKind
         )
     }
 
@@ -303,7 +366,7 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
     public var definitions: [CustomProviderDefinition]
 
     public init(definitions: [CustomProviderDefinition] = []) {
-        self.definitions = Self.deduplicated(definitions)
+        self.definitions = Self.deduplicated(definitions.map { $0.normalized() })
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -312,10 +375,10 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.definitions = Self.deduplicated(try container.decodeIfPresent(
+        self.definitions = Self.deduplicated((try container.decodeIfPresent(
             [CustomProviderDefinition].self,
             forKey: .definitions
-        ) ?? [])
+        ) ?? []).map { $0.normalized() })
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -361,6 +424,9 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
         guard let definition = definition(for: ref) else {
             return nil
         }
+        guard definition.backendKind == .standard else {
+            return nil
+        }
         if let identifier = definition.apiKeyIdentifier, let value = try? keychain.read(identifier: identifier) {
             return value
         }
@@ -376,7 +442,12 @@ public struct CustomProviderState: Codable, Sendable, Equatable {
     }
 
     public func secretIdentifiers() -> Set<String> {
-        Set(definitions.compactMap { $0.apiKeyIdentifier ?? $0.id })
+        Set(definitions.compactMap { definition in
+            guard definition.backendKind == .standard else {
+                return nil
+            }
+            return definition.apiKeyIdentifier ?? definition.id
+        })
     }
 
     public func replacingDefinition(_ definition: CustomProviderDefinition) -> CustomProviderState {

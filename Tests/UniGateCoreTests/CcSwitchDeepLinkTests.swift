@@ -8,6 +8,7 @@ struct CcSwitchDeepLinkTests {
         let url = try #require(CcSwitchDeepLink.providerImportURL(
             app: "codex",
             endpoint: "http://127.0.0.1:17888/codex",
+            apiKey: "sk-unigate-installation-token",
             model: "gpt-5.5"
         ))
 
@@ -20,7 +21,7 @@ struct CcSwitchDeepLinkTests {
         #expect(params["app"] == "codex")
         #expect(params["name"] == "UniGate")
         #expect(params["endpoint"] == "http://127.0.0.1:17888/codex")
-        #expect(params["apiKey"] == CcSwitchDeepLink.localAPIKey)
+        #expect(params["apiKey"] == "sk-unigate-installation-token")
         #expect(params["model"] == "gpt-5.5")
         #expect(params["enabled"] == "true")
         #expect(params["notes"]?.contains("UniGate") == true)
@@ -32,6 +33,7 @@ struct CcSwitchDeepLinkTests {
         let url = try #require(CcSwitchDeepLink.providerImportURL(
             app: "claude",
             endpoint: "http://127.0.0.1:17888/claude-code",
+            apiKey: "sk-unigate-installation-token",
             model: "auto",
             homepage: "http://127.0.0.1:17888"
         ))
@@ -42,7 +44,7 @@ struct CcSwitchDeepLinkTests {
         #expect(params["app"] == "claude")
         #expect(params["endpoint"] == "http://127.0.0.1:17888/claude-code")
         #expect(params["homepage"] == "http://127.0.0.1:17888")
-        #expect(params["apiKey"] == CcSwitchDeepLink.localAPIKey)
+        #expect(params["apiKey"] == "sk-unigate-installation-token")
         #expect(params["model"] == "auto")
         #expect(params["enabled"] == "true")
     }

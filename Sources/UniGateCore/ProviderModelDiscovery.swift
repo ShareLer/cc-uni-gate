@@ -1,16 +1,29 @@
 import Foundation
 
+public enum ProviderModelFetchAuthentication: Equatable, Sendable {
+    case staticHeaders
+    case codexOfficialOAuth(providerRef: ProviderRef)
+}
+
 public struct ProviderModelFetchPlan: Sendable {
     public let providerRef: ProviderRef
     public let urls: [URL]
     public let headers: [String: String]
     public let userAgent: String?
+    public let authentication: ProviderModelFetchAuthentication
 
-    public init(providerRef: ProviderRef, urls: [URL], headers: [String: String], userAgent: String?) {
+    public init(
+        providerRef: ProviderRef,
+        urls: [URL],
+        headers: [String: String],
+        userAgent: String?,
+        authentication: ProviderModelFetchAuthentication = .staticHeaders
+    ) {
         self.providerRef = providerRef
         self.urls = urls
         self.headers = headers
         self.userAgent = userAgent
+        self.authentication = authentication
     }
 }
 
@@ -28,6 +41,15 @@ public enum ProviderModelDiscovery {
     ]
 
     public static func fetchPlan(for provider: ImportedProvider) -> ProviderModelFetchPlan? {
+        if provider.backendKind == .codexOfficial {
+            return ProviderModelFetchPlan(
+                providerRef: provider.ref,
+                urls: [CodexOfficial.modelListURL(clientVersion: CodexOfficial.modelDiscoveryClientVersion)],
+                headers: [:],
+                userAgent: nil,
+                authentication: .codexOfficialOAuth(providerRef: provider.ref)
+            )
+        }
         guard
             let baseURL = provider.baseURL,
             let headers = ProviderCredentials.modelFetchHeaders(for: provider)
@@ -46,7 +68,8 @@ public enum ProviderModelDiscovery {
             providerRef: provider.ref,
             urls: urls,
             headers: headers,
-            userAgent: JSONValueParser.string(provider.meta, ["customUserAgent"])
+            userAgent: JSONValueParser.string(provider.meta, ["customUserAgent"]),
+            authentication: .staticHeaders
         )
     }
 

@@ -307,6 +307,161 @@ struct ModelRouteGroupingTests {
         ])
     }
 
+    @Test
+    func officialCodexDiscoveredModelsSeedRoutesWithoutCcSwitchModelScope() {
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+        let provider = ImportedProvider(
+            id: providerRef.id,
+            appType: providerRef.appType,
+            name: "Codex Official",
+            category: "official",
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let discovered = candidate(
+            logicalModel: "gpt-5.5",
+            upstreamModel: "gpt-5.5",
+            providerRef: providerRef,
+            appType: "codex",
+            source: .discovered
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [discovered])
+
+        let routeKeys = ModelRouteVisibility.visibleConfiguredBaseRouteKeys(
+            catalog: catalog,
+            customModels: CustomModelState(),
+            uniGateModelScope: UniGateModelScope(),
+            preferences: AppPreferences()
+        )
+        let proxyCatalog = catalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: CustomModelState()
+        )
+
+        #expect(routeKeys.map(\.description) == ["codex:gpt-5.5"])
+        #expect(proxyCatalog.candidates.map(\.logicalModel) == ["gpt-5.5"])
+    }
+
+    @Test
+    func officialCodexRouteIncludesSameNameThirdPartyCandidatesWithoutCcSwitchScope() throws {
+        let officialRef = ProviderRef(appType: "codex", id: "official")
+        let thirdPartyRef = ProviderRef(appType: "codex", id: "ahoo-gpt")
+        let official = ImportedProvider(
+            id: officialRef.id,
+            appType: officialRef.appType,
+            name: "Codex Official",
+            category: "official",
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let thirdParty = ImportedProvider(
+            id: thirdPartyRef.id,
+            appType: thirdPartyRef.appType,
+            name: "ahoo-gpt",
+            category: nil,
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.ahoo.example",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+        let catalog = ProviderCatalog(
+            providers: [official, thirdParty],
+            candidates: [
+                candidate(
+                    logicalModel: "gpt-5.6-luna",
+                    upstreamModel: "gpt-5.6-luna",
+                    providerRef: officialRef,
+                    appType: "codex",
+                    source: .discovered
+                ),
+                candidate(
+                    logicalModel: "gpt-5.6-luna",
+                    upstreamModel: "gpt-5.6-luna",
+                    providerRef: thirdPartyRef,
+                    appType: "codex",
+                    source: .discovered
+                ),
+                candidate(
+                    logicalModel: "gpt-5.6-terra",
+                    upstreamModel: "gpt-5.6-terra",
+                    providerRef: thirdPartyRef,
+                    appType: "codex",
+                    source: .discovered
+                )
+            ]
+        )
+
+        let proxyCatalog = catalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: CustomModelState()
+        )
+
+        #expect(proxyCatalog.candidates.map(\.providerRef) == [officialRef, thirdPartyRef])
+
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.6-luna")
+        let store = RouteStore(
+            fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                .appendingPathComponent("routes.json")
+        )
+        let switched = try store.switchRoute(
+            RouteStore.defaultState(candidates: proxyCatalog.candidates),
+            catalog: proxyCatalog,
+            appType: routeKey.appType,
+            logicalModel: routeKey.logicalModel,
+            providerRef: thirdPartyRef,
+            now: Date(timeIntervalSince1970: 1)
+        )
+
+        #expect(switched.routes[routeKey.description]?.providerRef == thirdPartyRef)
+    }
+
+    @Test
+    func protocolOverridesDoNotChangeOfficialCodexBackend() throws {
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+        let provider = ImportedProvider(
+            id: providerRef.id,
+            appType: providerRef.appType,
+            name: "Codex Official",
+            category: "official",
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let discovered = candidate(
+            logicalModel: "gpt-5.5",
+            upstreamModel: "gpt-5.5",
+            providerRef: providerRef,
+            appType: "codex",
+            source: .discovered
+        )
+        let overridden = ProviderCatalog(providers: [provider], candidates: [discovered])
+            .applyingProtocolOverrides([providerRef.description: .openaiChat])
+
+        #expect(try #require(overridden.providers.first).apiFormat == .openaiResponses)
+        #expect(try #require(overridden.candidates.first).apiFormat == .openaiResponses)
+    }
+
     private func candidate(
         logicalModel: String,
         upstreamModel: String,

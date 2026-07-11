@@ -19,6 +19,11 @@ final class UniGateAppState: ObservableObject {
         case nameConflict
     }
 
+    enum CodexOAuthOperation: Equatable {
+        case signingIn
+        case signingOut
+    }
+
     @Published var screen: Screen = .routes
     @Published var catalog = ProviderCatalog(providers: [], candidates: [])
     @Published var routes = RouteState()
@@ -40,6 +45,9 @@ final class UniGateAppState: ObservableObject {
     @Published var toast: String?
     @Published var isRefreshingModelDiscovery = false
     @Published var updatePhase: AppUpdatePhase = .idle
+    @Published private(set) var codexOAuthStates: [ProviderRef: CodexOAuthDisplayState] = [:]
+    @Published private(set) var codexOAuthOperations: [ProviderRef: CodexOAuthOperation] = [:]
+    @Published private(set) var codexOAuthErrors: [ProviderRef: String] = [:]
 
     var onSwitchProvider: (([ModelRouteKey], ProviderRef) -> Void)?
     var onReload: (() -> Void)?
@@ -50,6 +58,8 @@ final class UniGateAppState: ObservableObject {
     var onSaveCustomProvider: ((CustomProviderDefinition, String?, CustomProviderDefinition?) -> Void)?
     var onDeleteCustomProvider: ((CustomProviderDefinition) -> Void)?
     var onPreviewCustomProviderModels: ((CustomProviderDefinition, String?) async -> ProviderModelDiscoveryResult?)?
+    var onLoginCodexOfficial: ((ProviderRef) async throws -> CodexOAuthDisplayState)?
+    var onLogoutCodexOfficial: ((ProviderRef) async throws -> Void)?
     var onRefreshModelDiscovery: ((String?) -> Void)?
     var onCopyDiagnostics: (() -> Void)?
     var onExportConfiguration: (() -> Void)?
@@ -62,6 +72,7 @@ final class UniGateAppState: ObservableObject {
 
     private var toastToken = UUID()
     private var settingsViewModel: SettingsViewModel?
+    private var localProxyToken: String?
 
     func updateSnapshot(
         catalog: ProviderCatalog,
@@ -92,6 +103,11 @@ final class UniGateAppState: ObservableObject {
     func updateProxyStatus(_ status: ProxyStatus, port: UInt16) {
         proxyStatus = status
         proxyPort = port
+    }
+
+    func updateLocalProxyToken(_ token: String?) {
+        localProxyToken = token
+        settingsViewModel?.updateLocalProxyToken(token)
     }
 
     func updateRecentEvents(_ events: [ProxyEvent]) {
@@ -141,12 +157,14 @@ final class UniGateAppState: ObservableObject {
     }
 
     var appTypes: [String] {
-        let routeAppTypes = Array(Set(displayRouteGroups.map(\.routeKey.appType))).sorted {
+        let routeAndProviderAppTypes = Set(displayRouteGroups.map(\.routeKey.appType))
+            .union(catalog.providers.map(\.appType))
+        let appTypes = Array(routeAndProviderAppTypes).sorted {
             ProviderDisplay.appTypeLabel($0)
                 .localizedStandardCompare(ProviderDisplay.appTypeLabel($1)) == .orderedAscending
         }
-        if !routeAppTypes.isEmpty {
-            return routeAppTypes
+        if !appTypes.isEmpty {
+            return appTypes
         }
         return catalog.appTypes
     }
@@ -155,7 +173,7 @@ final class UniGateAppState: ObservableObject {
         if let selectedAppType, appTypes.contains(selectedAppType) {
             return selectedAppType
         }
-        return appTypes.first
+        return defaultAppType
     }
 
     var visibleRouteKeys: [ModelRouteKey] {
@@ -471,6 +489,7 @@ final class UniGateAppState: ObservableObject {
         secret: String?,
         replacing existing: CustomProviderDefinition? = nil
     ) {
+        selectedAppType = definition.appType
         onSaveCustomProvider?(definition, secret, existing)
     }
 
@@ -483,6 +502,65 @@ final class UniGateAppState: ObservableObject {
         secret: String?
     ) async -> ProviderModelDiscoveryResult? {
         await onPreviewCustomProviderModels?(definition, secret)
+    }
+
+    func updateCodexOAuthState(_ state: CodexOAuthDisplayState, for providerRef: ProviderRef) {
+        codexOAuthStates[providerRef] = state
+        codexOAuthErrors[providerRef] = nil
+    }
+
+    func replaceCodexOAuthStates(_ states: [ProviderRef: CodexOAuthDisplayState]) {
+        codexOAuthStates = states
+        let validRefs = Set(states.keys)
+        codexOAuthOperations = codexOAuthOperations.filter { validRefs.contains($0.key) }
+        codexOAuthErrors = codexOAuthErrors.filter { validRefs.contains($0.key) }
+    }
+
+    func codexOAuthState(for providerRef: ProviderRef) -> CodexOAuthDisplayState {
+        codexOAuthStates[providerRef] ?? .signedOut
+    }
+
+    func codexOAuthOperation(for providerRef: ProviderRef) -> CodexOAuthOperation? {
+        codexOAuthOperations[providerRef]
+    }
+
+    func codexOAuthError(for providerRef: ProviderRef) -> String? {
+        codexOAuthErrors[providerRef]
+    }
+
+    func loginCodexOfficial(_ providerRef: ProviderRef) async {
+        guard codexOAuthOperations[providerRef] == nil,
+              let onLoginCodexOfficial else {
+            return
+        }
+        codexOAuthOperations[providerRef] = .signingIn
+        codexOAuthErrors[providerRef] = nil
+        defer {
+            codexOAuthOperations[providerRef] = nil
+        }
+        do {
+            codexOAuthStates[providerRef] = try await onLoginCodexOfficial(providerRef)
+        } catch {
+            codexOAuthErrors[providerRef] = error.localizedDescription
+        }
+    }
+
+    func logoutCodexOfficial(_ providerRef: ProviderRef) async {
+        guard codexOAuthOperations[providerRef] == nil,
+              let onLogoutCodexOfficial else {
+            return
+        }
+        codexOAuthOperations[providerRef] = .signingOut
+        codexOAuthErrors[providerRef] = nil
+        defer {
+            codexOAuthOperations[providerRef] = nil
+        }
+        do {
+            try await onLogoutCodexOfficial(providerRef)
+            codexOAuthStates[providerRef] = .signedOut
+        } catch {
+            codexOAuthErrors[providerRef] = error.localizedDescription
+        }
     }
 
     func reload() {
@@ -513,6 +591,7 @@ final class UniGateAppState: ObservableObject {
             customModels: customModels,
             uniGateModelScope: uniGateModelScope,
             preferences: preferences,
+            localProxyToken: localProxyToken,
             onApply: { [weak self] preferences, customModels in
                 if let onApplySettings = self?.onApplySettings {
                     onApplySettings(preferences, customModels)
@@ -671,9 +750,14 @@ final class UniGateAppState: ObservableObject {
 
     private func syncSelectedAppType() {
         guard let selectedAppType, appTypes.contains(selectedAppType) else {
-            selectedAppType = appTypes.first
+            selectedAppType = defaultAppType
             return
         }
+    }
+
+    private var defaultAppType: String? {
+        let appTypesWithRoutes = Set(displayRouteGroups.map(\.routeKey.appType))
+        return appTypes.first(where: appTypesWithRoutes.contains) ?? appTypes.first
     }
 
     private func isConfigured(_ routeKey: ModelRouteKey) -> Bool {
@@ -694,7 +778,11 @@ final class UniGateAppState: ObservableObject {
     }
 
     private func isCandidateInUniGateScope(_ candidate: ModelCandidate) -> Bool {
-        ModelRouteVisibility.isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
+        ModelRouteVisibility.isCandidateSelectable(
+            candidate,
+            catalog: catalog,
+            uniGateModelScope: uniGateModelScope
+        )
     }
 
     private func isCurrentDiscoveryCandidate(_ candidate: ModelCandidate) -> Bool {

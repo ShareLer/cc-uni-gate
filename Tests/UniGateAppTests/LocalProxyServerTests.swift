@@ -6,6 +6,8 @@ import Testing
 
 @Suite(.serialized)
 struct LocalProxyServerTests {
+    private static let localProxyToken = "sk-unigate-test-installation-token"
+
     @Test
     @MainActor
     func codexModelCatalogKeepsCustomAliasDisplayName() {
@@ -674,6 +676,347 @@ struct LocalProxyServerTests {
         #expect(response.contains("Manager token is not configured"))
     }
 
+    @Test
+    @MainActor
+    func codexOfficial401RefreshesOnceAndIsolatesAuthenticationHeaders() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [401, 200])
+        let (snapshot, providerRef) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let body = #"{"model":"gpt-5.5","input":"hello"}"#
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /openai/v1/responses HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Content-Type: application/json\r
+            Authorization: Bearer \(Self.localProxyToken)\r
+            ChatGPT-Account-ID: inbound-account\r
+            Originator: inbound-originator\r
+            X-Codex-Turn-Metadata: safe-turn\r
+            X-Client-Request-Id: safe-request\r
+            X-OpenAI-Internal-Codex-Residency: us\r
+            X-OpenAI-Memgen-Request: true\r
+            X-OAI-Attestation: signed-attestation\r
+            X-Evil: must-not-forward\r
+            Content-Length: \(Data(body.utf8).count)\r
+            \r
+            \(body)
+            """
+        )
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+        let requests = MockCodexUpstreamURLProtocol.recordedRequests()
+        #expect(requests.count == 2)
+        #expect(requests.first?.url?.absoluteString == "https://chatgpt.com/backend-api/codex/responses")
+        #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer old-token")
+        #expect(requests.first?.value(forHTTPHeaderField: "ChatGPT-Account-ID") == "account-1")
+        #expect(requests.last?.value(forHTTPHeaderField: "Authorization") == "Bearer new-token")
+        #expect(requests.last?.value(forHTTPHeaderField: "ChatGPT-Account-ID") == "account-1")
+        #expect(requests.last?.value(forHTTPHeaderField: "Originator") == "inbound-originator")
+        #expect(requests.last?.value(forHTTPHeaderField: "X-Codex-Turn-Metadata") == "safe-turn")
+        #expect(requests.last?.value(forHTTPHeaderField: "X-Client-Request-Id") == "safe-request")
+        #expect(requests.last?.value(forHTTPHeaderField: "X-OpenAI-Internal-Codex-Residency") == "us")
+        #expect(requests.last?.value(forHTTPHeaderField: "X-OpenAI-Memgen-Request") == "true")
+        #expect(requests.last?.value(forHTTPHeaderField: "X-OAI-Attestation") == "signed-attestation")
+        #expect(requests.last?.value(forHTTPHeaderField: "X-Evil") == nil)
+        let state = await authorizer.snapshot()
+        #expect(state.forceRefreshCalls == [false, true])
+        #expect(state.rejectingAccessTokens == [nil, "old-token"])
+        #expect(state.rejectingAuthorizationFingerprints == [
+            nil,
+            CodexOAuthUpstreamAuthorization(
+                accessToken: "old-token",
+                accountID: "account-1"
+            ).authorizationFingerprint
+        ])
+        #expect(state.expiredProviderRefs.isEmpty)
+        #expect(state.requestedProviderRefs == [providerRef, providerRef])
+    }
+
+    @Test
+    @MainActor
+    func codexOfficialSecond401MarksLoginExpiredWithoutFurtherRetry() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [401, 401, 200])
+        let (snapshot, providerRef) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(port: proxyPort)
+
+        #expect(response.contains("HTTP/1.1 401"))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().count == 2)
+        let state = await authorizer.snapshot()
+        #expect(state.forceRefreshCalls == [false, true])
+        #expect(state.rejectingAccessTokens == [nil, "old-token"])
+        #expect(state.expiredProviderRefs == [providerRef])
+    }
+
+    @Test
+    @MainActor
+    func codexOfficial403DoesNotRefreshOrRetry() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [403, 200])
+        let (snapshot, _) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(port: proxyPort)
+
+        #expect(response.contains("HTTP/1.1 403"))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().count == 1)
+        let state = await authorizer.snapshot()
+        #expect(state.forceRefreshCalls == [false])
+        #expect(state.expiredProviderRefs.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func codexOfficialDoesNotExposeUpstreamCookiesToTheLocalClient() async throws {
+        MockCodexUpstreamURLProtocol.configure(
+            statusCodes: [200],
+            responseHeaders: [
+                "Set-Cookie": "chatgpt_session=secret; Path=/; Secure; HttpOnly",
+                "X-Upstream-Test": "visible"
+            ]
+        )
+        let (snapshot, _) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: MockCodexOfficialAuthorizer(),
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(port: proxyPort)
+        let normalizedResponse = response.lowercased()
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+        #expect(normalizedResponse.contains("set-cookie:") == false)
+        #expect(normalizedResponse.contains("x-upstream-test: visible"))
+    }
+
+    @Test
+    @MainActor
+    func codexOfficialRejectsBrowserOriginBeforeUsingSubscription() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let (snapshot, _) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(
+            port: proxyPort,
+            additionalHeaders: "Authorization: Bearer \(Self.localProxyToken)\r\nOrigin: https://malicious.example\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 403 Forbidden"))
+        #expect(response.contains("codex_browser_origin_denied"))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().isEmpty)
+        let state = await authorizer.snapshot()
+        #expect(state.forceRefreshCalls.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func signedOutCodexOfficialReturnsClear401WithoutCallingUpstream() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let (snapshot, _) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer(isSignedOut: true)
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(port: proxyPort)
+
+        #expect(response.contains("HTTP/1.1 401"))
+        #expect(response.contains("codex_not_logged_in"))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func codexOfficialRejectsLegacyFixedLocalKeyWithReimportGuidance() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let (snapshot, _) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(
+            port: proxyPort,
+            additionalHeaders: "Authorization: Bearer \(CcSwitchDeepLink.localAPIKey)\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 401 Unauthorized"))
+        #expect(response.contains("codex_local_proxy_credential_invalid"))
+        #expect(response.contains("重新导入 cc-switch"))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().isEmpty)
+        let state = await authorizer.snapshot()
+        #expect(state.forceRefreshCalls.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func standardProviderKeepsStaticAuthenticationAndSkipsOAuth() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let (snapshot, _) = Self.proxySnapshot(backendKind: .standard)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(
+            port: proxyPort,
+            additionalHeaders: "Authorization: Bearer \(CcSwitchDeepLink.localAPIKey)\r\nChatGPT-Account-ID: inbound-account\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+        let requests = MockCodexUpstreamURLProtocol.recordedRequests()
+        #expect(requests.count == 1)
+        #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer static-key")
+        #expect(requests.first?.value(forHTTPHeaderField: "ChatGPT-Account-ID") == nil)
+        let state = await authorizer.snapshot()
+        #expect(state.forceRefreshCalls.isEmpty)
+    }
+
+    private static let mockUpstreamSessionFactory: LocalProxyServer.UpstreamSessionFactory = { _, _, _ in
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockCodexUpstreamURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private static func proxySnapshot(
+        backendKind: ProviderBackendKind
+    ) -> (ProxyRuntimeSnapshot, ProviderRef) {
+        let provider = ImportedProvider(
+            id: backendKind == .codexOfficial ? "official" : "standard",
+            appType: UniGateAppRegistry.codex,
+            name: backendKind == .codexOfficial ? "Codex 官方" : "Standard Provider",
+            category: backendKind == .codexOfficial ? "official" : nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: backendKind == .codexOfficial
+                ? "https://attacker.example.com/must-not-be-used"
+                : "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("static-key")])],
+            meta: [:],
+            backendKind: backendKind
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        return (
+            ProxyRuntimeSnapshot(
+                catalog: catalog,
+                routes: RouteStore.defaultState(candidates: catalog.candidates),
+                networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+            ),
+            provider.ref
+        )
+    }
+
+    private static func sendCodexRequest(
+        port: UInt16,
+        additionalHeaders: String = "Authorization: Bearer sk-unigate-test-installation-token\r\n"
+    ) async throws -> String {
+        let body = #"{"model":"gpt-5.5","input":"hello"}"#
+        return try await rawHTTPResponseFromBackgroundTask(
+            port: port,
+            request: "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nContent-Type: application/json\r\n\(additionalHeaders)Content-Length: \(Data(body.utf8).count)\r\n\r\n\(body)"
+        )
+    }
+
     private static func availablePort() throws -> UInt16 {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
@@ -850,6 +1193,126 @@ private final class MockProxyRuntime: LocalProxyRuntime {
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID) {
         listenerStates.append(state)
     }
+}
+
+private actor MockCodexOfficialAuthorizer: CodexOfficialAuthorizing {
+    private let isSignedOut: Bool
+    private var forceRefreshCalls: [Bool] = []
+    private var rejectingAccessTokens: [String?] = []
+    private var rejectingAuthorizationFingerprints: [String?] = []
+    private var requestedProviderRefs: [ProviderRef] = []
+    private var expiredProviderRefs: [ProviderRef] = []
+
+    init(isSignedOut: Bool = false) {
+        self.isSignedOut = isSignedOut
+    }
+
+    func authorization(
+        for providerRef: ProviderRef,
+        forceRefresh: Bool,
+        rejectingAccessToken: String?,
+        rejectingAuthorizationFingerprint: String?
+    ) async throws -> CodexOAuthUpstreamAuthorization {
+        requestedProviderRefs.append(providerRef)
+        forceRefreshCalls.append(forceRefresh)
+        rejectingAccessTokens.append(rejectingAccessToken)
+        rejectingAuthorizationFingerprints.append(rejectingAuthorizationFingerprint)
+        if isSignedOut {
+            throw CodexOAuthError.notLoggedIn
+        }
+        return CodexOAuthUpstreamAuthorization(
+            accessToken: forceRefresh ? "new-token" : "old-token",
+            accountID: "account-1"
+        )
+    }
+
+    func markExpired(
+        for providerRef: ProviderRef,
+        rejectingAccessToken: String?,
+        rejectingAuthorizationFingerprint: String?
+    ) async -> Bool {
+        expiredProviderRefs.append(providerRef)
+        return true
+    }
+
+    func snapshot() -> (
+        forceRefreshCalls: [Bool],
+        rejectingAccessTokens: [String?],
+        rejectingAuthorizationFingerprints: [String?],
+        requestedProviderRefs: [ProviderRef],
+        expiredProviderRefs: [ProviderRef]
+    ) {
+        (
+            forceRefreshCalls,
+            rejectingAccessTokens,
+            rejectingAuthorizationFingerprints,
+            requestedProviderRefs,
+            expiredProviderRefs
+        )
+    }
+}
+
+private final class MockCodexUpstreamURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var statusCodes: [Int] = []
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    nonisolated(unsafe) private static var responseHeaders: [String: String] = [:]
+
+    static func configure(
+        statusCodes: [Int],
+        responseHeaders: [String: String] = [:]
+    ) {
+        lock.lock()
+        self.statusCodes = statusCodes
+        requests = []
+        self.responseHeaders = responseHeaders
+        lock.unlock()
+    }
+
+    static func recordedRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests.append(request)
+        let status = Self.statusCodes.isEmpty ? 500 : Self.statusCodes.removeFirst()
+        let responseHeaders = Self.responseHeaders
+        Self.lock.unlock()
+
+        let headerFields = responseHeaders.merging(
+            ["content-type": "application/json"],
+            uniquingKeysWith: { existing, _ in existing }
+        )
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                url: url,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: headerFields
+              ) else {
+            client?.urlProtocol(self, didFailWithError: TestError("invalid mock response"))
+            return
+        }
+        let body = status >= 200 && status < 300
+            ? Data(#"{"ok":true}"#.utf8)
+            : Data(#"{"error":"mock"}"#.utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private final class MockSSEUpstream: @unchecked Sendable {

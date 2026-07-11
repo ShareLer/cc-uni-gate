@@ -92,6 +92,30 @@ public enum ModelRouteVisibility {
         return uniGateModelScope.contains(candidate)
     }
 
+    public static func isCandidateSelectable(
+        _ candidate: ModelCandidate,
+        catalog: ProviderCatalog,
+        uniGateModelScope: UniGateModelScope
+    ) -> Bool {
+        if codexOfficialRouteKeys(in: catalog).contains(candidate.routeKey) {
+            return true
+        }
+        return isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
+    }
+
+    static func codexOfficialRouteKeys(in catalog: ProviderCatalog) -> Set<ModelRouteKey> {
+        let providerRefs = Set(
+            catalog.providers.filter { $0.backendKind == .codexOfficial }.map(\.ref)
+        )
+        return Set(catalog.candidates.compactMap { candidate in
+            guard candidate.providerRef == candidate.upstreamProviderRef,
+                  providerRefs.contains(candidate.providerRef) else {
+                return nil
+            }
+            return candidate.routeKey
+        })
+    }
+
     public static func visibleConfiguredBaseRouteKeys(
         catalog: ProviderCatalog,
         customModels: CustomModelState,
@@ -115,10 +139,16 @@ public enum ModelRouteVisibility {
         let customModelIdentities = Set(customModels.models.map {
             NormalizedRouteKeyIdentity(appType: $0.appType, logicalModel: $0.name)
         })
+        let codexOfficialProviderRefs = Set(
+            catalog.providers.filter { $0.backendKind == .codexOfficial }.map(\.ref)
+        )
         let visibleRouteKeys = Set(catalog.candidates.compactMap { candidate -> ModelRouteKey? in
+            let isCodexOfficialDiscovery = codexOfficialProviderRefs.contains(candidate.providerRef)
+                && (candidate.source == .discovered || candidate.source == .staleDiscovered)
             guard candidate.providerRef == candidate.upstreamProviderRef,
-                  candidate.source.isRouteKeySeed,
-                  isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope),
+                  candidate.source.isRouteKeySeed || isCodexOfficialDiscovery,
+                  codexOfficialProviderRefs.contains(candidate.providerRef)
+                    || isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope),
                   !customModelIdentities.contains(NormalizedRouteKeyIdentity(routeKey: candidate.routeKey))
             else {
                 return nil

@@ -4,6 +4,201 @@ import Testing
 
 struct ProviderModelDiscoveryTests {
     @Test
+    func standardProviderFingerprintKeepsPreBackendKindCacheShape() {
+        let provider = ImportedProvider(
+            id: "standard",
+            appType: UniGateAppRegistry.codex,
+            name: "Standard",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com/v1",
+            hasSecret: false,
+            settings: [:],
+            meta: [:]
+        )
+
+        #expect(
+            ProviderModelDiscoveryFingerprint.value(for: provider)
+                == "73503901eddae850f55529ec"
+        )
+    }
+
+    @Test
+    func removingProviderResultPreventsPreviousAccountModelsFromBeingRetained() {
+        let providerRef = ProviderRef(appType: UniGateAppRegistry.codex, id: "official")
+        var state = ProviderModelDiscoveryState(results: [
+            providerRef.description: ProviderModelDiscoveryResult(
+                providerRef: providerRef,
+                appType: UniGateAppRegistry.codex,
+                providerName: "Codex 官方",
+                modelIDs: ["account-a-model"],
+                errorMessage: nil,
+                sourceURL: nil,
+                configurationFingerprint: "same-provider-config"
+            )
+        ])
+
+        state.removeResult(for: providerRef)
+        state.upsert(ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Codex 官方",
+            modelIDs: [],
+            errorMessage: "account B discovery failed",
+            sourceURL: nil,
+            configurationFingerprint: "same-provider-config"
+        ))
+
+        #expect(state.results[providerRef.description]?.modelIDs.isEmpty == true)
+    }
+
+    @Test
+    func failedDiscoveryDoesNotRetainModelsAcrossAuthorizationFingerprintChange() {
+        let providerRef = ProviderRef(appType: UniGateAppRegistry.codex, id: "official")
+        let succeeded = ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Codex 官方",
+            modelIDs: ["account-a-model"],
+            errorMessage: nil,
+            sourceURL: nil,
+            configurationFingerprint: "same-provider-config",
+            authorizationFingerprint: "account-a"
+        )
+        var sameAccountState = ProviderModelDiscoveryState(results: [
+            providerRef.description: succeeded
+        ])
+        sameAccountState.upsert(ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Codex 官方",
+            modelIDs: [],
+            errorMessage: "same account discovery failed",
+            sourceURL: nil,
+            configurationFingerprint: "same-provider-config",
+            authorizationFingerprint: "account-a"
+        ))
+
+        var otherAccountState = ProviderModelDiscoveryState(results: [
+            providerRef.description: succeeded
+        ])
+
+        otherAccountState.upsert(ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Codex 官方",
+            modelIDs: [],
+            errorMessage: "account B discovery failed",
+            sourceURL: nil,
+            configurationFingerprint: "same-provider-config",
+            authorizationFingerprint: "account-b"
+        ))
+
+        #expect(sameAccountState.results[providerRef.description]?.modelIDs == ["account-a-model"])
+        #expect(otherAccountState.results[providerRef.description]?.modelIDs.isEmpty == true)
+        #expect(otherAccountState.results[providerRef.description]?.authorizationFingerprint == "account-b")
+    }
+
+    @Test
+    func authorizationAwarePruningRequiresCurrentOfficialAccountFingerprint() {
+        let official = ImportedProvider(
+            id: "official",
+            appType: UniGateAppRegistry.codex,
+            name: "Codex 官方",
+            category: "official",
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let standard = ImportedProvider(
+            id: "standard",
+            appType: UniGateAppRegistry.codex,
+            name: "Third Party",
+            category: nil,
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com/v1",
+            hasSecret: false,
+            settings: [:],
+            meta: [:]
+        )
+        let state = ProviderModelDiscoveryState(results: [
+            official.ref.description: ProviderModelDiscoveryResult(
+                providerRef: official.ref,
+                appType: official.appType,
+                providerName: official.name,
+                modelIDs: ["official-model"],
+                errorMessage: nil,
+                sourceURL: nil,
+                configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: official),
+                authorizationFingerprint: "account-a"
+            ),
+            standard.ref.description: ProviderModelDiscoveryResult(
+                providerRef: standard.ref,
+                appType: standard.appType,
+                providerName: standard.name,
+                modelIDs: ["standard-model"],
+                errorMessage: nil,
+                sourceURL: nil,
+                configurationFingerprint: ProviderModelDiscoveryFingerprint.value(for: standard)
+            )
+        ])
+        let providers = [official, standard]
+
+        let signedOut = state.pruning(
+            validProviders: providers,
+            codexOfficialAuthorizationFingerprints: [:]
+        )
+        let otherAccount = state.pruning(
+            validProviders: providers,
+            codexOfficialAuthorizationFingerprints: [official.ref: "account-b"]
+        )
+        let sameAccount = state.pruning(
+            validProviders: providers,
+            codexOfficialAuthorizationFingerprints: [official.ref: "account-a"]
+        )
+        var legacyState = state
+        legacyState.results[official.ref.description]?.authorizationFingerprint = nil
+        let legacyCache = legacyState.pruning(
+            validProviders: providers,
+            codexOfficialAuthorizationFingerprints: [official.ref: "account-a"]
+        )
+
+        #expect(signedOut.results.keys.sorted() == [standard.ref.description])
+        #expect(otherAccount.results.keys.sorted() == [standard.ref.description])
+        #expect(legacyCache.results.keys.sorted() == [standard.ref.description])
+        #expect(sameAccount.results.keys.sorted() == [official.ref.description, standard.ref.description].sorted())
+    }
+
+    @Test
+    func discoveryResultDecodesLegacyCacheWithoutAuthorizationFingerprint() throws {
+        let providerRef = ProviderRef(appType: UniGateAppRegistry.codex, id: "official")
+        let result = ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Codex 官方",
+            modelIDs: ["legacy-model"],
+            errorMessage: nil,
+            sourceURL: nil,
+            configurationFingerprint: "configuration"
+        )
+
+        let data = try JSONEncoder().encode(result)
+        let decoded = try JSONDecoder().decode(ProviderModelDiscoveryResult.self, from: data)
+
+        #expect(decoded.authorizationFingerprint == nil)
+        #expect(decoded.modelIDs == ["legacy-model"])
+    }
+
+    @Test
     func buildsModelsURLCandidatesForAnthropicCompatBaseURL() {
         let urls = ProviderModelDiscovery.modelURLCandidates(
             baseURL: "https://api.deepseek.com/anthropic"
@@ -47,10 +242,37 @@ struct ProviderModelDiscoveryTests {
         let plan = try #require(ProviderModelDiscovery.fetchPlan(for: provider))
 
         #expect(plan.headers == ["authorization": "Bearer claude-key"])
+        #expect(plan.authentication == .staticHeaders)
         #expect(plan.urls.map(\.absoluteString) == [
             "https://api.example.com/anthropic/v1/models",
             "https://api.example.com/v1/models",
             "https://api.example.com/models"
+        ])
+    }
+
+    @Test
+    func buildsOfficialCodexModelFetchPlanWithOAuthRequirement() throws {
+        let provider = ImportedProvider(
+            id: "official",
+            appType: "codex",
+            name: "Codex Official",
+            category: "official",
+            sortIndex: nil,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+
+        let plan = try #require(ProviderModelDiscovery.fetchPlan(for: provider))
+
+        #expect(plan.headers.isEmpty)
+        #expect(plan.authentication == .codexOfficialOAuth(providerRef: provider.ref))
+        #expect(plan.urls.map(\.absoluteString) == [
+            "https://chatgpt.com/backend-api/codex/models?client_version=\(CodexOfficial.modelDiscoveryClientVersion)"
         ])
     }
 

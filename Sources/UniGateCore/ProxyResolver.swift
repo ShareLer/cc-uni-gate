@@ -1,5 +1,10 @@
 import Foundation
 
+public enum ProxyAuthorizationRequirement: Equatable, Sendable {
+    case staticProvider
+    case codexOfficial(providerRef: ProviderRef)
+}
+
 public struct ResolvedRoute: Sendable {
     public let requestedModel: String
     public let routeKey: ModelRouteKey
@@ -7,6 +12,7 @@ public struct ResolvedRoute: Sendable {
     public let providerName: String
     public let outboundModel: String
     public let upstreamURL: URL
+    public let authorizationRequirement: ProxyAuthorizationRequirement
     public let headers: [String: String]
     public let body: Data
     public let responseTransform: ProxyResponseTransform
@@ -136,6 +142,16 @@ public enum ProxyResolver {
             apiFormat: candidate.apiFormat
         )
 
+        let authorizationRequirement: ProxyAuthorizationRequirement
+        let headers: [String: String]
+        if provider.backendKind == .codexOfficial {
+            authorizationRequirement = .codexOfficial(providerRef: provider.ref)
+            headers = [:]
+        } else {
+            authorizationRequirement = .staticProvider
+            headers = ProviderCredentials.proxyAuthHeaders(for: provider)
+        }
+
         return ResolvedRoute(
             requestedModel: requestedModel,
             routeKey: routeKey,
@@ -143,7 +159,8 @@ public enum ProxyResolver {
             providerName: provider.name,
             outboundModel: ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel),
             upstreamURL: upstreamURL,
-            headers: ProviderCredentials.proxyAuthHeaders(for: provider),
+            authorizationRequirement: authorizationRequirement,
+            headers: headers,
             body: outboundData,
             responseTransform: responseTransform
         )
@@ -290,6 +307,21 @@ public enum ProxyResolver {
         protocolKind: ClientProtocolKind,
         apiFormat: ApiFormat
     ) throws -> URL {
+        if provider.backendKind == .codexOfficial {
+            let path = inboundPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? inboundPath
+            let endpoint: String
+            if path.hasSuffix("/responses/compact") {
+                endpoint = "responses/compact"
+            } else if path.hasSuffix("/responses") {
+                endpoint = "responses"
+            } else {
+                throw ProxyResolverError.invalidRequest(
+                    "Codex official providers only support /responses and /responses/compact"
+                )
+            }
+            return CodexOfficial.backendBaseURL.appendingPathComponent(endpoint)
+        }
+
         guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !baseURL.isEmpty else {
             throw ProxyResolverError.missingBaseURL(provider: provider.name)
         }

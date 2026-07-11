@@ -2,6 +2,22 @@ import UniGateCore
 import Foundation
 import Network
 
+protocol CodexOfficialAuthorizing: Sendable {
+    func authorization(
+        for providerRef: ProviderRef,
+        forceRefresh: Bool,
+        rejectingAccessToken: String?,
+        rejectingAuthorizationFingerprint: String?
+    ) async throws -> CodexOAuthUpstreamAuthorization
+    func markExpired(
+        for providerRef: ProviderRef,
+        rejectingAccessToken: String?,
+        rejectingAuthorizationFingerprint: String?
+    ) async -> Bool
+}
+
+extension CodexOAuthManager: CodexOfficialAuthorizing {}
+
 @MainActor
 protocol LocalProxyRuntime: AnyObject {
     func proxySnapshot() -> ProxyRuntimeSnapshot
@@ -26,7 +42,12 @@ protocol LocalProxyRuntime: AnyObject {
     func proxyProviderDidSucceed()
     func proxyProviderDidFail(_ message: String)
     func proxyProviderDidFail(appType: String, message: String)
+    func codexOfficialAuthorizationDidExpire(providerRef: ProviderRef)
     func proxyListenerDidChange(_ state: ProxyListenerState, serverID: UUID)
+}
+
+extension LocalProxyRuntime {
+    func codexOfficialAuthorizationDidExpire(providerRef: ProviderRef) {}
 }
 
 struct ProxyRuntimeSnapshot: Sendable {
@@ -44,6 +65,12 @@ enum ProxyListenerState: Sendable {
 }
 
 final class LocalProxyServer: @unchecked Sendable {
+    typealias UpstreamSessionFactory = @Sendable (
+        _ mode: NetworkPolicyMode,
+        _ originURL: URL,
+        _ isCodexOfficial: Bool
+    ) -> URLSession
+
     private static let upstreamRequestTimeout: TimeInterval = 600
 
     private struct ProxyStreamStats {
@@ -69,6 +96,55 @@ final class LocalProxyServer: @unchecked Sendable {
         case upstream(Error, stats: ProxyStreamStats)
     }
 
+    private enum CodexOfficialAuthorizationError: Error, LocalizedError {
+        case localProxyCredentialRejected
+        case notLoggedIn
+        case refreshFailed
+        case accountChanged
+        case browserOriginDenied
+
+        var statusCode: Int {
+            switch self {
+            case .localProxyCredentialRejected, .notLoggedIn, .refreshFailed:
+                return 401
+            case .accountChanged:
+                return 409
+            case .browserOriginDenied:
+                return 403
+            }
+        }
+
+        var responseCode: String {
+            switch self {
+            case .localProxyCredentialRejected:
+                return "codex_local_proxy_credential_invalid"
+            case .notLoggedIn:
+                return "codex_not_logged_in"
+            case .refreshFailed:
+                return "codex_login_expired"
+            case .accountChanged:
+                return "codex_account_changed"
+            case .browserOriginDenied:
+                return "codex_browser_origin_denied"
+            }
+        }
+
+        var errorDescription: String? {
+            switch self {
+            case .localProxyCredentialRejected:
+                return "Codex 官方路由需要当前 UniGate 安装的本地凭据，请在 UniGate 设置中重新导入 cc-switch 供应商。"
+            case .notLoggedIn:
+                return "Codex 官方供应商尚未登录，请先在 UniGate 中完成登录。"
+            case .refreshFailed:
+                return "Codex 官方登录已失效或刷新失败，请重新登录。"
+            case .accountChanged:
+                return "Codex 账号在请求期间已变更，为避免跨账号重放，请重试该请求。"
+            case .browserOriginDenied:
+                return "Codex 官方订阅不接受来自网页的本地代理请求。"
+            }
+        }
+    }
+
     private struct UpstreamTransportErrorContext: Sendable {
         let model: String
         let routeKey: String
@@ -84,6 +160,9 @@ final class LocalProxyServer: @unchecked Sendable {
     private let port: NWEndpoint.Port
     private let runtime: any LocalProxyRuntime
     private let managerToken: String?
+    private let localProxyToken: String?
+    private let codexOfficialAuthorizer: (any CodexOfficialAuthorizing)?
+    private let upstreamSessionFactory: UpstreamSessionFactory
     private let queue = DispatchQueue(label: "unigate.local-proxy")
     private var listener: NWListener?
 
@@ -91,12 +170,23 @@ final class LocalProxyServer: @unchecked Sendable {
         host: String = "127.0.0.1",
         port: UInt16 = 17888,
         runtime: any LocalProxyRuntime,
-        managerToken: String? = nil
+        managerToken: String? = nil,
+        localProxyToken: String? = nil,
+        codexOfficialAuthorizer: (any CodexOfficialAuthorizing)? = nil,
+        upstreamSessionFactory: @escaping UpstreamSessionFactory = { mode, originURL, isCodexOfficial in
+            if isCodexOfficial {
+                return NetworkPolicySession.makeCodexOfficialSession(for: mode, originURL: originURL)
+            }
+            return NetworkPolicySession.makeSession(for: mode)
+        }
     ) {
         self.host = NWEndpoint.Host(host)
         self.port = NWEndpoint.Port(rawValue: port)!
         self.runtime = runtime
         self.managerToken = managerToken ?? Self.configuredManagerToken()
+        self.localProxyToken = localProxyToken
+        self.codexOfficialAuthorizer = codexOfficialAuthorizer
+        self.upstreamSessionFactory = upstreamSessionFactory
     }
 
     func start() throws {
@@ -244,11 +334,21 @@ final class LocalProxyServer: @unchecked Sendable {
 
             if request.method == "GET", request.path == "/__manager/catalog" {
                 let snapshot = await MainActor.run { runtime.proxySnapshot() }
+                if Self.headerValue(request.headers, name: "origin") != nil,
+                   snapshot.catalog.providers.contains(where: { $0.backendKind == .codexOfficial }) {
+                    return .json(status: 403, body: ["error": "Browser access is denied for Codex Official metadata"])
+                }
                 return catalogResponse(snapshot)
             }
 
             if request.method == "GET", case let .models(appType) = ProxyRequestPath(request.path) {
                 let snapshot = await MainActor.run { runtime.modelListSnapshot() }
+                if Self.headerValue(request.headers, name: "origin") != nil,
+                   snapshot.catalog.providers.contains(where: {
+                       $0.backendKind == .codexOfficial && (appType == nil || $0.appType == appType)
+                   }) {
+                    return .json(status: 403, body: ["error": "Browser access is denied for Codex Official models"])
+                }
                 return await modelsResponse(snapshot, appType: appType)
             }
 
@@ -352,6 +452,20 @@ final class LocalProxyServer: @unchecked Sendable {
                 path: request.path,
                 body: request.body
             )
+            if case .codexOfficial = resolved.authorizationRequirement {
+                let inboundToken = Self.headerValue(request.headers, name: "authorization")
+                    .flatMap { Self.bearerToken(from: $0) }
+                guard LocalProxyAuthorizationPolicy.allows(
+                    bearerToken: inboundToken,
+                    expectedToken: localProxyToken,
+                    requirement: resolved.authorizationRequirement
+                ) else {
+                    throw CodexOfficialAuthorizationError.localProxyCredentialRejected
+                }
+                if Self.headerValue(request.headers, name: "origin") != nil {
+                    throw CodexOfficialAuthorizationError.browserOriginDenied
+                }
+            }
             providerFailureAppType = resolved.candidate.appType
             providerFailureContext = resolved.providerName
             resolvedLogFields = Self.resolvedLogFields(for: resolved)
@@ -406,11 +520,26 @@ final class LocalProxyServer: @unchecked Sendable {
             upstreamRequest.timeoutInterval = Self.upstreamRequestTimeout
             upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
 
-            for (key, value) in copyAllowedHeaders(request.headers, responseTransform: resolved.responseTransform) {
+            for (key, value) in copyAllowedHeaders(
+                request.headers,
+                responseTransform: resolved.responseTransform,
+                authorizationRequirement: resolved.authorizationRequirement
+            ) {
                 upstreamRequest.setValue(value, forHTTPHeaderField: key)
             }
             for (key, value) in resolved.headers {
                 upstreamRequest.setValue(value, forHTTPHeaderField: key)
+            }
+            var codexAuthorizationContext: CodexOAuthUpstreamAuthorization?
+            if case let .codexOfficial(providerRef) = resolved.authorizationRequirement {
+                let authorization = try await codexAuthorization(
+                    for: providerRef,
+                    forceRefresh: false,
+                    rejectingAccessToken: nil,
+                    rejectingAuthorizationFingerprint: nil
+                )
+                codexAuthorizationContext = authorization
+                Self.apply(authorization, to: &upstreamRequest)
             }
 
             await recordProxyLog(
@@ -422,12 +551,58 @@ final class LocalProxyServer: @unchecked Sendable {
                 ]
             )
             let upstreamStartedAt = Date()
-            let upstreamSession = NetworkPolicySession.makeSession(for: networkPolicy)
-            let (bytes, response) = try await upstreamSession.bytes(for: upstreamRequest)
+            let isCodexOfficial: Bool
+            if case .codexOfficial = resolved.authorizationRequirement {
+                isCodexOfficial = true
+            } else {
+                isCodexOfficial = false
+            }
+            var upstreamSession = upstreamSessionFactory(
+                networkPolicy,
+                resolved.upstreamURL,
+                isCodexOfficial
+            )
+            defer {
+                if isCodexOfficial {
+                    upstreamSession.finishTasksAndInvalidate()
+                }
+            }
+            var upstreamResult = try await upstreamSession.bytes(for: upstreamRequest)
+            if case let .codexOfficial(providerRef) = resolved.authorizationRequirement,
+               (upstreamResult.1 as? HTTPURLResponse)?.statusCode == 401 {
+                upstreamSession.invalidateAndCancel()
+                let authorization = try await codexAuthorization(
+                    for: providerRef,
+                    forceRefresh: true,
+                    rejectingAccessToken: codexAuthorizationContext?.accessToken,
+                    rejectingAuthorizationFingerprint: codexAuthorizationContext?.authorizationFingerprint
+                )
+                Self.apply(authorization, to: &upstreamRequest)
+                upstreamSession = upstreamSessionFactory(
+                    networkPolicy,
+                    resolved.upstreamURL,
+                    true
+                )
+                upstreamResult = try await upstreamSession.bytes(for: upstreamRequest)
+                if (upstreamResult.1 as? HTTPURLResponse)?.statusCode == 401 {
+                    _ = await codexOfficialAuthorizer?.markExpired(
+                        for: providerRef,
+                        rejectingAccessToken: authorization.accessToken,
+                        rejectingAuthorizationFingerprint: authorization.authorizationFingerprint
+                    )
+                    await MainActor.run {
+                        runtime.codexOfficialAuthorizationDidExpire(providerRef: providerRef)
+                    }
+                }
+            }
+            let (bytes, response) = upstreamResult
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 502
             statusCode = status
-            let headers = forwardResponseHeaders(http)
+            let headers = ProxyResponseHeaderPolicy.forwardedHeaders(
+                from: http,
+                stripCookies: isCodexOfficial
+            )
             let providerFailure = Self.isProviderFailureStatus(status)
             await recordProxyLog(
                 requestID: requestID,
@@ -595,6 +770,29 @@ final class LocalProxyServer: @unchecked Sendable {
                 ] + Self.usageLogFields(stats.upstreamUsage)
             )
             connection.cancel()
+        } catch let error as CodexOfficialAuthorizationError {
+            statusCode = error.statusCode
+            await MainActor.run {
+                if let metricKey {
+                    runtime.recordRequestMetric(
+                        key: metricKey,
+                        statusCode: error.statusCode,
+                        latencyMilliseconds: Self.elapsedMilliseconds(since: startedAt),
+                        errorMessage: error.localizedDescription,
+                        providerFailure: false
+                    )
+                }
+            }
+            await recordProxyLog(
+                level: .error,
+                requestID: requestID,
+                phase: "codex-auth-error",
+                fields: (resolvedLogFields ?? Self.unresolvedLogFields()) + networkPolicyLogFields + [
+                    LogField("status", error.statusCode),
+                    LogField("error", error.localizedDescription)
+                ]
+            )
+            send(Self.codexOfficialAuthorizationErrorResponse(error), on: connection)
         } catch let error as ProxyResolverError {
             let model = Self.requestedModel(in: request.body) ?? "<missing>"
             let fields = [
@@ -1181,6 +1379,18 @@ final class LocalProxyServer: @unchecked Sendable {
         ])
     }
 
+    private static func codexOfficialAuthorizationErrorResponse(
+        _ error: CodexOfficialAuthorizationError
+    ) -> HTTPResponse {
+        return .json(status: error.statusCode, body: [
+            "error": [
+                "message": error.localizedDescription,
+                "type": "authentication_error",
+                "code": error.responseCode
+            ]
+        ])
+    }
+
     private static func statusCode(for error: ProxyResolverError) -> Int {
         switch error {
         case .noRoute, .unavailableRouteTarget:
@@ -1468,16 +1678,105 @@ final class LocalProxyServer: @unchecked Sendable {
         return (protocolKind, appType)
     }
 
+    private func codexAuthorization(
+        for providerRef: ProviderRef,
+        forceRefresh: Bool,
+        rejectingAccessToken: String?,
+        rejectingAuthorizationFingerprint: String?
+    ) async throws -> CodexOAuthUpstreamAuthorization {
+        guard let codexOfficialAuthorizer else {
+            throw CodexOfficialAuthorizationError.notLoggedIn
+        }
+        do {
+            return try await codexOfficialAuthorizer.authorization(
+                for: providerRef,
+                forceRefresh: forceRefresh,
+                rejectingAccessToken: rejectingAccessToken,
+                rejectingAuthorizationFingerprint: rejectingAuthorizationFingerprint
+            )
+        } catch CodexOAuthError.notLoggedIn {
+            throw CodexOfficialAuthorizationError.notLoggedIn
+        } catch CodexOAuthError.authorizationSuperseded {
+            throw CodexOfficialAuthorizationError.accountChanged
+        } catch let oauthError as CodexOAuthError {
+            if case .tokenRequestFailed = oauthError,
+               !oauthError.isPermanentRefreshFailure {
+                throw oauthError
+            }
+            _ = await codexOfficialAuthorizer.markExpired(
+                for: providerRef,
+                rejectingAccessToken: rejectingAccessToken,
+                rejectingAuthorizationFingerprint: rejectingAuthorizationFingerprint
+            )
+            await MainActor.run {
+                runtime.codexOfficialAuthorizationDidExpire(providerRef: providerRef)
+            }
+            throw CodexOfficialAuthorizationError.refreshFailed
+        } catch {
+            throw error
+        }
+    }
+
+    private static func apply(
+        _ authorization: CodexOAuthUpstreamAuthorization,
+        to request: inout URLRequest
+    ) {
+        request.setValue(nil, forHTTPHeaderField: CodexOfficial.fedRAMPHeader)
+        for (key, value) in authorization.headers {
+            if key.caseInsensitiveCompare(CodexOfficial.originatorHeader) == .orderedSame,
+               request.value(forHTTPHeaderField: key) != nil {
+                continue
+            }
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+    }
+
     private func copyAllowedHeaders(
         _ headers: [String: String],
-        responseTransform: ProxyResponseTransform
+        responseTransform: ProxyResponseTransform,
+        authorizationRequirement: ProxyAuthorizationRequirement
     ) -> [String: String] {
         var copied: [String: String] = [:]
-        let allowed = responseTransform == .openAIChatToAnthropicMessages
-            ? ["accept", "user-agent"]
-            : ["accept", "anthropic-version", "anthropic-beta", "user-agent"]
+        let allowed: [String]
+        switch authorizationRequirement {
+        case .staticProvider:
+            allowed = responseTransform == .openAIChatToAnthropicMessages
+                ? ["accept", "user-agent"]
+                : ["accept", "anthropic-version", "anthropic-beta", "user-agent"]
+        case .codexOfficial:
+            allowed = [
+                "accept",
+                "conversation_id",
+                "openai-beta",
+                "originator",
+                "session-id",
+                "session_id",
+                "thread-id",
+                "user-agent",
+                "version",
+                "x-client-request-id",
+                "x-codex-beta-features",
+                "x-codex-installation-id",
+                "x-codex-parent-thread-id",
+                "x-codex-turn-metadata",
+                "x-codex-turn-state",
+                "x-codex-window-id",
+                "x-openai-internal-codex-responses-lite",
+                "x-openai-internal-codex-residency",
+                "x-openai-memgen-request",
+                "x-openai-subagent",
+                "x-oai-attestation",
+                "x-responsesapi-include-timing-metrics"
+            ]
+        }
+        let blocked = Set([
+            "authorization",
+            "chatgpt-account-id",
+            "proxy-authorization",
+            "x-api-key"
+        ])
         for key in allowed {
-            if let value = headers[key] {
+            if !blocked.contains(key), let value = headers[key] {
                 copied[key] = value
             }
         }
@@ -1547,7 +1846,13 @@ final class LocalProxyServer: @unchecked Sendable {
         ])
     }
 
-    private func forwardResponseHeaders(_ response: HTTPURLResponse?) -> [String: String] {
+}
+
+enum ProxyResponseHeaderPolicy {
+    static func forwardedHeaders(
+        from response: HTTPURLResponse?,
+        stripCookies: Bool = false
+    ) -> [String: String] {
         guard let response else {
             return [:]
         }
@@ -1561,11 +1866,14 @@ final class LocalProxyServer: @unchecked Sendable {
             "transfer-encoding",
             "upgrade"
         ])
+        let sensitiveCookies = Set(["set-cookie", "set-cookie2"])
 
         var headers: [String: String] = [:]
         for (key, value) in response.allHeaderFields {
             let name = String(describing: key)
-            if !blocked.contains(name.lowercased()) {
+            let normalizedName = name.lowercased()
+            if !blocked.contains(normalizedName),
+               !(stripCookies && sensitiveCookies.contains(normalizedName)) {
                 headers[name] = String(describing: value)
             }
         }
@@ -2018,6 +2326,10 @@ private func httpReasonPhrase(_ status: Int) -> String {
         return "No Content"
     case 400:
         return "Bad Request"
+    case 401:
+        return "Unauthorized"
+    case 403:
+        return "Forbidden"
     case 404:
         return "Not Found"
     case 408:

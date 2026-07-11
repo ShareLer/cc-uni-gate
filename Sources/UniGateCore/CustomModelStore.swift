@@ -190,6 +190,7 @@ public struct CustomModelState: Codable, Sendable {
                 && candidate.providerRef == candidate.upstreamProviderRef
                 && ModelRouteVisibility.isCandidateSelectable(
                     candidate,
+                    catalog: catalog,
                     uniGateModelScope: uniGateModelScope
                 )
         }) {
