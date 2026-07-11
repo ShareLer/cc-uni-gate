@@ -60,7 +60,8 @@ APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
 ZIP_PATH="$ARTIFACT_DIR/$ZIP_NAME"
 TEMP_ZIP_PATH="$ARTIFACT_DIR/$TEMP_ZIP_NAME"
 APPCAST_PATH="$ARTIFACT_DIR/appcast.xml"
-trap 'rm -f "$TEMP_ZIP_PATH"' EXIT
+APPCAST_INPUT_DIR="$ARTIFACT_DIR/appcast-input"
+trap 'rm -f "$TEMP_ZIP_PATH"; rm -rf "$APPCAST_INPUT_DIR"' EXIT
 
 # Sparkle's appcast generator is built from the checked-out Sparkle project.
 # Build it once into a stable local derived-data directory and reuse the tool
@@ -163,10 +164,13 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
 # Generate/refresh appcast.xml using the versioned zip file above. The download
 # URL prefix must point at the versioned GitHub Release asset directory so that
 # Sparkle can resolve each enclosure URL correctly.
+rm -rf "$APPCAST_INPUT_DIR"
+mkdir -p "$APPCAST_INPUT_DIR"
+cp "$ZIP_PATH" "$APPCAST_INPUT_DIR/$ZIP_NAME"
 "$TOOLS_DIR/Build/Products/Release/generate_appcast" \
   --download-url-prefix "$DOWNLOAD_PREFIX" \
   -o "$APPCAST_PATH" \
-  "$ARTIFACT_DIR"
+  "$APPCAST_INPUT_DIR"
 
 if [[ "$UPLOAD_TO_GITHUB" == "1" ]]; then
   # Publish step:
