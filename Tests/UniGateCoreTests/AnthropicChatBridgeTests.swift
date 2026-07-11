@@ -89,6 +89,49 @@ struct AnthropicChatBridgeTests {
     }
 
     @Test
+    func placesToolResultsBeforeFollowingUserText() throws {
+        let request: [String: Any] = [
+            "model": "luban-glm",
+            "messages": [
+                [
+                    "role": "assistant",
+                    "content": [[
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "weather",
+                        "input": ["city": "Beijing"]
+                    ]]
+                ],
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "15 C"
+                        ],
+                        [
+                            "type": "text",
+                            "text": "Summarize in Celsius"
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        let chat = try AnthropicChatBridge.chatRequest(from: request)
+        let messages = try #require(chat["messages"] as? [[String: Any]])
+
+        #expect(messages.count == 3)
+        #expect(messages[0]["role"] as? String == "assistant")
+        #expect(messages[1]["role"] as? String == "tool")
+        #expect(messages[1]["tool_call_id"] as? String == "toolu_1")
+        #expect(messages[1]["content"] as? String == "15 C")
+        #expect(messages[2]["role"] as? String == "user")
+        #expect(messages[2]["content"] as? String == "Summarize in Celsius")
+    }
+
+    @Test
     func convertsOpenAIChatResponseToAnthropicMessagesResponse() throws {
         let body = try AnthropicChatBridge.anthropicBody(
             from: [

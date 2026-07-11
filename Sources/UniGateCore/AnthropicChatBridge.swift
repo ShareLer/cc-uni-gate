@@ -224,7 +224,7 @@ public enum AnthropicChatBridge {
             }
         }
 
-        var messages: [[String: Any]] = []
+        var messages = resultMessages
         if !contentParts.isEmpty || !toolCalls.isEmpty || (role == "assistant" && !reasoningParts.isEmpty) {
             var message: [String: Any] = ["role": role]
             if contentParts.isEmpty {
@@ -246,7 +246,6 @@ public enum AnthropicChatBridge {
             }
             messages.append(message)
         }
-        messages.append(contentsOf: resultMessages)
         return messages
     }
 

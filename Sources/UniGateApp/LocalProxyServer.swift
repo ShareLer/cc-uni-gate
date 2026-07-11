@@ -180,21 +180,26 @@ final class LocalProxyServer: @unchecked Sendable {
                 next.append(chunk)
             }
 
-            if let request = HTTPRequest.parse(next) {
+            switch HTTPRequest.parse(next) {
+            case let .complete(request):
                 Task {
                     await self.handle(request, on: connection)
                 }
-            } else if !sentContinue, HTTPRequest.expectsContinue(next) {
+            case .incomplete:
+                if !sentContinue, HTTPRequest.expectsContinue(next) {
                 let pendingData = next
                 connection.send(content: Data("HTTP/1.1 100 Continue\r\n\r\n".utf8), completion: .contentProcessed { [weak self] _ in
                     self?.receive(on: connection, data: pendingData, sentContinue: true)
                 })
-            } else if next.count > 10_485_760 {
-                send(.json(status: 413, body: ["error": "Request too large"], allowsCORS: true), on: connection)
-            } else if error != nil || isComplete {
-                connection.cancel()
-            } else {
-                receive(on: connection, data: next, sentContinue: sentContinue)
+                } else if next.count > 10_485_760 {
+                    send(.json(status: 413, body: ["error": "Request too large"], allowsCORS: true), on: connection)
+                } else if error != nil || isComplete {
+                    connection.cancel()
+                } else {
+                    receive(on: connection, data: next, sentContinue: sentContinue)
+                }
+            case let .malformed(message):
+                send(.json(status: 400, body: ["error": message], allowsCORS: true), on: connection)
             }
         }
     }
@@ -1180,7 +1185,8 @@ final class LocalProxyServer: @unchecked Sendable {
         switch error {
         case .noRoute, .unavailableRouteTarget:
             return 404
-        case .invalidJSONBody, .missingModel, .transformRequired, .streamingTransformUnsupported, .invalidUpstreamURL:
+        case .invalidJSONBody, .invalidRequest, .missingModel, .transformRequired, .streamingTransformUnsupported,
+             .invalidUpstreamURL:
             return 400
         case .missingProvider, .missingBaseURL:
             return 502
@@ -1208,6 +1214,8 @@ final class LocalProxyServer: @unchecked Sendable {
             return "missing_model"
         case .invalidJSONBody:
             return "invalid_json"
+        case .invalidRequest:
+            return "invalid_request"
         case .transformRequired:
             return "unsupported_protocol"
         case .streamingTransformUnsupported:
@@ -1571,23 +1579,29 @@ private struct HTTPRequest {
     let headers: [String: String]
     let body: Data
 
-    static func parse(_ data: Data) -> HTTPRequest? {
+    enum ParseResult {
+        case complete(HTTPRequest)
+        case incomplete
+        case malformed(String)
+    }
+
+    static func parse(_ data: Data) -> ParseResult {
         guard let headerRange = data.range(of: Data("\r\n\r\n".utf8)) else {
-            return nil
+            return .incomplete
         }
 
         let headerData = data[..<headerRange.lowerBound]
         guard let headerText = String(data: headerData, encoding: .utf8) else {
-            return nil
+            return .malformed("Malformed HTTP headers")
         }
 
         let lines = headerText.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else {
-            return nil
+            return .malformed("Malformed HTTP request line")
         }
         let requestParts = requestLine.split(separator: " ", maxSplits: 2).map(String.init)
         guard requestParts.count >= 2 else {
-            return nil
+            return .malformed("Malformed HTTP request line")
         }
 
         var headers: [String: String] = [:]
@@ -1601,17 +1615,30 @@ private struct HTTPRequest {
         }
 
         let bodyStart = headerRange.upperBound
-        let bodyLength = Int(headers["content-length"] ?? "0") ?? 0
-        guard data.count >= bodyStart + bodyLength else {
-            return nil
+        let bodyLength: Int
+        if let rawContentLength = headers["content-length"] {
+            guard let parsedLength = Int(rawContentLength), parsedLength >= 0 else {
+                return .malformed("Invalid Content-Length")
+            }
+            bodyLength = parsedLength
+        } else {
+            bodyLength = 0
         }
 
-        return HTTPRequest(
+        let (bodyEnd, overflowed) = bodyStart.addingReportingOverflow(bodyLength)
+        guard !overflowed else {
+            return .malformed("Invalid Content-Length")
+        }
+        guard data.count >= bodyEnd else {
+            return .incomplete
+        }
+
+        return .complete(HTTPRequest(
             method: requestParts[0],
             path: requestParts[1],
             headers: headers,
-            body: Data(data[bodyStart..<(bodyStart + bodyLength)])
-        )
+            body: Data(data[bodyStart..<bodyEnd])
+        ))
     }
 
     static func expectsContinue(_ data: Data) -> Bool {

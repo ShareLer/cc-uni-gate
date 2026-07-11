@@ -68,6 +68,86 @@ struct LocalProxyServerTests {
 
     @Test
     @MainActor
+    func rejectsNegativeContentLengthWithoutCrashing() async throws {
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(routes: [:]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: "POST /__manager/health HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\nContent-Length: -1\r\n\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 400"))
+        #expect(response.contains("Invalid Content-Length"))
+    }
+
+    @Test
+    @MainActor
+    func rejectsOverflowingContentLengthWithoutCrashing() async throws {
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(routes: [:]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: "POST /__manager/health HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\nContent-Length: 9223372036854775807\r\n\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 400"))
+        #expect(response.contains("Invalid Content-Length"))
+    }
+
+    @Test
+    @MainActor
+    func malformedProxyJSONReturns400WithoutProviderFailure() async throws {
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(routes: [:]),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: """
+            POST /v1/responses HTTP/1.1\r
+            Host: 127.0.0.1:\(proxyPort)\r
+            Content-Type: application/json\r
+            Content-Length: 1\r
+            \r
+            {
+            """
+        )
+
+        #expect(response.contains("HTTP/1.1 400"))
+        #expect(response.contains(#""invalid_json""#))
+        #expect(runtime.failures.isEmpty)
+    }
+
+    @Test
+    @MainActor
     func malformedOpenAIChatStreamChunkBecomesAnthropicErrorEvent() async throws {
         let upstream = try MockSSEUpstream(
             body: Data("data: {not json}\n\n".utf8)

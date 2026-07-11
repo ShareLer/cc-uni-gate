@@ -14,6 +14,7 @@ public struct ResolvedRoute: Sendable {
 
 public enum ProxyResolverError: Error, LocalizedError, Equatable {
     case invalidJSONBody
+    case invalidRequest(String)
     case missingModel
     case noRoute(routeKey: String)
     case unavailableRouteTarget(routeKey: String, providerRef: String)
@@ -27,6 +28,8 @@ public enum ProxyResolverError: Error, LocalizedError, Equatable {
         switch self {
         case .invalidJSONBody:
             return "Request body must be a JSON object"
+        case let .invalidRequest(message):
+            return message
         case .missingModel:
             return "Request body must include a string model"
         case let .noRoute(routeKey):
@@ -108,9 +111,17 @@ public enum ProxyResolver {
         var outboundBody = json
         outboundBody["model"] = ModelNameNormalizer.stripOneMSuffix(candidate.upstreamModel)
         if responseTransform == .openAIChatToCodexResponse {
-            outboundBody = try CodexChatBridge.chatRequest(from: outboundBody)
+            do {
+                outboundBody = try CodexChatBridge.chatRequest(from: outboundBody)
+            } catch let error as CodexChatBridgeError {
+                throw ProxyResolverError.invalidRequest(error.localizedDescription)
+            }
         } else if responseTransform == .openAIChatToAnthropicMessages {
-            outboundBody = try AnthropicChatBridge.chatRequest(from: outboundBody)
+            do {
+                outboundBody = try AnthropicChatBridge.chatRequest(from: outboundBody)
+            } catch let error as AnthropicChatBridgeError {
+                throw ProxyResolverError.invalidRequest(error.localizedDescription)
+            }
         }
         injectPromptCacheKeyIfConfigured(
             into: &outboundBody,
@@ -242,7 +253,12 @@ public enum ProxyResolver {
         guard !body.isEmpty else {
             throw ProxyResolverError.invalidJSONBody
         }
-        let value = try JSONSerialization.jsonObject(with: body)
+        let value: Any
+        do {
+            value = try JSONSerialization.jsonObject(with: body)
+        } catch {
+            throw ProxyResolverError.invalidJSONBody
+        }
         guard let object = value as? [String: Any] else {
             throw ProxyResolverError.invalidJSONBody
         }
@@ -278,27 +294,59 @@ public enum ProxyResolver {
             throw ProxyResolverError.missingBaseURL(provider: provider.name)
         }
 
-        let base = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if isFullURL(provider) {
+            guard let url = URL(string: baseURL), url.scheme != nil, url.host != nil else {
+                throw ProxyResolverError.invalidUpstreamURL(baseURL)
+            }
+            return url
+        }
+
+        guard
+            var components = URLComponents(string: baseURL),
+            components.scheme != nil,
+            components.host != nil
+        else {
+            throw ProxyResolverError.invalidUpstreamURL(baseURL)
+        }
+        let inboundComponents = URLComponents(string: inboundPath)
+        let inboundPathOnly = inboundComponents?.percentEncodedPath
+            ?? inboundPath.split(separator: "?", maxSplits: 1).first.map(String.init)
+            ?? inboundPath
         let endpoint = normalizeEndpoint(
             provider: provider,
-            inboundPath: inboundPath,
+            inboundPath: inboundPathOnly,
             protocolKind: protocolKind,
             apiFormat: apiFormat
         )
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let raw: String
-        if baseEndsWithAnyEndpoint(base, endpoints: endpointSuffixVariants(for: endpoint)) {
-            raw = base
+        let basePath = components.percentEncodedPath
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let path: String
+        if baseEndsWithAnyEndpoint("/\(basePath)", endpoints: endpointSuffixVariants(for: endpoint)) {
+            path = "/\(basePath)"
         } else if provider.appType == UniGateAppRegistry.codex, isOriginOnlyURL(baseURL) {
-            raw = "\(base)/v1/\(endpoint)"
+            path = "/v1/\(endpoint)"
         } else {
-            raw = "\(base)/\(endpoint)"
+            path = "/\([basePath, endpoint].filter { !$0.isEmpty }.joined(separator: "/"))"
         }
-        let normalized = raw.replacingOccurrences(of: "/v1/v1/", with: "/v1/")
-        guard let url = URL(string: normalized) else {
-            throw ProxyResolverError.invalidUpstreamURL(normalized)
+        components.percentEncodedPath = path.replacingOccurrences(of: "/v1/v1/", with: "/v1/")
+        let queryItems = (components.queryItems ?? []) + (inboundComponents?.queryItems ?? [])
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components.url else {
+            throw ProxyResolverError.invalidUpstreamURL(baseURL)
         }
         return url
+    }
+
+    private static func isFullURL(_ provider: ImportedProvider) -> Bool {
+        switch JSONValueParser.value(provider.meta, ["isFullUrl"]) {
+        case let .bool(value):
+            return value
+        case let .number(value):
+            return value != 0
+        default:
+            return false
+        }
     }
 
     private static func normalizeEndpoint(

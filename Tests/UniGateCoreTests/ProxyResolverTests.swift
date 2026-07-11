@@ -41,6 +41,151 @@ struct ProxyResolverTests {
     }
 
     @Test
+    func usesConfiguredFullURLWithoutAppendingEndpoint() throws {
+        let provider = ImportedProvider(
+            id: "full-url",
+            appType: "codex",
+            name: "Full URL Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://gateway.example.com/custom/invoke?api-version=2026-01-01",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: ["isFullUrl": .bool(true)]
+        )
+        let candidate = candidate(provider: provider)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            path: "/openai/v1/responses?trace=client",
+            body: Data(#"{"model":"gpt-5.5","input":"hello"}"#.utf8)
+        )
+
+        #expect(
+            resolved.upstreamURL.absoluteString
+                == "https://gateway.example.com/custom/invoke?api-version=2026-01-01"
+        )
+    }
+
+    @Test
+    func preservesBaseAndInboundQueryItemsWhenAppendingEndpoint() throws {
+        let provider = ImportedProvider(
+            id: "query-base",
+            appType: "codex",
+            name: "Query Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com/v1?api-version=2026-01-01",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let candidate = candidate(provider: provider)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            path: "/openai/v1/responses?trace=client",
+            body: Data(#"{"model":"gpt-5.5","input":"hello"}"#.utf8)
+        )
+
+        #expect(
+            resolved.upstreamURL.absoluteString
+                == "https://api.example.com/v1/responses?api-version=2026-01-01&trace=client"
+        )
+    }
+
+    @Test
+    func classifiesUnsupportedCodexBridgeInputAsInvalidRequest() throws {
+        let provider = ImportedProvider(
+            id: "chat",
+            appType: "codex",
+            name: "Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let candidate = candidate(provider: provider)
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        #expect(throws: ProxyResolverError.invalidRequest(
+            "Codex Responses input item is not supported by the OpenAI Chat bridge: tools"
+        )) {
+            _ = try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .codexResponses,
+                path: "/v1/responses",
+                body: Data(#"{"model":"gpt-5.5","input":"hello","tools":[]}"#.utf8)
+            )
+        }
+    }
+
+    @Test
+    func classifiesUnsupportedAnthropicBridgeBlockAsInvalidRequest() throws {
+        let provider = ImportedProvider(
+            id: "chat",
+            appType: "claude",
+            name: "Chat Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiChat,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["env": .object(["ANTHROPIC_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let candidate = ModelCandidate(
+            logicalModel: "claude-sonnet",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .anthropicMessages,
+            apiFormat: provider.apiFormat,
+            upstreamModel: "gpt-4.1",
+            baseURL: provider.baseURL,
+            requiresTransform: true,
+            label: nil,
+            supportsLongContext: false
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [candidate])
+        let routes = RouteStore.defaultState(candidates: catalog.candidates)
+
+        #expect(throws: ProxyResolverError.invalidRequest(
+            "Anthropic Messages content block is not supported by the OpenAI Chat bridge: document"
+        )) {
+            _ = try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .anthropicMessages,
+                appType: "claude",
+                path: "/v1/messages",
+                body: Data(
+                    #"{"model":"claude-sonnet","messages":[{"role":"user","content":[{"type":"document"}]}]}"#.utf8
+                )
+            )
+        }
+    }
+
+    @Test
     func scopedProxyCatalogRejectsCodexModelOutsideUniGateScope() throws {
         let dasu = ImportedProvider(
             id: "dasu",
@@ -396,7 +541,10 @@ struct ProxyResolverTests {
             body: Data(#"{"model":"luban-glm","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":true}"#.utf8)
         )
 
-        #expect(resolved.upstreamURL.absoluteString == "http://tokenservice-offline-test.intra.xiaojukeji.com/v1/chat/completions")
+        #expect(
+            resolved.upstreamURL.absoluteString
+                == "http://tokenservice-offline-test.intra.xiaojukeji.com/v1/chat/completions?beta=true"
+        )
         #expect(resolved.responseTransform == .openAIChatToAnthropicMessages)
         #expect(resolved.headers["authorization"] == "Bearer luban-key")
         #expect(resolved.headers["x-api-key"] == nil)
