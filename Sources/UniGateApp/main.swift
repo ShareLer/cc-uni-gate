@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
             pruneDiscoveryState(for: importedSnapshot.catalog)
             applyImportedConfigurationSnapshot(importedSnapshot)
+            try migrateLegacyCodexVisibilityIfNeeded()
             routes = try loadProxyRoutes()
             catalogLoadError = nil
             if let recordEventMessage {
@@ -740,6 +741,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     appState.updateDiscoveryState(nextState)
                     try discoveryStore.save(nextState)
                     applyImportedConfigurationSnapshot(currentImportedSnapshot)
+                    try migrateLegacyCodexVisibilityIfNeeded()
                     routes = try loadProxyRoutes()
                     catalogLoadError = nil
                     recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
@@ -780,6 +782,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             applyImportedConfigurationSnapshot(importedSnapshot)
+            try migrateLegacyCodexVisibilityIfNeeded()
             routes = try loadProxyRoutes()
             catalogLoadError = nil
             publishState()
@@ -832,11 +835,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             let authorizationFingerprint = currentCodexOfficialAuthorizationFingerprint(for: provider)
-            if nextState.results[provider.ref.description]?.isCurrent(
-                for: provider,
-                codexOfficialAuthorizationFingerprint: authorizationFingerprint
-            ) == true {
-                continue
+            if let cachedResult = nextState.results[provider.ref.description],
+               cachedResult.isCurrent(
+                   for: provider,
+                   codexOfficialAuthorizationFingerprint: authorizationFingerprint
+               ) {
+                let retriesPendingCodexMigration = provider.appType == UniGateAppRegistry.codex
+                    && customModels.codexVisibilityMigration?.pendingProviderRefs.contains(provider.ref) == true
+                    && !cachedResult.hasUsableModelBaseline
+                if !retriesPendingCodexMigration {
+                    continue
+                }
             }
             let result = await discoverModels(for: provider)
             guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
@@ -861,6 +870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             discoveryState = validatedDiscoveryState(nextState, validProviders: validProviders)
             try discoveryStore.save(discoveryState)
             catalog = try loadExpandedCatalog()
+            try migrateLegacyCodexVisibilityIfNeeded()
             routes = try loadProxyRoutes()
             recordEvent(.info, "已自动刷新模型探测缓存")
             publishState()
@@ -1236,6 +1246,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         integrationSnapshot = snapshot.integrationSnapshot
     }
 
+    private func migrateLegacyCodexVisibilityIfNeeded() throws {
+        guard customModels.migrateLegacyCodexVisibility(
+            visibleModels: preferences.visibleModels,
+            catalog: catalog,
+            readyProviderRefs: codexVisibilityMigrationReadyProviderRefs(),
+            pinnedScope: uniGateModelScope
+        ) else {
+            return
+        }
+        try customModelStore.save(customModels)
+    }
+
+    private func codexVisibilityMigrationReadyProviderRefs() -> Set<ProviderRef> {
+        let codexProviders = catalog.providers.filter {
+            $0.appType == UniGateAppRegistry.codex
+        }
+        let discoveryProviderRefs = Set(discoverableProviders(from: codexProviders).compactMap {
+            ProviderModelDiscovery.fetchPlan(for: $0) == nil ? nil : $0.ref
+        })
+        var readyProviderRefs = Set(codexProviders.map(\.ref)).subtracting(discoveryProviderRefs)
+        for result in discoveryState.results.values
+        where result.appType == UniGateAppRegistry.codex
+            && result.hasUsableModelBaseline {
+            readyProviderRefs.insert(result.providerRef)
+        }
+        return readyProviderRefs
+    }
+
     private func pruneDiscoveryState(for catalog: ProviderCatalog) {
         let allProviders = catalog.providers + customProviders.importedProviders()
         let nextState = validatedDiscoveryState(
@@ -1559,17 +1597,17 @@ extension AppDelegate: LocalProxyRuntime {
     }
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
-        // Model listing must use the full catalog, not proxyCatalog().
-        // UniGate's main UI is allowed to hide discovered models by default,
-        // but cc-switch still calls /v1/models to learn the broader set that
-        // UniGate can route to. If this ever follows proxyCatalog(), you create
-        // a chicken-and-egg loop:
-        // 1. UniGate UI only shows cc-switch-configured + force-enabled models.
-        // 2. cc-switch only sees what /v1/models returns.
-        // 3. /v1/models would then only return what the UI already shows.
-        // The result is that discovered-but-hidden models can never be learned
-        // by cc-switch again.
-        ProxyRuntimeSnapshot(catalog: catalog, routes: routes, networkPolicy: preferences.networkPolicy)
+        let effectiveCatalog = proxyCatalog()
+        let modelListCatalog = ProviderCatalog(
+            providers: catalog.providers,
+            candidates: catalog.candidates.filter { $0.appType != UniGateAppRegistry.codex }
+                + effectiveCatalog.candidates.filter { $0.appType == UniGateAppRegistry.codex }
+        )
+        return ProxyRuntimeSnapshot(
+            catalog: modelListCatalog,
+            routes: routes,
+            networkPolicy: preferences.networkPolicy
+        )
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
@@ -1582,6 +1620,7 @@ extension AppDelegate: LocalProxyRuntime {
         ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
         pruneDiscoveryState(for: importedSnapshot.catalog)
         applyImportedConfigurationSnapshot(importedSnapshot)
+        try migrateLegacyCodexVisibilityIfNeeded()
         routes = try loadProxyRoutes()
         catalogLoadError = nil
         recordEvent(.info, "已重新加载 cc-switch DB")
@@ -1617,7 +1656,8 @@ extension AppDelegate: LocalProxyRuntime {
             catalog: catalog,
             preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
                 availableIn: catalog
-            )
+            ),
+            providerRefMigrationPlan: customModels.codexProviderRefMigrationPlan()
         )
     }
 

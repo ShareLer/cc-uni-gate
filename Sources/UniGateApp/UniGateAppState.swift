@@ -190,12 +190,16 @@ final class UniGateAppState: ObservableObject {
     }
 
     var displayRouteGroups: [ModelRouteGroup] {
-        let candidates = scopedBaseCandidates()
         let routeKeys = visibleRouteKeys
-        let visibleGroups = ModelRouteGrouping.groups(
-            routeKeys: routeKeys,
-            candidates: candidates
+        let codexGroups = routeKeys
+            .filter { $0.appType == UniGateAppRegistry.codex }
+            .map { ModelRouteGroup(routeKey: $0, routeKeys: [$0]) }
+        let nonCodexRouteKeys = routeKeys.filter { $0.appType != UniGateAppRegistry.codex }
+        let nonCodexGroups = ModelRouteGrouping.groups(
+            routeKeys: nonCodexRouteKeys,
+            candidates: scopedBaseCandidates().filter { $0.appType != UniGateAppRegistry.codex }
         )
+        let visibleGroups = nonCodexGroups + codexGroups
         let visibleGroupRouteKeys = Set(visibleGroups.flatMap(\.routeKeys))
         let customGroups = customModels.models.compactMap { definition -> ModelRouteGroup? in
             let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
@@ -230,6 +234,9 @@ final class UniGateAppState: ObservableObject {
 
     func candidates(for routeKey: ModelRouteKey) -> [ModelCandidate] {
         guard let definition = customModel(for: routeKey) else {
+            if routeKey.appType == UniGateAppRegistry.codex {
+                return customModels.codexDisplayCandidates(for: routeKey, from: catalog)
+            }
             let candidates = catalog.candidates(for: routeKey)
             return candidates.filter(isCandidateInUniGateScope)
         }
@@ -243,6 +250,7 @@ final class UniGateAppState: ObservableObject {
             candidates,
             activeProviderRef: activeProviderRef(for: routeGroup),
             restrictToActiveDisplayIdentity: !isCustomModel
+                && routeGroup.routeKey.appType != UniGateAppRegistry.codex
         )
             .sorted { lhs, rhs in
                 let providerCompare = lhs.providerName.localizedStandardCompare(rhs.providerName)
@@ -308,6 +316,9 @@ final class UniGateAppState: ObservableObject {
 
     func modelDetailText(for routeGroup: ModelRouteGroup) -> String {
         let routeKey = routeGroup.routeKey
+        if isCodexRouteDisabled(routeKey) {
+            return "已停用"
+        }
         if let availability = customModelAvailability(for: routeKey) {
             switch availability {
             case .configured:
@@ -324,6 +335,9 @@ final class UniGateAppState: ObservableObject {
         }
         if routeStatusText(for: routeGroup) == "目标失效" {
             return "当前路由目标失效"
+        }
+        if routeStatusText(for: routeGroup) == "未配置目标" {
+            return "尚未选择可用的转发目标"
         }
         guard let active = activeCandidate(for: routeGroup) else {
             return ProviderDisplay.appTypeLabel(routeKey.appType)
@@ -349,6 +363,9 @@ final class UniGateAppState: ObservableObject {
         guard definition.hasSelectedTarget(in: catalog) else {
             return .missingTarget
         }
+        if routeKey.appType == UniGateAppRegistry.codex {
+            return .configured
+        }
         guard isConfigured(routeKey) else {
             return definition.forceEnabled ? .forceEnabled : .unconfigured
         }
@@ -356,6 +373,15 @@ final class UniGateAppState: ObservableObject {
     }
 
     func isRouteOperable(_ routeGroup: ModelRouteGroup) -> Bool {
+        if isCodexRouteDisabled(routeGroup.routeKey) {
+            return false
+        }
+        if routeGroup.routeKey.appType == UniGateAppRegistry.codex,
+           customModel(for: routeGroup.routeKey) == nil {
+            return candidates(for: routeGroup).contains {
+                !$0.isDiscoveryStale(in: catalog)
+            }
+        }
         switch customModelAvailability(for: routeGroup.routeKey) {
         case .none, .configured, .forceEnabled:
             return true
@@ -367,6 +393,9 @@ final class UniGateAppState: ObservableObject {
     }
 
     func routeStatusText(for routeGroup: ModelRouteGroup) -> String? {
+        if isCodexRouteDisabled(routeGroup.routeKey) {
+            return "已停用"
+        }
         if let availability = customModelAvailability(for: routeGroup.routeKey) {
             switch availability {
             case .unconfigured:
@@ -382,6 +411,11 @@ final class UniGateAppState: ObservableObject {
 
         if let active = activeCandidate(for: routeGroup), active.isDiscoveryStale(in: catalog) {
             return "目标失效"
+        }
+
+        if routeGroup.routeKey.appType == UniGateAppRegistry.codex,
+           candidates(for: routeGroup).isEmpty {
+            return "未配置目标"
         }
 
         guard routes.routes[routeGroup.routeKey.description] != nil else {
@@ -411,6 +445,138 @@ final class UniGateAppState: ObservableObject {
         }
     }
 
+    func isPinnedCodexRoute(_ routeKey: ModelRouteKey) -> Bool {
+        routeKey.appType == UniGateAppRegistry.codex && uniGateModelScope.contains(routeKey)
+    }
+
+    func isCodexRouteDisabled(_ routeKey: ModelRouteKey) -> Bool {
+        customModels.isCodexRouteDisabled(routeKey, pinnedScope: uniGateModelScope)
+    }
+
+    func isCodexRouteExplicit(_ routeKey: ModelRouteKey) -> Bool {
+        customModels.codexRoutePolicy(for: routeKey)?.targetMode == .explicit
+    }
+
+    func codexRouteEditorCandidates(
+        preserving definition: CustomModelDefinition? = nil
+    ) -> [ModelCandidate] {
+        customModels.baseCandidates(
+            from: catalog,
+            preserving: definition?.targets ?? [],
+            preservingRouteKeys: definition.map {
+                [ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: $0.name)]
+            } ?? [],
+            includeCandidate: isCurrentDiscoveryCandidate
+        ).filter { $0.appType == UniGateAppRegistry.codex }
+    }
+
+    func codexRouteDraft(for routeKey: ModelRouteKey) -> CustomModelDefinition? {
+        guard routeKey.appType == UniGateAppRegistry.codex,
+              customModel(for: routeKey) == nil else {
+            return nil
+        }
+
+        if let policy = customModels.codexRoutePolicy(for: routeKey),
+           policy.targetMode == .explicit {
+            return CustomModelDefinition(
+                appType: UniGateAppRegistry.codex,
+                name: routeKey.logicalModel,
+                targets: policy.targets,
+                selectedTargetID: policy.selectedTargetID
+            )
+        }
+
+        let automaticCandidates = customModels.codexDisplayCandidates(for: routeKey, from: catalog)
+        let targets = automaticCandidates.map { candidate in
+            CustomModelTarget(routeKey: candidate.routeKey, providerRef: candidate.providerRef)
+        }
+        let active = activeCandidate(for: routeKey)
+        let selectedTargetID = active.flatMap { active in
+            zip(automaticCandidates, targets).first {
+                $0.0.providerRef == active.providerRef && $0.0.routeKey == active.routeKey
+            }?.1.id
+        } ?? targets.first?.id
+        return CustomModelDefinition(
+            appType: UniGateAppRegistry.codex,
+            name: routeKey.logicalModel,
+            targets: targets,
+            selectedTargetID: selectedTargetID
+        )
+    }
+
+    @discardableResult
+    func saveCodexRoute(
+        _ definition: CustomModelDefinition,
+        for routeKey: ModelRouteKey
+    ) -> Bool {
+        guard routeKey.appType == UniGateAppRegistry.codex,
+              definition.appType == UniGateAppRegistry.codex,
+              ModelNameNormalizer.matches(definition.name, routeKey.logicalModel) else {
+            showToast("Codex 路由模型不匹配")
+            return false
+        }
+        if isPinnedCodexRoute(routeKey) {
+            guard let selectedTarget = definition.selectedTarget,
+                  catalog.candidates.contains(where: { candidate in
+                      candidate.routeKey == selectedTarget.routeKey
+                          && candidate.providerRef == selectedTarget.providerRef
+                          && candidate.providerRef == candidate.upstreamProviderRef
+                          && candidate.source != .staleDiscovered
+                          && isCurrentDiscoveryCandidate(candidate)
+                  }) else {
+                showToast("固定模型必须保留一个可用路由")
+                return false
+            }
+        }
+        var nextCustomModels = customModels
+        nextCustomModels.setCodexExplicitRoute(
+            routeKey: routeKey,
+            targets: definition.targets,
+            selectedTargetID: definition.selectedTargetID
+        )
+        selectedAppType = UniGateAppRegistry.codex
+        expandedRouteKeyDescription = nil
+        onSaveSettings?(preferences, nextCustomModels)
+        if let selectedTarget = definition.selectedTarget {
+            onSwitchProvider?(
+                [routeKey],
+                CustomModelState.syntheticProviderRef(
+                    appType: UniGateAppRegistry.codex,
+                    target: selectedTarget
+                )
+            )
+        }
+        return true
+    }
+
+    func restoreCodexAutomaticRoute(_ routeKey: ModelRouteKey) {
+        guard routeKey.appType == UniGateAppRegistry.codex else {
+            return
+        }
+        var nextCustomModels = customModels
+        nextCustomModels.restoreCodexAutomaticRoute(routeKey: routeKey)
+        expandedRouteKeyDescription = nil
+        onSaveSettings?(preferences, nextCustomModels)
+        if let candidate = candidates(for: routeKey).first(where: {
+            !$0.isDiscoveryStale(in: catalog)
+        }) {
+            onSwitchProvider?([routeKey], candidate.providerRef)
+        }
+    }
+
+    func setCodexRouteDisabled(_ isDisabled: Bool, routeKey: ModelRouteKey) {
+        guard routeKey.appType == UniGateAppRegistry.codex else {
+            return
+        }
+        if isDisabled, isPinnedCodexRoute(routeKey) {
+            return
+        }
+        var nextCustomModels = customModels
+        nextCustomModels.setCodexRouteDisabled(isDisabled, routeKey: routeKey)
+        expandedRouteKeyDescription = nil
+        onSaveSettings?(preferences, nextCustomModels)
+    }
+
     @discardableResult
     func saveCustomModel(
         _ definition: CustomModelDefinition,
@@ -438,6 +604,13 @@ final class UniGateAppState: ObservableObject {
             ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
         }
         let newRouteKey = ModelRouteKey(appType: savedDefinition.appType, logicalModel: savedDefinition.name)
+        let movedCodexDisabledState = oldRouteKey.flatMap { oldRouteKey -> Bool? in
+            guard oldRouteKey.appType == UniGateAppRegistry.codex,
+                  oldRouteKey != newRouteKey else {
+                return nil
+            }
+            return nextCustomModels.codexRoutePolicy(for: oldRouteKey)?.isDisabled
+        }
 
         if let existing,
            let index = nextCustomModels.models.firstIndex(where: { $0.id == existing.id }) {
@@ -448,6 +621,13 @@ final class UniGateAppState: ObservableObject {
             nextCustomModels.models.append(savedDefinition)
         }
         nextCustomModels = nextCustomModels.normalized()
+        if let oldRouteKey, oldRouteKey != newRouteKey,
+           oldRouteKey.appType == UniGateAppRegistry.codex {
+            nextCustomModels.removeCodexRoutePolicy(routeKey: oldRouteKey)
+            if movedCodexDisabledState == true {
+                nextCustomModels.setCodexRouteDisabled(true, routeKey: newRouteKey)
+            }
+        }
 
         var nextPreferences = preferences
         if var visibleModels = nextPreferences.visibleModels {
@@ -471,6 +651,9 @@ final class UniGateAppState: ObservableObject {
         nextCustomModels.models.removeAll { $0.id == definition.id }
 
         let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+        if routeKey.appType == UniGateAppRegistry.codex {
+            nextCustomModels.removeCodexRoutePolicy(routeKey: routeKey)
+        }
         var nextPreferences = preferences
         if var visibleModels = nextPreferences.visibleModels {
             visibleModels.remove(routeKey.description)

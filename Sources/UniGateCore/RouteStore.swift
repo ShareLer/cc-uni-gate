@@ -1,6 +1,27 @@
 import Foundation
 
+public struct RouteProviderRefMigrationPlan: Sendable {
+    public var replacementsByRouteKey: [String: [ProviderRef: ProviderRef]]
+    public var ambiguousProviderRefsByRouteKey: [String: Set<ProviderRef>]
+    public var preservedProviderRefsByRouteKey: [String: Set<ProviderRef>]
+    public var managedRouteKeys: Set<String>
+
+    public init(
+        replacementsByRouteKey: [String: [ProviderRef: ProviderRef]] = [:],
+        ambiguousProviderRefsByRouteKey: [String: Set<ProviderRef>] = [:],
+        preservedProviderRefsByRouteKey: [String: Set<ProviderRef>] = [:],
+        managedRouteKeys: Set<String> = []
+    ) {
+        self.replacementsByRouteKey = replacementsByRouteKey
+        self.ambiguousProviderRefsByRouteKey = ambiguousProviderRefsByRouteKey
+        self.preservedProviderRefsByRouteKey = preservedProviderRefsByRouteKey
+        self.managedRouteKeys = managedRouteKeys
+    }
+}
+
 public final class RouteStore: @unchecked Sendable {
+    private static let unresolvedProviderAppType = "__unigate_unresolved__"
+
     public let fileURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -21,7 +42,8 @@ public final class RouteStore: @unchecked Sendable {
 
     public func load(
         catalog: ProviderCatalog,
-        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:]
+        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:],
+        providerRefMigrationPlan: RouteProviderRefMigrationPlan = RouteProviderRefMigrationPlan()
     ) throws -> RouteState {
         let state: RouteState
         if FileManager.default.fileExists(atPath: fileURL.path) {
@@ -34,12 +56,25 @@ public final class RouteStore: @unchecked Sendable {
             )
         }
 
+        let migrated = migrateProviderRefs(in: state, plan: providerRefMigrationPlan)
+        if migrated.didChange {
+            try save(migrated.state)
+        }
+
         let merged = merge(
-            state,
+            migrated.state,
             catalog: catalog,
-            preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey
+            preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey,
+            providerRefMigrationPlan: providerRefMigrationPlan
         )
-        if state.routes.isEmpty || (!merged.routes.isEmpty && !dropsExistingRouteKeys(state, catalog: catalog)) {
+        if migrated.state.routes.isEmpty || (
+            !merged.routes.isEmpty
+                && !dropsExistingRouteKeys(
+                    migrated.state,
+                    catalog: catalog,
+                    providerRefMigrationPlan: providerRefMigrationPlan
+                )
+        ) {
             try save(merged)
         }
         return merged
@@ -161,7 +196,8 @@ public final class RouteStore: @unchecked Sendable {
     private func merge(
         _ state: RouteState,
         catalog: ProviderCatalog,
-        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:]
+        preferredProviderRefsByRouteKey: [String: ProviderRef] = [:],
+        providerRefMigrationPlan: RouteProviderRefMigrationPlan = RouteProviderRefMigrationPlan()
     ) -> RouteState {
         let availableRouteKeys = Set(catalog.routeKeys)
         let defaults = RouteStore.defaultState(
@@ -174,6 +210,13 @@ public final class RouteStore: @unchecked Sendable {
             let routeKey = ModelRouteKey(description: rawKey)
                 ?? ModelRouteKey(appType: route.appType, logicalModel: route.logicalModel)
             guard availableRouteKeys.contains(routeKey) else {
+                if shouldPreserveUnavailableRoute(
+                    route,
+                    routeKey: routeKey,
+                    providerRefMigrationPlan: providerRefMigrationPlan
+                ) {
+                    merged.routes[routeKey.description] = route
+                }
                 continue
             }
             if
@@ -198,13 +241,79 @@ public final class RouteStore: @unchecked Sendable {
         return merged
     }
 
-    private func dropsExistingRouteKeys(_ state: RouteState, catalog: ProviderCatalog) -> Bool {
+    private func dropsExistingRouteKeys(
+        _ state: RouteState,
+        catalog: ProviderCatalog,
+        providerRefMigrationPlan: RouteProviderRefMigrationPlan
+    ) -> Bool {
         let availableRouteKeys = Set(catalog.routeKeys)
         return state.routes.contains { rawKey, route in
             let routeKey = ModelRouteKey(description: rawKey)
                 ?? ModelRouteKey(appType: route.appType, logicalModel: route.logicalModel)
             return !availableRouteKeys.contains(routeKey)
+                && !shouldPreserveUnavailableRoute(
+                    route,
+                    routeKey: routeKey,
+                    providerRefMigrationPlan: providerRefMigrationPlan
+                )
         }
+    }
+
+    private func migrateProviderRefs(
+        in state: RouteState,
+        plan: RouteProviderRefMigrationPlan
+    ) -> (state: RouteState, didChange: Bool) {
+        var migrated = state
+        var didChange = false
+
+        for (rawKey, route) in state.routes {
+            let routeKey = ModelRouteKey(description: rawKey)
+                ?? ModelRouteKey(appType: route.appType, logicalModel: route.logicalModel)
+            let routeKeyDescription = routeKey.description
+            let nextProviderRef: ProviderRef?
+            if plan.ambiguousProviderRefsByRouteKey[routeKeyDescription]?.contains(route.providerRef) == true {
+                nextProviderRef = unresolvedProviderRef(routeKey: routeKey, legacyProviderRef: route.providerRef)
+            } else {
+                nextProviderRef = plan.replacementsByRouteKey[routeKeyDescription]?[route.providerRef]
+            }
+            guard let nextProviderRef, nextProviderRef != route.providerRef else {
+                continue
+            }
+            migrated.routes[routeKeyDescription] = ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: nextProviderRef,
+                updatedAt: route.updatedAt
+            )
+            if rawKey != routeKeyDescription {
+                migrated.routes.removeValue(forKey: rawKey)
+            }
+            didChange = true
+        }
+        return (migrated, didChange)
+    }
+
+    private func shouldPreserveUnavailableRoute(
+        _ route: ActiveRoute,
+        routeKey: ModelRouteKey,
+        providerRefMigrationPlan: RouteProviderRefMigrationPlan
+    ) -> Bool {
+        (route.providerRef.appType == Self.unresolvedProviderAppType
+            && providerRefMigrationPlan.managedRouteKeys.contains(routeKey.description))
+            || providerRefMigrationPlan.preservedProviderRefsByRouteKey[routeKey.description]?
+                .contains(route.providerRef) == true
+    }
+
+    private func unresolvedProviderRef(
+        routeKey: ModelRouteKey,
+        legacyProviderRef: ProviderRef
+    ) -> ProviderRef {
+        let route = Data(routeKey.description.utf8).base64EncodedString()
+        let legacy = Data(legacyProviderRef.description.utf8).base64EncodedString()
+        return ProviderRef(
+            appType: Self.unresolvedProviderAppType,
+            id: "ambiguous-legacy:\(route):\(legacy)"
+        )
     }
 
     private static func defaultCandidateSort(_ lhs: ModelCandidate, _ rhs: ModelCandidate) -> Bool {

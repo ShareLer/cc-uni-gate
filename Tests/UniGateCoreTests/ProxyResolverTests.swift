@@ -226,7 +226,7 @@ struct ProxyResolverTests {
     }
 
     @Test
-    func scopedProxyCatalogRejectsCodexModelOutsideUniGateScope() throws {
+    func scopedProxyCatalogIncludesDiscoveredCodexModelOutsidePinnedScope() throws {
         let dasu = ImportedProvider(
             id: "dasu",
             appType: "codex",
@@ -254,7 +254,7 @@ struct ProxyResolverTests {
             meta: [:]
         )
         let rawCatalog = ProviderCatalog(providers: [dasu, free], candidates: [
-            candidate(provider: dasu, logicalModel: "gpt-5.4"),
+            discoveredCandidate(provider: dasu, logicalModel: "gpt-5.4"),
             candidate(provider: free, logicalModel: "gpt-5.5")
         ])
         let scopedCatalog = rawCatalog.scopedForProxy(
@@ -263,18 +263,20 @@ struct ProxyResolverTests {
         )
         let routes = RouteStore.defaultState(candidates: scopedCatalog.candidates)
 
-        #expect(scopedCatalog.routeKeys.map { $0.description } == ["codex:gpt-5.5"])
-        #expect(routes.routes["codex:gpt-5.4"] == nil)
-        #expect(throws: ProxyResolverError.self) {
-            try ProxyResolver.resolveRoute(
-                catalog: scopedCatalog,
-                routes: routes,
-                protocolKind: .codexResponses,
-                appType: "codex",
-                path: "/codex/responses",
-                body: Data(#"{"model":"gpt-5.4","input":"hello"}"#.utf8)
-            )
-        }
+        #expect(scopedCatalog.routeKeys.map { $0.description } == [
+            "codex:gpt-5.4",
+            "codex:gpt-5.5"
+        ])
+        #expect(routes.routes["codex:gpt-5.4"] != nil)
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: scopedCatalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: Data(#"{"model":"gpt-5.4","input":"hello"}"#.utf8)
+        )
+        #expect(resolved.providerName == dasu.name)
     }
 
     @Test
@@ -327,7 +329,10 @@ struct ProxyResolverTests {
                 ProviderModelListing.routeKeys(from: fullCatalog, appType: appCase.appType).map(\.logicalModel)
                     == [appCase.configuredModel, appCase.discoveredModel].sorted()
             )
-            #expect(scopedCatalog.routeKeys.map(\.logicalModel) == [appCase.configuredModel])
+            let expectedScopedModels = appCase.appType == "codex"
+                ? [appCase.configuredModel, appCase.discoveredModel].sorted()
+                : [appCase.configuredModel]
+            #expect(scopedCatalog.routeKeys.map(\.logicalModel) == expectedScopedModels)
         }
     }
 
@@ -365,12 +370,15 @@ struct ProxyResolverTests {
         )
         let routes = RouteStore.defaultState(candidates: scopedCatalog.candidates)
 
-        #expect(scopedCatalog.routeKeys.map(\.description) == ["codex:customer_model"])
+        #expect(scopedCatalog.routeKeys.map(\.description) == [
+            "codex:customer_model",
+            "codex:qwen3.6"
+        ])
         #expect(routes.routes["codex:customer_model"] != nil)
     }
 
     @Test
-    func scopedProxyCatalogExcludesUnconfiguredCustomModelsWithoutForceEnabled() throws {
+    func scopedProxyCatalogIncludesCodexCustomModelsWithoutForceEnabled() throws {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -401,7 +409,10 @@ struct ProxyResolverTests {
             customModels: customModels
         )
 
-        #expect(scopedCatalog.routeKeys.isEmpty)
+        #expect(scopedCatalog.routeKeys.map(\.description) == [
+            "codex:customer_model",
+            "codex:qwen3.6"
+        ])
     }
 
     @Test
@@ -1351,6 +1362,172 @@ struct ProxyResolverTests {
                 != fastCandidate.providerRef
         )
         #expect(resolved.outboundModel == "fast-upstream")
+    }
+
+    @Test
+    func resolvesEditedBaseCodexRouteToCrossModelTarget() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let logicalRouteKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let sameName = candidate(provider: provider, logicalModel: logicalRouteKey.logicalModel)
+        let crossModel = candidate(provider: provider, logicalModel: "gpt-5.6-sol")
+        let target = CustomModelTarget(routeKey: crossModel.routeKey, providerRef: provider.ref)
+        var policies = CustomModelState()
+        policies.setCodexExplicitRoute(
+            routeKey: logicalRouteKey,
+            targets: [target],
+            selectedTargetID: target.id
+        )
+        let rawCatalog = ProviderCatalog(
+            providers: [provider],
+            candidates: [sameName, crossModel]
+        )
+        let catalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: policies
+        )
+        let routes = RouteStore.defaultState(
+            candidates: catalog.candidates,
+            preferredProviderRefsByRouteKey: policies.preferredProviderRefsByRouteKey(
+                availableIn: catalog
+            )
+        )
+
+        let resolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: routes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: Data(#"{"model":"gpt-5.5","input":"hello"}"#.utf8)
+        )
+
+        #expect(resolved.routeKey == logicalRouteKey)
+        #expect(resolved.candidate.upstreamProviderRef == provider.ref)
+        #expect(resolved.outboundModel == "gpt-5.6-sol")
+        let body = try JSONSerialization.jsonObject(with: resolved.body) as? [String: Any]
+        #expect(body?["model"] as? String == "gpt-5.6-sol")
+    }
+
+    @Test
+    func codexOneMRequestDoesNotFallBackToEnabledBaseRoute() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let base = candidate(provider: provider, logicalModel: "gpt-5.6")
+        let catalog = ProviderCatalog(providers: [provider], candidates: [base])
+        let routes = RouteStore.defaultState(candidates: [base])
+
+        #expect(throws: ProxyResolverError.noRoute(routeKey: "codex:gpt-5.6 [1m]")) {
+            try ProxyResolver.resolveRoute(
+                catalog: catalog,
+                routes: routes,
+                protocolKind: .codexResponses,
+                appType: "codex",
+                path: "/codex/responses",
+                body: Data(#"{"model":"gpt-5.6 [1m]","input":"hello"}"#.utf8)
+            )
+        }
+    }
+
+    @Test
+    func sameNameOfficialAndThirdPartyRoutesDifferOnlyInAuthentication() throws {
+        let official = ImportedProvider(
+            id: "official",
+            appType: "codex",
+            name: "Codex Official",
+            category: "official",
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: CodexOfficial.backendBaseURLString,
+            hasSecret: false,
+            settings: [:],
+            meta: [:],
+            backendKind: .codexOfficial
+        )
+        let thirdParty = ImportedProvider(
+            id: "third-party",
+            appType: "codex",
+            name: "Third Party",
+            category: nil,
+            sortIndex: 2,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://third.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("third-key")])],
+            meta: [:]
+        )
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.6-luna")
+        let catalog = ProviderCatalog(
+            providers: [official, thirdParty],
+            candidates: [
+                candidate(provider: official, logicalModel: routeKey.logicalModel),
+                candidate(provider: thirdParty, logicalModel: routeKey.logicalModel)
+            ]
+        )
+        let requestBody = Data(#"{"model":"gpt-5.6-luna","input":"hello"}"#.utf8)
+        let officialRoutes = RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: official.ref,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ])
+        let thirdPartyRoutes = RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: thirdParty.ref,
+                updatedAt: Date(timeIntervalSince1970: 2)
+            )
+        ])
+
+        let officialResolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: officialRoutes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: requestBody
+        )
+        let thirdPartyResolved = try ProxyResolver.resolveRoute(
+            catalog: catalog,
+            routes: thirdPartyRoutes,
+            protocolKind: .codexResponses,
+            appType: "codex",
+            path: "/codex/responses",
+            body: requestBody
+        )
+
+        #expect(officialResolved.outboundModel == thirdPartyResolved.outboundModel)
+        #expect(officialResolved.authorizationRequirement == .codexOfficial(providerRef: official.ref))
+        #expect(officialResolved.headers.isEmpty)
+        #expect(thirdPartyResolved.authorizationRequirement == .staticProvider)
+        #expect(thirdPartyResolved.headers["authorization"] == "Bearer third-key")
     }
 
     @Test

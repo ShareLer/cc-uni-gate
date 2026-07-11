@@ -4,6 +4,39 @@ import Testing
 
 struct ProviderModelDiscoveryTests {
     @Test
+    func usableModelBaselineRequiresSuccessOrPreviouslyDiscoveredModels() {
+        let providerRef = ProviderRef(appType: UniGateAppRegistry.codex, id: "provider")
+        let success = ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Provider",
+            modelIDs: [],
+            errorMessage: nil,
+            sourceURL: nil
+        )
+        let retainedFailure = ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Provider",
+            modelIDs: ["gpt-5.5"],
+            errorMessage: "temporary failure",
+            sourceURL: nil
+        )
+        let emptyFailure = ProviderModelDiscoveryResult(
+            providerRef: providerRef,
+            appType: UniGateAppRegistry.codex,
+            providerName: "Provider",
+            modelIDs: [],
+            errorMessage: "temporary failure",
+            sourceURL: nil
+        )
+
+        #expect(success.hasUsableModelBaseline)
+        #expect(retainedFailure.hasUsableModelBaseline)
+        #expect(!emptyFailure.hasUsableModelBaseline)
+    }
+
+    @Test
     func standardProviderFingerprintKeepsPreBackendKindCacheShape() {
         let provider = ImportedProvider(
             id: "standard",

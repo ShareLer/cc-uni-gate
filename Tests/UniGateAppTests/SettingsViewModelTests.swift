@@ -110,4 +110,122 @@ struct SettingsViewModelTests {
         #expect(params["endpoint"] == "http://127.0.0.1:17888/codex")
         #expect(params["notes"]?.contains("Codex 官方路由会校验") == true)
     }
+
+    @Test
+    func ccSwitchImportDefaultSkipsDisabledCodexRouteWithoutAffectingClaude() throws {
+        let codexProvider = provider(
+            id: "codex-provider",
+            appType: UniGateAppRegistry.codex,
+            apiFormat: .openaiResponses
+        )
+        let claudeProvider = provider(
+            id: "claude-provider",
+            appType: UniGateAppRegistry.claudeCode,
+            apiFormat: .anthropic
+        )
+        let disabledCodex = candidate(provider: codexProvider, model: "gpt-5.5")
+        let enabledCodex = candidate(provider: codexProvider, model: "gpt-5.6-sol")
+        let sameNameClaude = candidate(provider: claudeProvider, model: "gpt-5.5")
+        let customModels = CustomModelState(codexRoutePolicies: [
+            CodexModelRoutePolicy(routeKey: disabledCodex.routeKey, isDisabled: true)
+        ])
+        let model = SettingsViewModel(
+            candidates: [disabledCodex, enabledCodex, sameNameClaude],
+            providers: [codexProvider, claudeProvider],
+            customModels: customModels,
+            uniGateModelScope: UniGateModelScope(modelsByApp: [
+                UniGateAppRegistry.claudeCode: [sameNameClaude.logicalModel]
+            ]),
+            preferences: AppPreferences(),
+            localProxyToken: "sk-unigate-test-token",
+            onApply: { _, _ in }
+        )
+
+        let codexURL = try #require(model.ccSwitchImportURL(path: "/codex"))
+        let claudeURL = try #require(model.ccSwitchImportURL(path: "/claude-code"))
+
+        #expect(try queryParameters(codexURL)["model"] == enabledCodex.logicalModel)
+        #expect(try queryParameters(claudeURL)["model"] == sameNameClaude.logicalModel)
+    }
+
+    @Test
+    func ccSwitchImportDefaultSkipsCodexExplicitRouteWhoseSelectedTargetIsMissing() throws {
+        let provider = provider(
+            id: "codex-provider",
+            appType: UniGateAppRegistry.codex,
+            apiFormat: .openaiResponses
+        )
+        let fallback = candidate(provider: provider, model: "gpt-5.6-sol")
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: "gpt-5.5")
+        let fallbackTarget = CustomModelTarget(
+            routeKey: fallback.routeKey,
+            providerRef: provider.ref
+        )
+        let missingTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: "gpt-5.7-missing"),
+            providerRef: provider.ref
+        )
+        let customModels = CustomModelState(codexRoutePolicies: [
+            CodexModelRoutePolicy(
+                routeKey: routeKey,
+                targetMode: .explicit,
+                targets: [fallbackTarget, missingTarget],
+                selectedTargetID: missingTarget.id
+            )
+        ])
+        let model = SettingsViewModel(
+            candidates: [fallback],
+            providers: [provider],
+            customModels: customModels,
+            uniGateModelScope: UniGateModelScope(),
+            preferences: AppPreferences(),
+            localProxyToken: "sk-unigate-test-token",
+            onApply: { _, _ in }
+        )
+
+        let codexURL = try #require(model.ccSwitchImportURL(path: "/codex"))
+
+        #expect(try queryParameters(codexURL)["model"] == fallback.logicalModel)
+    }
+
+    private func provider(id: String, appType: String, apiFormat: ApiFormat) -> ImportedProvider {
+        ImportedProvider(
+            id: id,
+            appType: appType,
+            name: id,
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: apiFormat,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+    }
+
+    private func candidate(provider: ImportedProvider, model: String) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: model,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: provider.appType == UniGateAppRegistry.codex
+                ? .codexResponses
+                : .anthropicMessages,
+            apiFormat: provider.apiFormat,
+            upstreamModel: model,
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+    }
+
+    private func queryParameters(_ url: URL) throws -> [String: String] {
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map {
+            ($0.name, $0.value ?? "")
+        })
+    }
 }

@@ -226,7 +226,12 @@ struct RouteStoreTests {
         ])
         let scopedCatalog = rawCatalog.scopedForProxy(
             uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
-            customModels: CustomModelState()
+            customModels: CustomModelState(codexRoutePolicies: [
+                CodexModelRoutePolicy(
+                    routeKey: ModelRouteKey(appType: "codex", logicalModel: "gpt-5.4"),
+                    isDisabled: true
+                )
+            ])
         )
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -652,6 +657,153 @@ struct RouteStoreTests {
         )
 
         #expect(state.routes["codex:customer_model"] == nil)
+    }
+
+    @Test
+    func loadMigratesLegacyCodexSyntheticRouteForActiveNonSelectedTarget() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let fast = candidate(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "fast"),
+            providerRef: provider.ref,
+            providerName: provider.name
+        )
+        let pro = candidate(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "pro"),
+            providerRef: provider.ref,
+            providerName: provider.name
+        )
+        let fastTarget = CustomModelTarget(routeKey: fast.routeKey, providerRef: provider.ref)
+        let proTarget = CustomModelTarget(routeKey: pro.routeKey, providerRef: provider.ref)
+        let destination = ModelRouteKey(appType: "codex", logicalModel: "customer_model")
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: destination.appType,
+                name: destination.logicalModel,
+                targets: [fastTarget, proTarget],
+                selectedTargetID: proTarget.id
+            )
+        ])
+        let rawCatalog = ProviderCatalog(providers: [provider], candidates: [fast, pro])
+        let catalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: customModels
+        )
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        let updatedAt = Date(timeIntervalSince1970: 123)
+        try store.save(RouteState(routes: [
+            destination.description: ActiveRoute(
+                appType: destination.appType,
+                logicalModel: destination.logicalModel,
+                providerRef: CustomModelState.legacySyntheticProviderRef(
+                    appType: "codex",
+                    target: fastTarget
+                ),
+                updatedAt: updatedAt
+            )
+        ]))
+
+        let loaded = try store.load(
+            catalog: catalog,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: catalog
+            ),
+            providerRefMigrationPlan: customModels.codexProviderRefMigrationPlan()
+        )
+        let reloaded = try store.load(
+            catalog: catalog,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: catalog
+            ),
+            providerRefMigrationPlan: customModels.codexProviderRefMigrationPlan()
+        )
+
+        let expected = CustomModelState.syntheticProviderRef(appType: "codex", target: fastTarget)
+        #expect(loaded.routes[destination.description]?.providerRef == expected)
+        #expect(loaded.routes[destination.description]?.updatedAt == updatedAt)
+        #expect(reloaded.routes[destination.description]?.providerRef == expected)
+    }
+
+    @Test
+    func loadFailsClosedWhenLegacyCodexSyntheticRouteIsAmbiguous() throws {
+        let firstTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "c"),
+            providerRef: ProviderRef(appType: "codex", id: "a|codex:b")
+        )
+        let secondTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "b|codex:c"),
+            providerRef: ProviderRef(appType: "codex", id: "a")
+        )
+        let destination = ModelRouteKey(appType: "codex", logicalModel: "customer_model")
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: destination.appType,
+                name: destination.logicalModel,
+                targets: [firstTarget, secondTarget],
+                selectedTargetID: firstTarget.id
+            )
+        ])
+        let legacy = CustomModelState.legacySyntheticProviderRef(
+            appType: "codex",
+            target: firstTarget
+        )
+        let maliciousProvider = ImportedProvider(
+            id: legacy.id,
+            appType: "codex",
+            name: "Collision Provider",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://collision.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("collision-key")])],
+            meta: [:]
+        )
+        let maliciousCandidate = candidate(
+            routeKey: destination,
+            providerRef: maliciousProvider.ref,
+            providerName: maliciousProvider.name
+        )
+        let catalog = ProviderCatalog(
+            providers: [maliciousProvider],
+            candidates: [maliciousCandidate]
+        )
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(RouteState(routes: [
+            destination.description: ActiveRoute(
+                appType: destination.appType,
+                logicalModel: destination.logicalModel,
+                providerRef: legacy,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ]))
+
+        let loaded = try store.load(
+            catalog: catalog,
+            providerRefMigrationPlan: customModels.codexProviderRefMigrationPlan()
+        )
+        let activeProviderRef = try #require(loaded.routes[destination.description]?.providerRef)
+
+        #expect(activeProviderRef.appType == "__unigate_unresolved__")
+        #expect(activeProviderRef != maliciousProvider.ref)
     }
 
     @Test

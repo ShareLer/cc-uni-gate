@@ -234,6 +234,12 @@ public enum ProxyResolver {
             return exactKey
         }
 
+        // Codex model IDs are exact route keys. In particular, a disabled
+        // "[1m]" route must not fall back to its enabled base model.
+        if appType == UniGateAppRegistry.codex {
+            return exactKey
+        }
+
         let normalizedRequest = ModelNameNormalizer.stripOneMSuffix(requestedModel)
         let normalizedKey = ModelRouteKey(appType: appType, logicalModel: normalizedRequest)
         if routes.routes[normalizedKey.description] != nil {

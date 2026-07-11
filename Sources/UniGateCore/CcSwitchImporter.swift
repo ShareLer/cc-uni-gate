@@ -30,7 +30,12 @@ public struct CcSwitchImporter: Sendable {
     public func loadUniGateModelScope() throws -> UniGateModelScope {
         let modelsByApp = try loadProviderRows()
             .map(importProvider)
-            .filter(isUniGateProvider)
+            .filter { provider in
+                guard isUniGateProvider(provider) else {
+                    return false
+                }
+                return provider.appType != UniGateAppRegistry.codex || provider.isCurrent
+            }
             .reduce(into: [String: Set<String>]()) { result, provider in
                 let models = uniGateConfiguredModels(provider)
                 guard !models.isEmpty else {
@@ -205,12 +210,7 @@ public struct CcSwitchImporter: Sendable {
         }
         switch provider.appType {
         case UniGateAppRegistry.codex:
-            let catalogModels = extractCodexCatalogModels(provider)
-            if !catalogModels.isEmpty {
-                return catalogModels
-            }
-            let parsed = CodexConfigParser.parse(JSONValueParser.string(provider.settings, ["config"]))
-            return parsed.model.map { [$0] } ?? []
+            return extractCodexCatalogModels(provider)
         case UniGateAppRegistry.claudeCode:
             return extractClaudeConfiguredModels(provider)
         case UniGateAppRegistry.claudeDesktop:

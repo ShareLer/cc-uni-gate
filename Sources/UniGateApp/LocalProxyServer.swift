@@ -21,12 +21,8 @@ extension CodexOAuthManager: CodexOfficialAuthorizing {}
 @MainActor
 protocol LocalProxyRuntime: AnyObject {
     func proxySnapshot() -> ProxyRuntimeSnapshot
-    // /v1/models must be generated from the full imported catalog, not the
-    // proxy-scoped catalog. The UI intentionally hides some discovered models
-    // by default, but cc-switch still depends on /v1/models to discover the
-    // broader model set that UniGate can route to. If this ever switches to the
-    // proxy-scoped catalog, UniGate visibility and cc-switch discovery become a
-    // circular dependency and discovered models disappear from model listing.
+    // Claude model listing keeps the full imported catalog. Codex listing uses
+    // the effective catalog so disabled routes disappear from /v1/models.
     func modelListSnapshot() -> ProxyRuntimeSnapshot
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
@@ -1613,11 +1609,19 @@ final class LocalProxyServer: @unchecked Sendable {
 
     private func modelsResponse(_ snapshot: ProxyRuntimeSnapshot, appType: String?) async -> HTTPResponse {
         let appType = appType ?? "codex"
-        // Keep /v1/models tied to the full model catalog semantics above.
-        // Do not replace this with proxyCatalog()/proxy route keys just because
-        // the main UniGate UI is scope-filtered; the UI and cc-switch model
-        // discovery are intentionally not the same surface.
-        let routeKeys = ProviderModelListing.routeKeys(from: snapshot.catalog, appType: appType)
+        // The runtime keeps Claude listings on the full catalog while Codex uses
+        // the effective route catalog so disabled Codex routes are not advertised.
+        let listedRouteKeys = ProviderModelListing.routeKeys(from: snapshot.catalog, appType: appType)
+        let routeKeys = appType == UniGateAppRegistry.codex
+            ? listedRouteKeys.filter { routeKey in
+                guard let route = snapshot.routes.routes[routeKey.description] else {
+                    return false
+                }
+                return snapshot.catalog.candidates.contains {
+                    $0.routeKey == routeKey && $0.providerRef == route.providerRef
+                }
+            }
+            : listedRouteKeys
         let modelIDs = Array(Set(routeKeys.map(\.logicalModel))).sorted()
         let data = modelIDs.map { ["id": $0, "object": "model"] }
         let models: Any = appType == UniGateAppRegistry.codex

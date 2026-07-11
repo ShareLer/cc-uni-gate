@@ -70,6 +70,260 @@ struct LocalProxyServerTests {
 
     @Test
     @MainActor
+    func modelsEndpointsUseEffectiveCodexSnapshotButKeepFullClaudeListing() async throws {
+        let codexProvider = Self.provider(
+            id: "codex-provider",
+            appType: UniGateAppRegistry.codex,
+            apiFormat: .openaiResponses
+        )
+        let claudeProvider = Self.provider(
+            id: "claude-provider",
+            appType: UniGateAppRegistry.claudeCode,
+            apiFormat: .anthropic
+        )
+        let disabledCodex = Self.candidate(provider: codexProvider, model: "gpt-5.5")
+        let enabledCodex = Self.candidate(provider: codexProvider, model: "gpt-5.6-sol")
+        let claudeSonnet = Self.candidate(provider: claudeProvider, model: "claude-sonnet")
+        let claudeOpus = Self.candidate(provider: claudeProvider, model: "claude-opus")
+        let fullCatalog = ProviderCatalog(
+            providers: [codexProvider, claudeProvider],
+            candidates: [disabledCodex, enabledCodex, claudeSonnet, claudeOpus]
+        )
+        let customModels = CustomModelState(codexRoutePolicies: [
+            CodexModelRoutePolicy(routeKey: disabledCodex.routeKey, isDisabled: true)
+        ])
+        let effectiveCatalog = fullCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: customModels
+        )
+        let modelListCatalog = ProviderCatalog(
+            providers: fullCatalog.providers,
+            candidates: fullCatalog.candidates.filter {
+                $0.appType != UniGateAppRegistry.codex
+            } + effectiveCatalog.candidates.filter {
+                $0.appType == UniGateAppRegistry.codex
+            }
+        )
+        let fullSnapshot = ProxyRuntimeSnapshot(
+            catalog: fullCatalog,
+            routes: RouteStore.defaultState(candidates: fullCatalog.candidates),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        )
+        let modelListSnapshot = ProxyRuntimeSnapshot(
+            catalog: modelListCatalog,
+            routes: RouteStore.defaultState(candidates: effectiveCatalog.candidates),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        )
+        let runtime = MockProxyRuntime(
+            snapshot: fullSnapshot,
+            modelListSnapshot: modelListSnapshot
+        )
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let codexResponse = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\n\r\n"
+        )
+        let claudeResponse = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: "GET /claude/v1/models HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\n\r\n"
+        )
+
+        #expect(codexResponse.contains("HTTP/1.1 200 OK"))
+        #expect(try Self.listedModelIDs(in: codexResponse) == [enabledCodex.logicalModel])
+        #expect(claudeResponse.contains("HTTP/1.1 200 OK"))
+        #expect(try Self.listedModelIDs(in: claudeResponse) == [
+            claudeOpus.logicalModel,
+            claudeSonnet.logicalModel
+        ])
+    }
+
+    @Test
+    @MainActor
+    func codexModelsEndpointOmitsExplicitRouteWhoseSelectedTargetIsMissing() async throws {
+        let provider = Self.provider(
+            id: "codex-provider",
+            appType: UniGateAppRegistry.codex,
+            apiFormat: .openaiResponses
+        )
+        let alternate = Self.candidate(provider: provider, model: "gpt-5.6-sol")
+        let routeKey = ModelRouteKey(
+            appType: UniGateAppRegistry.codex,
+            logicalModel: "gpt-5.5"
+        )
+        let alternateTarget = CustomModelTarget(
+            routeKey: alternate.routeKey,
+            providerRef: provider.ref
+        )
+        let missingTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(
+                appType: UniGateAppRegistry.codex,
+                logicalModel: "gpt-5.7-missing"
+            ),
+            providerRef: provider.ref
+        )
+        var customModels = CustomModelState()
+        customModels.setCodexExplicitRoute(
+            routeKey: routeKey,
+            targets: [alternateTarget, missingTarget],
+            selectedTargetID: missingTarget.id
+        )
+        let fullCatalog = ProviderCatalog(providers: [provider], candidates: [alternate])
+        let effectiveCatalog = fullCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: customModels
+        )
+        let routes = RouteStore.defaultState(
+            candidates: effectiveCatalog.candidates,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: effectiveCatalog
+            )
+        )
+        let snapshot = ProxyRuntimeSnapshot(
+            catalog: effectiveCatalog,
+            routes: routes,
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        )
+        let runtime = MockProxyRuntime(snapshot: snapshot)
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(port: proxyPort, runtime: runtime)
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.rawHTTPResponseFromBackgroundTask(
+            port: proxyPort,
+            request: "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1:\(proxyPort)\r\n\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+        #expect(try Self.listedModelIDs(in: response) == [alternate.logicalModel])
+        #expect(effectiveCatalog.candidates(for: routeKey).count == 1)
+        #expect(routes.routes[routeKey.description] == nil)
+    }
+
+    @Test
+    @MainActor
+    func disabledCodexRouteReturnsModelNotFoundWithoutCallingUpstream() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let provider = Self.provider(
+            id: "codex-provider",
+            appType: UniGateAppRegistry.codex,
+            apiFormat: .openaiResponses
+        )
+        let disabledCandidate = Self.candidate(provider: provider, model: "gpt-5.5")
+        let fullCatalog = ProviderCatalog(providers: [provider], candidates: [disabledCandidate])
+        let customModels = CustomModelState(codexRoutePolicies: [
+            CodexModelRoutePolicy(routeKey: disabledCandidate.routeKey, isDisabled: true)
+        ])
+        let effectiveCatalog = fullCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: customModels
+        )
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: effectiveCatalog,
+            routes: RouteStore.defaultState(candidates: effectiveCatalog.candidates),
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(port: proxyPort, additionalHeaders: "")
+
+        #expect(response.contains("HTTP/1.1 404 Not Found"))
+        #expect(response.contains(#""model_not_found""#))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func disabledCodexCustomAliasReturnsModelNotFoundInsteadOfUnavailableTarget() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let provider = Self.provider(
+            id: "codex-provider",
+            appType: UniGateAppRegistry.codex,
+            apiFormat: .openaiResponses
+        )
+        let upstream = Self.candidate(provider: provider, model: "gpt-5.6-sol")
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: "gpt-5.5")
+        let target = CustomModelTarget(routeKey: upstream.routeKey, providerRef: provider.ref)
+        let definition = CustomModelDefinition(
+            appType: routeKey.appType,
+            name: routeKey.logicalModel,
+            targets: [target],
+            selectedTargetID: target.id
+        )
+        let enabledModels = CustomModelState(models: [definition])
+        let rawCatalog = ProviderCatalog(providers: [provider], candidates: [upstream])
+        let enabledCatalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: enabledModels
+        )
+        let activeAlias = try #require(enabledCatalog.candidates(for: routeKey).first)
+        let disabledModels = CustomModelState(
+            models: [definition],
+            codexRoutePolicies: [CodexModelRoutePolicy(routeKey: routeKey, isDisabled: true)]
+        )
+        let disabledCatalog = rawCatalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: disabledModels
+        )
+        let routeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let routeStore = RouteStore(fileURL: routeURL)
+        try routeStore.save(RouteState(routes: [
+            routeKey.description: ActiveRoute(
+                appType: routeKey.appType,
+                logicalModel: routeKey.logicalModel,
+                providerRef: activeAlias.providerRef,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ]))
+        let routes = try routeStore.load(
+            catalog: disabledCatalog,
+            preferredProviderRefsByRouteKey: disabledModels.preferredProviderRefsByRouteKey(
+                availableIn: disabledCatalog
+            ),
+            providerRefMigrationPlan: disabledModels.codexProviderRefMigrationPlan()
+        )
+        let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
+            catalog: disabledCatalog,
+            routes: routes,
+            networkPolicy: NetworkPolicyPreferences(globalMode: .direct)
+        ))
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(port: proxyPort, additionalHeaders: "")
+
+        #expect(routes.routes[routeKey.description] == nil)
+        #expect(response.contains("HTTP/1.1 404 Not Found"))
+        #expect(response.contains(#""model_not_found""#))
+        #expect(!response.contains(#""route_target_unavailable""#))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().isEmpty)
+    }
+
+    @Test
+    @MainActor
     func rejectsNegativeContentLengthWithoutCrashing() async throws {
         let runtime = MockProxyRuntime(snapshot: ProxyRuntimeSnapshot(
             catalog: ProviderCatalog(providers: [], candidates: []),
@@ -963,6 +1217,56 @@ struct LocalProxyServerTests {
         return URLSession(configuration: configuration)
     }
 
+    private static func provider(
+        id: String,
+        appType: String,
+        apiFormat: ApiFormat
+    ) -> ImportedProvider {
+        ImportedProvider(
+            id: id,
+            appType: appType,
+            name: id,
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: apiFormat,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("static-key")])],
+            meta: [:]
+        )
+    }
+
+    private static func candidate(provider: ImportedProvider, model: String) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: model,
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: provider.appType == UniGateAppRegistry.codex
+                ? .codexResponses
+                : .anthropicMessages,
+            apiFormat: provider.apiFormat,
+            upstreamModel: model,
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+    }
+
+    private static func listedModelIDs(in response: String) throws -> Set<String> {
+        guard let bodyStart = response.range(of: "\r\n\r\n")?.upperBound else {
+            throw TestError("HTTP response is missing a body")
+        }
+        let body = Data(response[bodyStart...].utf8)
+        guard let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let data = object["data"] as? [[String: Any]] else {
+            throw TestError("Models response is not a JSON model list")
+        }
+        return Set(data.compactMap { $0["id"] as? String })
+    }
+
     private static func proxySnapshot(
         backendKind: ProviderBackendKind
     ) -> (ProxyRuntimeSnapshot, ProviderRef) {
@@ -1127,12 +1431,17 @@ struct LocalProxyServerTests {
 @MainActor
 private final class MockProxyRuntime: LocalProxyRuntime {
     private var snapshot: ProxyRuntimeSnapshot
+    private var modelListSnapshotValue: ProxyRuntimeSnapshot
     private var listenerStates: [ProxyListenerState] = []
     private(set) var failures: [String] = []
     private(set) var events: [String] = []
 
-    init(snapshot: ProxyRuntimeSnapshot) {
+    init(
+        snapshot: ProxyRuntimeSnapshot,
+        modelListSnapshot: ProxyRuntimeSnapshot? = nil
+    ) {
         self.snapshot = snapshot
+        self.modelListSnapshotValue = modelListSnapshot ?? snapshot
     }
 
     func waitUntilReady() async throws {
@@ -1155,7 +1464,7 @@ private final class MockProxyRuntime: LocalProxyRuntime {
     }
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
-        snapshot
+        modelListSnapshotValue
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {

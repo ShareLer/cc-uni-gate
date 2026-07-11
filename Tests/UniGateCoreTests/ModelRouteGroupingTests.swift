@@ -239,7 +239,7 @@ struct ModelRouteGroupingTests {
     }
 
     @Test
-    func visibleConfiguredBaseRouteKeysExcludeDiscoveredModels() {
+    func visibleConfiguredBaseRouteKeysIncludeDiscoveredCodexModels() {
         let providerRef = ProviderRef(appType: "codex", id: "codex")
         let catalog = ProviderCatalog(providers: [], candidates: [
             candidate(
@@ -268,12 +268,13 @@ struct ModelRouteGroupingTests {
         )
 
         #expect(routeKeys.map(\.description) == [
-            "codex:gpt-5.5"
+            "codex:gpt-5.5",
+            "codex:qwen3.6"
         ])
     }
 
     @Test
-    func visibleConfiguredBaseRouteKeysExcludeCustomProviderDiscoveredModels() {
+    func visibleConfiguredBaseRouteKeysIncludeCustomProviderDiscoveredCodexModels() {
         let configuredRef = ProviderRef(appType: "codex", id: "configured")
         let customRef = ProviderRef(appType: "codex", id: "unigate-custom")
         let catalog = ProviderCatalog(providers: [], candidates: [
@@ -303,7 +304,8 @@ struct ModelRouteGroupingTests {
         )
 
         #expect(routeKeys.map(\.description) == [
-            "codex:gpt-5.5"
+            "codex:gpt-5.5",
+            "codex:qwen3.6"
         ])
     }
 
@@ -411,9 +413,11 @@ struct ModelRouteGroupingTests {
             customModels: CustomModelState()
         )
 
-        #expect(proxyCatalog.candidates.map(\.providerRef) == [officialRef, thirdPartyRef])
-
         let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.6-luna")
+        #expect(Set(proxyCatalog.candidates(for: routeKey).map(\.providerRef)) == [
+            officialRef,
+            thirdPartyRef
+        ])
         let store = RouteStore(
             fileURL: FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)

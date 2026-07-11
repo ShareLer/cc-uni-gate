@@ -64,6 +64,7 @@ struct UniGatePopoverRootView: View {
     @State private var customModelEditorID = UUID()
     @State private var customProviderEditorID = UUID()
     @State private var editingCustomModel: CustomModelDefinition?
+    @State private var editingCodexRouteKey: ModelRouteKey?
     @State private var editingCustomProvider: CustomProviderDefinition?
     @State private var pendingDeleteCustomModelID: UUID?
     @State private var pendingDeleteCustomProviderID: String?
@@ -333,6 +334,7 @@ struct UniGatePopoverRootView: View {
         return Button {
             pendingDeleteCustomModelID = nil
             editingCustomModel = nil
+            editingCodexRouteKey = nil
             withAnimation(.easeInOut(duration: 0.15)) {
                 isAddingCustomModel = false
                 state.openSettings()
@@ -844,12 +846,40 @@ struct UniGatePopoverRootView: View {
     }
 
     private var customModelPanel: some View {
-        InlineCustomModelEditorView(
-            candidates: state.customModelBaseCandidates(preserving: editingCustomModel),
-            existing: editingCustomModel,
-            initialAppType: state.currentAppType,
+        let codexRouteKey = editingCodexRouteKey
+        let existing = if let codexRouteKey {
+            state.codexRouteDraft(for: codexRouteKey) ?? CustomModelDefinition(
+                appType: codexRouteKey.appType,
+                name: codexRouteKey.logicalModel
+            )
+        } else {
+            editingCustomModel
+        }
+        let candidates = if codexRouteKey != nil {
+            state.codexRouteEditorCandidates(preserving: existing)
+        } else {
+            state.customModelBaseCandidates(preserving: editingCustomModel)
+        }
+        return InlineCustomModelEditorView(
+            candidates: candidates,
+            existing: existing,
+            initialAppType: codexRouteKey?.appType ?? state.currentAppType,
+            lockedRouteKey: codexRouteKey,
+            allowsEmptyTargets: codexRouteKey.map { !state.isPinnedCodexRoute($0) } ?? false,
+            showsRestoreAutomatic: codexRouteKey.map(state.isCodexRouteExplicit) ?? false,
             onSave: { definition in
-                if state.saveCustomModel(definition, replacing: editingCustomModel) {
+                let didSave = if let codexRouteKey {
+                    state.saveCodexRoute(definition, for: codexRouteKey)
+                } else {
+                    state.saveCustomModel(definition, replacing: editingCustomModel)
+                }
+                if didSave {
+                    closeCustomModelEditor()
+                }
+            },
+            onRestoreAutomatic: codexRouteKey.map { routeKey in
+                {
+                    state.restoreCodexAutomaticRoute(routeKey)
                     closeCustomModelEditor()
                 }
             },
@@ -863,6 +893,7 @@ struct UniGatePopoverRootView: View {
     private func openCustomModelEditor() {
         state.expandedRouteKeyDescription = nil
         editingCustomModel = nil
+        editingCodexRouteKey = nil
         customModelEditorID = UUID()
         withAnimation(panelTransitionAnimation) {
             isAddingCustomModel = true
@@ -873,6 +904,18 @@ struct UniGatePopoverRootView: View {
         state.expandedRouteKeyDescription = nil
         pendingDeleteCustomModelID = nil
         editingCustomModel = definition
+        editingCodexRouteKey = nil
+        customModelEditorID = UUID()
+        withAnimation(panelTransitionAnimation) {
+            isAddingCustomModel = true
+        }
+    }
+
+    private func editCodexRoute(_ routeKey: ModelRouteKey) {
+        state.expandedRouteKeyDescription = nil
+        pendingDeleteCustomModelID = nil
+        editingCustomModel = nil
+        editingCodexRouteKey = routeKey
         customModelEditorID = UUID()
         withAnimation(panelTransitionAnimation) {
             isAddingCustomModel = true
@@ -1138,13 +1181,16 @@ struct UniGatePopoverRootView: View {
         let candidates = state.candidates(for: group)
         let active = state.activeCandidate(for: group)
         let isExpanded = state.isExpanded(group)
-        let isOperable = state.isRouteOperable(group)
+        let isCodexRoute = key.appType == UniGateAppRegistry.codex
+        let isDisabled = isCodexRoute && state.isCodexRouteDisabled(key)
+        let isPinned = isCodexRoute && state.isPinnedCodexRoute(key)
+        let isOperable = !isDisabled && state.isRouteOperable(group)
         let canSwitchProvider = isOperable && candidates.count > 1
         let showsExpandedProviders = isExpanded && canSwitchProvider
         let customModel = state.customModel(for: key)
-        let routeStatusText = state.routeStatusText(for: group)
+        let routeStatusText = isDisabled ? "已停用" : state.routeStatusText(for: group)
         let hasRouteIssue = routeStatusText == "目标失效"
-        let isForceEnabledModel = customModel?.forceEnabled == true
+        let isForceEnabledModel = !isCodexRoute && customModel?.forceEnabled == true
         let isConfirmingDelete = customModel?.id == pendingDeleteCustomModelID
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
@@ -1168,6 +1214,9 @@ struct UniGatePopoverRootView: View {
                             if isForceEnabledModel {
                                 forceEnabledTag()
                             }
+                            if isPinned {
+                                pinnedCodexTag()
+                            }
                             if isOperable {
                                 providerTag(
                                     active?.providerName ?? "未选择",
@@ -1180,6 +1229,9 @@ struct UniGatePopoverRootView: View {
                         HStack(spacing: 6) {
                             if isForceEnabledModel {
                                 forceEnabledTag()
+                            }
+                            if isPinned {
+                                pinnedCodexTag()
                             }
                             providerTag(
                                 active?.providerName ?? "未选择",
@@ -1203,7 +1255,15 @@ struct UniGatePopoverRootView: View {
                     )
                 }
 
-                if let customModel {
+                if isCodexRoute {
+                    codexRouteMenu(
+                        routeKey: key,
+                        customModel: customModel,
+                        isPinned: isPinned,
+                        isDisabled: isDisabled
+                    )
+                    .frame(width: rowActionSlotWidth, height: 24)
+                } else if let customModel {
                     customModelMenu(customModel)
                         .frame(width: rowActionSlotWidth, height: 24)
                 } else {
@@ -1244,7 +1304,50 @@ struct UniGatePopoverRootView: View {
                 )
                 .shadow(color: UGPopoverStyle.cardShadowColor, radius: 5, x: 0, y: 6)
         )
-        .opacity(isOperable ? 1 : 0.72)
+        .saturation(isDisabled ? 0 : 1)
+        .opacity(isDisabled ? 0.58 : isOperable ? 1 : 0.72)
+    }
+
+    private func codexRouteMenu(
+        routeKey: ModelRouteKey,
+        customModel: CustomModelDefinition?,
+        isPinned: Bool,
+        isDisabled: Bool
+    ) -> some View {
+        Menu {
+            Button("编辑路由") {
+                if let customModel {
+                    editCustomModel(customModel)
+                } else {
+                    editCodexRoute(routeKey)
+                }
+            }
+            if !isPinned {
+                Button(isDisabled ? "恢复" : "停用", role: isDisabled ? nil : .destructive) {
+                    if !isDisabled {
+                        state.expandedRouteKeyDescription = nil
+                    }
+                    state.setCodexRouteDisabled(!isDisabled, routeKey: routeKey)
+                }
+            }
+            if let customModel {
+                Divider()
+                Button("删除...", role: .destructive) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        pendingDeleteCustomModelID = customModel.id
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(UGPopoverStyle.textSecondary)
+                .frame(width: rowActionSlotWidth, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .help("模型路由操作")
     }
 
     private func customModelMenu(_ definition: CustomModelDefinition) -> some View {
@@ -1348,6 +1451,16 @@ struct UniGatePopoverRootView: View {
             .frame(width: 62, height: 20)
             .background(UGPopoverStyle.issueBubbleFill, in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(UGPopoverStyle.issueBubbleBorder))
+    }
+
+    private func pinnedCodexTag() -> some View {
+        Text("固定")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(brand)
+            .lineLimit(1)
+            .frame(width: 38, height: 20)
+            .background(brand.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            .help("来自 cc-switch 显式模型目录")
     }
 
     private func disabledAwareBorder(_ isOperable: Bool) -> Color {
@@ -2431,6 +2544,10 @@ private struct InlineCustomModelEditorView: View {
     private let candidates: [ModelCandidate]
     private let appTypes: [String]
     private let existingTargetsByKey: [String: CustomModelTarget]
+    private let lockedRouteKey: ModelRouteKey?
+    private let allowsEmptyTargets: Bool
+    private let showsRestoreAutomatic: Bool
+    private let onRestoreAutomatic: (() -> Void)?
 
     @State private var name: String
     @State private var appType: String
@@ -2444,7 +2561,11 @@ private struct InlineCustomModelEditorView: View {
         candidates: [ModelCandidate],
         existing: CustomModelDefinition?,
         initialAppType: String?,
+        lockedRouteKey: ModelRouteKey? = nil,
+        allowsEmptyTargets: Bool = false,
+        showsRestoreAutomatic: Bool = false,
         onSave: @escaping (CustomModelDefinition) -> Void,
+        onRestoreAutomatic: (() -> Void)? = nil,
         onCancel: @escaping () -> Void
     ) {
         let sortedCandidates = candidates.sorted {
@@ -2485,7 +2606,11 @@ private struct InlineCustomModelEditorView: View {
         self.existingTargetsByKey = Dictionary(
             uniqueKeysWithValues: existingTargets.map { (CustomModelState.targetID(for: $0), $0) }
         )
+        self.lockedRouteKey = lockedRouteKey
+        self.allowsEmptyTargets = allowsEmptyTargets
+        self.showsRestoreAutomatic = showsRestoreAutomatic
         self.onSave = onSave
+        self.onRestoreAutomatic = onRestoreAutomatic
         self.onCancel = onCancel
         _name = State(initialValue: existing?.name ?? "")
         _appType = State(initialValue: initial)
@@ -2516,13 +2641,27 @@ private struct InlineCustomModelEditorView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(existing == nil ? "自定义模型" : "编辑自定义模型")
+            Text(editorTitle)
                 .font(.system(size: 16, weight: .semibold))
-            Text(existing == nil ? "为新模型选择应用和一个或多个转发目标。" : "调整模型名和转发目标。")
+            Text(editorSubtitle)
                 .font(.caption)
                 .foregroundStyle(UGPopoverStyle.textSecondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var editorTitle: String {
+        if lockedRouteKey != nil {
+            return "编辑模型路由"
+        }
+        return existing == nil ? "自定义模型" : "编辑自定义模型"
+    }
+
+    private var editorSubtitle: String {
+        if lockedRouteKey != nil {
+            return "选择模型可转发到的一个或多个目标。"
+        }
+        return existing == nil ? "为新模型选择应用和一个或多个转发目标。" : "调整模型名和转发目标。"
     }
 
     private var formPanel: some View {
@@ -2550,18 +2689,21 @@ private struct InlineCustomModelEditorView: View {
             editorField(title: "模型名") {
                 TextField("例如 customer_model", text: $name)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(lockedRouteKey != nil)
             }
 
-            Toggle(isOn: $forceEnabled) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("强制启用")
-                        .font(.system(size: 12, weight: .medium))
-                    Text("未配置在 cc-switch 的 UniGate 中时，也允许显示和路由。")
-                        .font(.caption2)
-                        .foregroundStyle(UGPopoverStyle.textSecondary)
+            if lockedRouteKey == nil && appType != UniGateAppRegistry.codex {
+                Toggle(isOn: $forceEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("强制启用")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("未配置在 cc-switch 的 UniGate 中时，也允许显示和路由。")
+                            .font(.caption2)
+                            .foregroundStyle(UGPopoverStyle.textSecondary)
+                    }
                 }
+                .toggleStyle(.switch)
             }
-            .toggleStyle(.switch)
 
             editorField(title: "应用") {
                 appTypeSelector
@@ -2635,8 +2777,8 @@ private struct InlineCustomModelEditorView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(existing != nil)
-                .opacity(existing != nil && !selected ? 0.55 : 1)
+                .disabled(existing != nil || lockedRouteKey != nil)
+                .opacity((existing != nil || lockedRouteKey != nil) && !selected ? 0.55 : 1)
             }
         }
     }
@@ -2727,6 +2869,19 @@ private struct InlineCustomModelEditorView: View {
             .padding(.horizontal, 10)
             .frame(height: 30)
 
+            if showsRestoreAutomatic, let onRestoreAutomatic {
+                Button {
+                    onRestoreAutomatic()
+                } label: {
+                    Label("恢复自动", systemImage: "arrow.uturn.backward")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .help("恢复为所有同名模型自动路由")
+            }
+
             Spacer()
 
             Button {
@@ -2783,7 +2938,7 @@ private struct InlineCustomModelEditorView: View {
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !appType.isEmpty
-            && !scopedSelectedCandidates.isEmpty
+            && (allowsEmptyTargets || !scopedSelectedCandidates.isEmpty)
     }
 
     private func setTarget(_ id: String, selected: Bool) {
@@ -2802,7 +2957,9 @@ private struct InlineCustomModelEditorView: View {
 
     private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, !appType.isEmpty, !scopedSelectedCandidates.isEmpty else {
+        guard !trimmedName.isEmpty,
+              !appType.isEmpty,
+              allowsEmptyTargets || !scopedSelectedCandidates.isEmpty else {
             NSSound.beep()
             return
         }

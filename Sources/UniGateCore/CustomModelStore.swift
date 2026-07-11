@@ -95,45 +95,160 @@ public enum CustomModelNameConflict: Sendable, Equatable {
 
 public struct CustomModelState: Codable, Sendable {
     public var models: [CustomModelDefinition]
+    public var codexRoutePolicies: [CodexModelRoutePolicy]
+    public var codexVisibilityMigrated: Bool
+    public var codexVisibilityMigration: CodexVisibilityMigrationState?
 
-    public init(models: [CustomModelDefinition] = []) {
+    public init(
+        models: [CustomModelDefinition] = [],
+        codexRoutePolicies: [CodexModelRoutePolicy] = [],
+        codexVisibilityMigrated: Bool = false,
+        codexVisibilityMigration: CodexVisibilityMigrationState? = nil
+    ) {
         self.models = Self.deduplicatedModels(models)
+        self.codexRoutePolicies = Self.deduplicatedCodexRoutePolicies(codexRoutePolicies)
+        self.codexVisibilityMigrated = codexVisibilityMigrated
+        self.codexVisibilityMigration = codexVisibilityMigrated ? nil : codexVisibilityMigration
     }
 
     private enum CodingKeys: String, CodingKey {
         case models
+        case codexRoutePolicies
+        case codexVisibilityMigrated
+        case codexVisibilityMigration
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let models = try container.decodeIfPresent([CustomModelDefinition].self, forKey: .models) ?? []
         self.models = Self.deduplicatedModels(models)
+        let codexRoutePolicies = try container.decodeIfPresent(
+            [CodexModelRoutePolicy].self,
+            forKey: .codexRoutePolicies
+        ) ?? []
+        self.codexRoutePolicies = Self.deduplicatedCodexRoutePolicies(codexRoutePolicies)
+        self.codexVisibilityMigrated = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .codexVisibilityMigrated
+        ) ?? false
+        let migration = try container.decodeIfPresent(
+            CodexVisibilityMigrationState.self,
+            forKey: .codexVisibilityMigration
+        )
+        self.codexVisibilityMigration = codexVisibilityMigrated ? nil : migration
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(models, forKey: .models)
+        try container.encode(codexRoutePolicies, forKey: .codexRoutePolicies)
+        try container.encode(codexVisibilityMigrated, forKey: .codexVisibilityMigrated)
+        try container.encodeIfPresent(codexVisibilityMigration, forKey: .codexVisibilityMigration)
     }
 
     public func normalized() -> CustomModelState {
-        CustomModelState(models: models)
+        CustomModelState(
+            models: models,
+            codexRoutePolicies: codexRoutePolicies,
+            codexVisibilityMigrated: codexVisibilityMigrated,
+            codexVisibilityMigration: codexVisibilityMigration
+        )
     }
 
     public static func targetID(for candidate: ModelCandidate) -> String {
-        "\(candidate.routeKey.description)|\(candidate.providerRef.description)"
+        encodedTargetID(
+            routeKeyDescription: candidate.routeKey.description,
+            providerRefDescription: candidate.providerRef.description
+        )
     }
 
     public static func targetID(for target: CustomModelTarget) -> String {
-        "\(target.routeKey.description)|\(target.providerRef.description)"
+        encodedTargetID(
+            routeKeyDescription: target.routeKey.description,
+            providerRefDescription: target.providerRef.description
+        )
     }
 
     public static func syntheticProviderRef(
         appType: String,
         target: CustomModelTarget
     ) -> ProviderRef {
+        guard appType == UniGateAppRegistry.codex else {
+            return legacySyntheticProviderRef(appType: appType, target: target)
+        }
+        return ProviderRef(
+            appType: appType,
+            id: [
+                "unigate-target-v2",
+                target.id.uuidString.lowercased(),
+                encodedIdentityComponent(target.providerRef.description),
+                encodedIdentityComponent(target.routeKey.description)
+            ].joined(separator: ":")
+        )
+    }
+
+    public static func legacySyntheticProviderRef(
+        appType: String,
+        target: CustomModelTarget
+    ) -> ProviderRef {
         ProviderRef(
             appType: appType,
             id: "\(target.providerRef.description)|\(target.routeKey.description)"
+        )
+    }
+
+    public func codexProviderRefMigrationPlan() -> RouteProviderRefMigrationPlan {
+        var candidates: [String: [ProviderRef: Set<ProviderRef>]] = [:]
+        var preservedProviderRefs: [String: Set<ProviderRef>] = [:]
+
+        func add(routeKey: ModelRouteKey, target: CustomModelTarget) {
+            let legacy = Self.legacySyntheticProviderRef(
+                appType: UniGateAppRegistry.codex,
+                target: target
+            )
+            let current = Self.syntheticProviderRef(
+                appType: UniGateAppRegistry.codex,
+                target: target
+            )
+            candidates[routeKey.description, default: [:]][legacy, default: []].insert(current)
+            preservedProviderRefs[routeKey.description, default: []].insert(current)
+        }
+
+        for definition in models where definition.appType == UniGateAppRegistry.codex {
+            let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+            for target in definition.targets where target.routeKey.appType == definition.appType {
+                add(routeKey: routeKey, target: target)
+            }
+        }
+        for policy in codexRoutePolicies where policy.targetMode == .explicit {
+            for target in policy.targets where target.routeKey.appType == UniGateAppRegistry.codex {
+                add(routeKey: policy.routeKey, target: target)
+            }
+        }
+
+        let disabledRouteKeys = Set(codexRoutePolicies.compactMap { policy in
+            policy.isDisabled ? policy.routeKey.description : nil
+        })
+        for routeKey in disabledRouteKeys {
+            preservedProviderRefs.removeValue(forKey: routeKey)
+        }
+
+        var replacements: [String: [ProviderRef: ProviderRef]] = [:]
+        var ambiguous: [String: Set<ProviderRef>] = [:]
+        for (routeKey, migrations) in candidates {
+            for (legacy, currentRefs) in migrations {
+                if currentRefs.count == 1 {
+                    replacements[routeKey, default: [:]][legacy] = currentRefs.first
+                } else {
+                    ambiguous[routeKey, default: []].insert(legacy)
+                }
+            }
+        }
+        return RouteProviderRefMigrationPlan(
+            replacementsByRouteKey: replacements,
+            ambiguousProviderRefsByRouteKey: ambiguous,
+            preservedProviderRefsByRouteKey: preservedProviderRefs,
+            managedRouteKeys: Set(candidates.keys).subtracting(disabledRouteKeys)
         )
     }
 
@@ -144,7 +259,7 @@ public struct CustomModelState: Codable, Sendable {
     }
 
     public func preferredProviderRefsByRouteKey() -> [String: ProviderRef] {
-        Dictionary(uniqueKeysWithValues: models.compactMap { definition in
+        var result: [String: ProviderRef] = Dictionary(uniqueKeysWithValues: models.compactMap { definition in
             guard
                 let selectedTargetID = definition.selectedTargetID,
                 let target = definition.targets.first(where: { $0.id == selectedTargetID })
@@ -157,6 +272,19 @@ public struct CustomModelState: Codable, Sendable {
                 Self.syntheticProviderRef(appType: definition.appType, target: target)
             )
         })
+        for policy in codexRoutePolicies where policy.targetMode == .explicit {
+            guard
+                let selectedTargetID = policy.selectedTargetID,
+                let target = policy.targets.first(where: { $0.id == selectedTargetID })
+            else {
+                continue
+            }
+            result[policy.routeKey.description] = Self.syntheticProviderRef(
+                appType: UniGateAppRegistry.codex,
+                target: target
+            )
+        }
+        return result
     }
 
     public func preferredProviderRefsByRouteKey(
@@ -165,6 +293,18 @@ public struct CustomModelState: Codable, Sendable {
         preferredProviderRefsByRouteKey().filter { key, providerRef in
             guard let routeKey = ModelRouteKey(description: key) else {
                 return false
+            }
+            if codexRoutePolicy(for: routeKey)?.targetMode == .explicit {
+                return true
+            }
+            if routeKey.appType == UniGateAppRegistry.codex,
+               definition(for: routeKey) != nil {
+                let hasPhysicalBaseRoute = catalog.candidates.contains {
+                    $0.routeKey == routeKey && $0.providerRef == $0.upstreamProviderRef
+                }
+                if !hasPhysicalBaseRoute {
+                    return true
+                }
             }
             return catalog.candidates.contains {
                 $0.routeKey == routeKey && $0.providerRef == providerRef
@@ -178,6 +318,13 @@ public struct CustomModelState: Codable, Sendable {
         uniGateModelScope: UniGateModelScope
     ) -> CustomModelNameConflict? {
         let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+        let isExistingDefinitionForRoute = models.contains { existing in
+            existing.id == definition.id
+                && existing.appType == routeKey.appType
+                && existing.name == routeKey.logicalModel
+        }
+        let existingDefinitionOwnsCodexRoute = routeKey.appType == UniGateAppRegistry.codex
+            && isExistingDefinitionForRoute
         if models.contains(where: { existing in
             existing.id != definition.id
                 && existing.appType == routeKey.appType
@@ -185,7 +332,13 @@ public struct CustomModelState: Codable, Sendable {
         }) {
             return .customModel
         }
-        if catalog.candidates.contains(where: { candidate in
+        if routeKey.appType == UniGateAppRegistry.codex,
+           codexRoutePolicy(for: routeKey) != nil,
+           !isExistingDefinitionForRoute {
+            return .baseModel
+        }
+        if !existingDefinitionOwnsCodexRoute,
+           catalog.candidates.contains(where: { candidate in
             candidate.routeKey == routeKey
                 && candidate.providerRef == candidate.upstreamProviderRef
                 && ModelRouteVisibility.isCandidateSelectable(
@@ -193,7 +346,7 @@ public struct CustomModelState: Codable, Sendable {
                     catalog: catalog,
                     uniGateModelScope: uniGateModelScope
                 )
-        }) {
+           }) {
             return .baseModel
         }
         return nil
@@ -290,7 +443,8 @@ public struct CustomModelState: Codable, Sendable {
 
     public static func deduplicatedTargetCandidates(
         _ candidates: [ModelCandidate],
-        preservingTargetIDs: Set<String> = []
+        preservingTargetIDs: Set<String> = [],
+        preferLongContext: Bool = false
     ) -> [ModelCandidate] {
         var orderedKeys: [ModelCandidateTargetIdentity] = []
         var candidatesByKey: [ModelCandidateTargetIdentity: ModelCandidate] = [:]
@@ -301,7 +455,8 @@ public struct CustomModelState: Codable, Sendable {
                 if shouldPrefer(
                     candidate,
                     over: existing,
-                    preservingTargetIDs: preservingTargetIDs
+                    preservingTargetIDs: preservingTargetIDs,
+                    preferLongContext: preferLongContext
                 ) {
                     candidatesByKey[key] = candidate
                 }
@@ -317,12 +472,17 @@ public struct CustomModelState: Codable, Sendable {
     private static func shouldPrefer(
         _ candidate: ModelCandidate,
         over existing: ModelCandidate,
-        preservingTargetIDs: Set<String>
+        preservingTargetIDs: Set<String>,
+        preferLongContext: Bool
     ) -> Bool {
         let candidateIsPreserved = preservingTargetIDs.contains(targetID(for: candidate))
         let existingIsPreserved = preservingTargetIDs.contains(targetID(for: existing))
         if candidateIsPreserved != existingIsPreserved {
             return candidateIsPreserved
+        }
+        if preferLongContext,
+           candidate.supportsLongContext != existing.supportsLongContext {
+            return candidate.supportsLongContext
         }
         if candidate.source != existing.source {
             return sourcePriority(candidate.source) < sourcePriority(existing.source)
@@ -351,6 +511,19 @@ public struct CustomModelState: Codable, Sendable {
         case .staleDiscovered:
             return 3
         }
+    }
+
+    private static func encodedTargetID(
+        routeKeyDescription: String,
+        providerRefDescription: String
+    ) -> String {
+        let route = encodedIdentityComponent(routeKeyDescription)
+        let provider = encodedIdentityComponent(providerRefDescription)
+        return "\(route)|\(provider)"
+    }
+
+    private static func encodedIdentityComponent(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
     }
 
     private func missingTargetCandidate(
@@ -405,6 +578,21 @@ public struct CustomModelState: Codable, Sendable {
             }
             seen.insert(routeKey)
             result.insert(definition, at: 0)
+        }
+        return result
+    }
+
+    private static func deduplicatedCodexRoutePolicies(
+        _ policies: [CodexModelRoutePolicy]
+    ) -> [CodexModelRoutePolicy] {
+        var seen: Set<ModelRouteKey> = []
+        var result: [CodexModelRoutePolicy] = []
+        for policy in policies.reversed() where policy.routeKey.appType == UniGateAppRegistry.codex {
+            guard !seen.contains(policy.routeKey) else {
+                continue
+            }
+            seen.insert(policy.routeKey)
+            result.insert(policy, at: 0)
         }
         return result
     }

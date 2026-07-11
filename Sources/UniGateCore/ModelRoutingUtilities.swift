@@ -86,6 +86,9 @@ public enum ModelRouteVisibility {
         if candidate.source == .custom {
             return true
         }
+        if candidate.appType == UniGateAppRegistry.codex {
+            return true
+        }
         guard isUniGateScopedApp(candidate.appType) else {
             return true
         }
@@ -94,26 +97,10 @@ public enum ModelRouteVisibility {
 
     public static func isCandidateSelectable(
         _ candidate: ModelCandidate,
-        catalog: ProviderCatalog,
+        catalog _: ProviderCatalog,
         uniGateModelScope: UniGateModelScope
     ) -> Bool {
-        if codexOfficialRouteKeys(in: catalog).contains(candidate.routeKey) {
-            return true
-        }
         return isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope)
-    }
-
-    static func codexOfficialRouteKeys(in catalog: ProviderCatalog) -> Set<ModelRouteKey> {
-        let providerRefs = Set(
-            catalog.providers.filter { $0.backendKind == .codexOfficial }.map(\.ref)
-        )
-        return Set(catalog.candidates.compactMap { candidate in
-            guard candidate.providerRef == candidate.upstreamProviderRef,
-                  providerRefs.contains(candidate.providerRef) else {
-                return nil
-            }
-            return candidate.routeKey
-        })
     }
 
     public static func visibleConfiguredBaseRouteKeys(
@@ -122,13 +109,17 @@ public enum ModelRouteVisibility {
         uniGateModelScope: UniGateModelScope,
         preferences: AppPreferences
     ) -> [ModelRouteKey] {
-        preferences.visibleRouteKeyList(
-            allRouteKeys: configuredBaseRouteKeys(
-                catalog: catalog,
-                customModels: customModels,
-                uniGateModelScope: uniGateModelScope
-            )
+        let allRouteKeys = configuredBaseRouteKeys(
+            catalog: catalog,
+            customModels: customModels,
+            uniGateModelScope: uniGateModelScope
         )
+        let visibleNonCodexRouteKeys = Set(preferences.visibleRouteKeyList(
+            allRouteKeys: allRouteKeys.filter { $0.appType != UniGateAppRegistry.codex }
+        ))
+        return allRouteKeys.filter {
+            $0.appType == UniGateAppRegistry.codex || visibleNonCodexRouteKeys.contains($0)
+        }
     }
 
     public static func configuredBaseRouteKeys(
@@ -139,24 +130,34 @@ public enum ModelRouteVisibility {
         let customModelIdentities = Set(customModels.models.map {
             NormalizedRouteKeyIdentity(appType: $0.appType, logicalModel: $0.name)
         })
-        let codexOfficialProviderRefs = Set(
-            catalog.providers.filter { $0.backendKind == .codexOfficial }.map(\.ref)
-        )
-        let visibleRouteKeys = Set(catalog.candidates.compactMap { candidate -> ModelRouteKey? in
-            let isCodexOfficialDiscovery = codexOfficialProviderRefs.contains(candidate.providerRef)
-                && (candidate.source == .discovered || candidate.source == .staleDiscovered)
+        var routeKeys = Set(catalog.candidates.compactMap { candidate -> ModelRouteKey? in
             guard candidate.providerRef == candidate.upstreamProviderRef,
-                  candidate.source.isRouteKeySeed || isCodexOfficialDiscovery,
-                  codexOfficialProviderRefs.contains(candidate.providerRef)
-                    || isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope),
-                  !customModelIdentities.contains(NormalizedRouteKeyIdentity(routeKey: candidate.routeKey))
-            else {
+                  !customModelIdentities.contains(NormalizedRouteKeyIdentity(routeKey: candidate.routeKey)) else {
+                return nil
+            }
+            if candidate.appType == UniGateAppRegistry.codex {
+                return candidate.routeKey
+            }
+            guard candidate.source.isRouteKeySeed,
+                  isCandidateSelectable(candidate, uniGateModelScope: uniGateModelScope) else {
                 return nil
             }
             return candidate.routeKey
         })
 
-        return catalog.routeKeys.filter { visibleRouteKeys.contains($0) }
+        for model in uniGateModelScope.models(for: UniGateAppRegistry.codex) {
+            let routeKey = ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: model)
+            if !customModelIdentities.contains(NormalizedRouteKeyIdentity(routeKey: routeKey)) {
+                routeKeys.insert(routeKey)
+            }
+        }
+        for policy in customModels.codexRoutePolicies {
+            if !customModelIdentities.contains(NormalizedRouteKeyIdentity(routeKey: policy.routeKey)) {
+                routeKeys.insert(policy.routeKey)
+            }
+        }
+
+        return Array(routeKeys).sorted(by: routeKeySort)
     }
 
     public static func addingCustomModelRouteKeys(
@@ -165,14 +166,16 @@ public enum ModelRouteVisibility {
     ) -> [ModelRouteKey] {
         (routeKeys + customModels.models.map { ModelRouteKey(appType: $0.appType, logicalModel: $0.name) })
             .uniqueRouteKeys()
-            .sorted { lhs, rhs in
-                let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)
-                    .localizedStandardCompare(ProviderDisplay.appTypeLabel(rhs.appType))
-                if appCompare != .orderedSame {
-                    return appCompare == .orderedAscending
-                }
-                return lhs.logicalModel.localizedStandardCompare(rhs.logicalModel) == .orderedAscending
-            }
+            .sorted(by: routeKeySort)
+    }
+
+    private static func routeKeySort(_ lhs: ModelRouteKey, _ rhs: ModelRouteKey) -> Bool {
+        let appCompare = ProviderDisplay.appTypeLabel(lhs.appType)
+            .localizedStandardCompare(ProviderDisplay.appTypeLabel(rhs.appType))
+        if appCompare != .orderedSame {
+            return appCompare == .orderedAscending
+        }
+        return lhs.logicalModel.localizedStandardCompare(rhs.logicalModel) == .orderedAscending
     }
 }
 

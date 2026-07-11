@@ -182,10 +182,14 @@ struct CcSwitchImporterTests {
                 name: "UniGate",
                 settings: """
                 {
-                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/codex\\"\\nwire_api = \\"responses\\""
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"ignored-default\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/codex\\"\\nwire_api = \\"responses\\"",
+                  "modelCatalog": {
+                    "models": [{"model": "gpt-5.5"}]
+                  }
                 }
                 """,
-                meta: #"{"apiFormat":"openai_responses"}"#
+                meta: #"{"apiFormat":"openai_responses"}"#,
+                isCurrent: true
             )
             try insertProvider(
                 db,
@@ -269,6 +273,86 @@ struct CcSwitchImporterTests {
         #expect(scope.contains(desktopCandidate(upstreamModel: "deepseek-v4-pro[1M]")))
         #expect(!scope.contains(desktopCandidate(upstreamModel: "gpt-5.5")))
         #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "deepseek-v4-pro")))
+        #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "ignored-default")))
+    }
+
+    @Test
+    func codexUniGateScopeUsesOnlyCurrentProviderModelCatalog() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "unigate-old",
+                appType: "codex",
+                name: "UniGate Old",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"old-default\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/codex\\"\\nwire_api = \\"responses\\"",
+                  "modelCatalog": {
+                    "models": [{"model": "old-pinned"}]
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#,
+                sortIndex: 1
+            )
+            try insertProvider(
+                db,
+                id: "unigate-current",
+                appType: "codex",
+                name: "UniGate Current",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"current-default\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/codex\\"\\nwire_api = \\"responses\\"",
+                  "modelCatalog": {
+                    "models": [
+                      {"model": "current-pinned-a"},
+                      {"model": "current-pinned-b [1m]"}
+                    ]
+                  }
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#,
+                sortIndex: 2,
+                isCurrent: true
+            )
+        }
+
+        let scope = try CcSwitchImporter(dbPath: dbURL.path).loadUniGateModelScope()
+
+        #expect(scope.models(for: "codex") == ["current-pinned-a", "current-pinned-b [1m]"])
+        #expect(scope.contains(ModelRouteKey(appType: "codex", logicalModel: "current-pinned-b")))
+        #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "current-default")))
+        #expect(!scope.contains(ModelRouteKey(appType: "codex", logicalModel: "old-pinned")))
+    }
+
+    @Test
+    func codexDefaultModelDoesNotPopulateUniGateScopeOrSnapshotModels() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "unigate-current",
+                appType: "codex",
+                name: "UniGate",
+                settings: """
+                {
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"http://127.0.0.1:17888/codex\\"\\nwire_api = \\"responses\\""
+                }
+                """,
+                meta: #"{"apiFormat":"openai_responses"}"#,
+                isCurrent: true
+            )
+        }
+
+        let importer = CcSwitchImporter(dbPath: dbURL.path)
+        let scope = try importer.loadUniGateModelScope()
+        let snapshot = try importer.loadIntegrationSnapshot()
+
+        #expect(!scope.hasModels(for: "codex"))
+        #expect(snapshot.uniGateProvider(appType: "codex")?.configuredModels.isEmpty == true)
     }
 
     @Test
@@ -415,7 +499,7 @@ struct CcSwitchImporterTests {
         let desktop = try #require(snapshot.providers(appType: "claude-desktop").first)
 
         #expect(uniGate.isCurrent)
-        #expect(uniGate.configuredModels == ["gpt-5.5"])
+        #expect(uniGate.configuredModels.isEmpty)
         #expect(desktop.hasClaudeDesktopRoutes)
         #expect(!desktop.isUniGateProvider)
     }

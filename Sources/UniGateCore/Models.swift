@@ -499,21 +499,65 @@ public struct ProviderCatalog: Sendable {
         uniGateModelScope: UniGateModelScope,
         customModels: CustomModelState
     ) -> ProviderCatalog {
-        let codexOfficialRouteKeys = ModelRouteVisibility.codexOfficialRouteKeys(in: self)
-        let baseCandidates = candidates.filter { candidate in
-            candidate.providerRef == candidate.upstreamProviderRef
-                && (
-                    codexOfficialRouteKeys.contains(candidate.routeKey)
-                        || ModelRouteVisibility.isCandidateSelectable(
-                            candidate,
-                            uniGateModelScope: uniGateModelScope
-                        )
+        let nonCodexBaseCandidates = candidates.filter { candidate in
+            candidate.appType != UniGateAppRegistry.codex
+                && candidate.providerRef == candidate.upstreamProviderRef
+                && ModelRouteVisibility.isCandidateSelectable(
+                    candidate,
+                    uniGateModelScope: uniGateModelScope
                 )
         }
-        let baseCatalog = ProviderCatalog(providers: providers, candidates: baseCandidates)
-        let baseRouteKeys = Set(baseCandidates.map(\.routeKey))
+        let codexCustomRouteKeys = Set(customModels.models.compactMap { definition -> ModelRouteKey? in
+            guard definition.appType == UniGateAppRegistry.codex else {
+                return nil
+            }
+            return ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+        })
+        var codexRouteKeySet = Set(candidates.compactMap { candidate -> ModelRouteKey? in
+            guard candidate.appType == UniGateAppRegistry.codex,
+                  candidate.providerRef == candidate.upstreamProviderRef,
+                  !codexCustomRouteKeys.contains(candidate.routeKey) else {
+                return nil
+            }
+            return candidate.routeKey
+        })
+        for model in uniGateModelScope.models(for: UniGateAppRegistry.codex) {
+            let routeKey = ModelRouteKey(
+                appType: UniGateAppRegistry.codex,
+                logicalModel: model
+            )
+            if !codexCustomRouteKeys.contains(routeKey) {
+                codexRouteKeySet.insert(routeKey)
+            }
+        }
+        for policy in customModels.codexRoutePolicies
+        where !codexCustomRouteKeys.contains(policy.routeKey) {
+            codexRouteKeySet.insert(policy.routeKey)
+        }
+        let codexRouteKeys = Array(codexRouteKeySet)
+        let codexBaseCandidates = CustomModelState.deduplicatedTargetCandidates(
+            codexRouteKeys.flatMap { routeKey -> [ModelCandidate] in
+                guard !customModels.isCodexRouteDisabled(
+                    routeKey,
+                    pinnedScope: uniGateModelScope
+                ) else {
+                    return []
+                }
+                return customModels.codexRoutingCandidates(for: routeKey, from: self)
+            },
+            preferLongContext: true
+        )
+        let codexBaseRouteKeys = Set(codexRouteKeys)
+        let nonCodexBaseRouteKeys = Set(nonCodexBaseCandidates.map(\.routeKey))
         let customCandidates = customModels.expandedCandidates(from: self).filter { candidate in
-            guard !baseRouteKeys.contains(candidate.routeKey) else {
+            if candidate.appType == UniGateAppRegistry.codex {
+                return !codexBaseRouteKeys.contains(candidate.routeKey)
+                    && !customModels.isCodexRouteDisabled(
+                    candidate.routeKey,
+                    pinnedScope: uniGateModelScope
+                )
+            }
+            guard !nonCodexBaseRouteKeys.contains(candidate.routeKey) else {
                 return false
             }
             guard let definition = customModels.definition(for: candidate.routeKey) else {
@@ -523,7 +567,7 @@ public struct ProviderCatalog: Sendable {
         }
         return ProviderCatalog(
             providers: providers,
-            candidates: baseCatalog.candidates + customCandidates
+            candidates: nonCodexBaseCandidates + codexBaseCandidates + customCandidates
         )
     }
 }
@@ -550,9 +594,16 @@ public extension ModelCandidate {
 }
 
 public struct UniGateModelScope: Sendable {
+    private let modelsByApp: [String: Set<String>]
     private let normalizedModelsByApp: [String: Set<String>]
 
     public init(modelsByApp: [String: Set<String>] = [:]) {
+        self.modelsByApp = modelsByApp.mapValues { models in
+            Set(models.compactMap { model in
+                let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            })
+        }
         self.normalizedModelsByApp = modelsByApp.mapValues { models in
             Set(models.map(Self.normalizedModel))
         }
@@ -583,7 +634,7 @@ public struct UniGateModelScope: Sendable {
     }
 
     public func models(for appType: String) -> [String] {
-        guard let models = normalizedModelsByApp[appType] else {
+        guard let models = modelsByApp[appType] else {
             return []
         }
         return models.sorted { $0.localizedStandardCompare($1) == .orderedAscending }

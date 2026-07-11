@@ -4,7 +4,56 @@ import Testing
 
 struct ConfigurationHealthTests {
     @Test
-    func reportsCustomModelNameConflictWithVisibleBaseModel() {
+    func acceptsCurrentCodexUniGateProviderWithoutPinnedModels() {
+        let report = ConfigurationHealthReport.build(
+            databasePath: "/tmp/cc-switch.db",
+            databaseExists: true,
+            catalogLoadError: nil,
+            proxySeverity: .ok,
+            proxyDetail: "running",
+            catalog: ProviderCatalog(providers: [], candidates: []),
+            routes: RouteState(),
+            customModels: CustomModelState(),
+            uniGateModelScope: UniGateModelScope(),
+            integration: CcSwitchIntegrationSnapshot(
+                databasePath: "/tmp/cc-switch.db",
+                providers: [
+                    CcSwitchProviderSummary(
+                        id: "unigate-old",
+                        appType: "codex",
+                        name: "UniGate Old",
+                        isCurrent: false,
+                        isUniGateProvider: true,
+                        baseURL: "http://127.0.0.1:17888/codex",
+                        configuredModels: ["old-pinned"],
+                        hasClaudeDesktopRoutes: false
+                    ),
+                    CcSwitchProviderSummary(
+                        id: "unigate-current",
+                        appType: "codex",
+                        name: "UniGate",
+                        isCurrent: true,
+                        isUniGateProvider: true,
+                        baseURL: "http://127.0.0.1:17888/codex",
+                        configuredModels: [],
+                        hasClaudeDesktopRoutes: false
+                    )
+                ]
+            ),
+            now: Date(timeIntervalSince1970: 0)
+        )
+
+        let codexHealth = report.items.first { $0.id == "unigate-provider-codex" }
+        #expect(codexHealth?.severity == .ok)
+        #expect(codexHealth?.detail == "未配置固定模型，将使用供应商探测结果")
+        #expect(codexHealth?.actionTitle == nil)
+        #expect(!report.items.contains { $0.id == "unigate-current-codex" })
+        #expect(!report.items.contains { $0.id == "scope-empty-codex" })
+        #expect(report.items.contains { $0.id == "scope-empty-claude" })
+    }
+
+    @Test
+    func existingCodexCustomAliasDoesNotBecomeAConflictWhenBaseModelAppears() {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -53,8 +102,8 @@ struct ConfigurationHealthTests {
             now: Date(timeIntervalSince1970: 0)
         )
 
-        #expect(report.items.contains {
-            $0.id == "custom-name-conflict-codex:gpt-5.5" && $0.severity == .warning
+        #expect(!report.items.contains {
+            $0.id == "custom-name-conflict-codex:gpt-5.5"
         })
     }
 
@@ -114,7 +163,7 @@ struct ConfigurationHealthTests {
         #expect(report.worstSeverity == .error)
         #expect(report.items.contains { $0.id == "desktop-routes-missing" })
         #expect(report.items.contains { $0.id == "custom-target-missing-codex:uni" })
-        #expect(report.items.contains { $0.id == "custom-unconfigured-codex:uni" })
+        #expect(!report.items.contains { $0.id == "custom-unconfigured-codex:uni" })
     }
 
     @Test
@@ -304,5 +353,72 @@ struct ConfigurationHealthTests {
         #expect(report.items.contains { $0.id == "custom-target-stale-codex:uni" })
         #expect(!report.items.contains { $0.id == "route-invalid-codex:gpt-5.5" })
         #expect(!report.items.contains { $0.id == "custom-target-missing-codex:uni" })
+    }
+
+    @Test
+    func validCodexExplicitRouteIsCheckedAgainstEffectiveProxyCandidates() throws {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: UniGateAppRegistry.codex,
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+        let upstream = ModelCandidate(
+            logicalModel: "gpt-5.6-sol",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.6-sol",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false,
+            source: .discovered
+        )
+        let routeKey = ModelRouteKey(appType: UniGateAppRegistry.codex, logicalModel: "gpt-5.5")
+        let target = CustomModelTarget(routeKey: upstream.routeKey, providerRef: provider.ref)
+        var customModels = CustomModelState()
+        customModels.setCodexExplicitRoute(
+            routeKey: routeKey,
+            targets: [target],
+            selectedTargetID: target.id
+        )
+        let catalog = ProviderCatalog(providers: [provider], candidates: [upstream])
+        let proxyCatalog = catalog.scopedForProxy(
+            uniGateModelScope: UniGateModelScope(),
+            customModels: customModels
+        )
+        let routes = RouteStore.defaultState(
+            candidates: proxyCatalog.candidates,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: proxyCatalog
+            )
+        )
+        _ = try #require(routes.routes[routeKey.description])
+
+        let report = ConfigurationHealthReport.build(
+            databasePath: "/tmp/cc-switch.db",
+            databaseExists: true,
+            catalogLoadError: nil,
+            proxySeverity: .ok,
+            proxyDetail: "running",
+            catalog: catalog,
+            routes: routes,
+            customModels: customModels,
+            uniGateModelScope: UniGateModelScope(),
+            integration: CcSwitchIntegrationSnapshot(databasePath: "/tmp/cc-switch.db", providers: []),
+            now: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(!report.items.contains { $0.id == "route-invalid-\(routeKey.description)" })
     }
 }

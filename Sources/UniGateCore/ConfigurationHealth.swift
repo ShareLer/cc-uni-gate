@@ -138,15 +138,27 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
 
         for appType in UniGateAppRegistry.uniGateScopedAppTypes {
             let appName = ProviderDisplay.appTypeLabel(appType)
-            if let provider = integration?.uniGateProvider(appType: appType) {
-                let severity: ConfigurationHealthSeverity = provider.configuredModels.isEmpty ? .warning : .ok
+            let provider = if appType == UniGateAppRegistry.codex {
+                integration?.providers(appType: appType).first {
+                    $0.isUniGateProvider && $0.isCurrent
+                } ?? integration?.uniGateProvider(appType: appType)
+            } else {
+                integration?.uniGateProvider(appType: appType)
+            }
+            if let provider {
+                let allowsEmptyModels = appType == UniGateAppRegistry.codex && provider.isCurrent
+                let severity: ConfigurationHealthSeverity = provider.configuredModels.isEmpty && !allowsEmptyModels
+                    ? .warning
+                    : .ok
                 items.append(ConfigurationHealthItem(
                     id: "unigate-provider-\(appType)",
                     severity: severity,
                     appType: appType,
                     title: "\(appName) 已接入 Uni Gate",
                     detail: provider.configuredModels.isEmpty
-                        ? "已找到 UniGate 供应商，但模型清单为空"
+                        ? (allowsEmptyModels
+                            ? "未配置固定模型，将使用供应商探测结果"
+                            : "已找到 UniGate 供应商，但模型清单为空")
                         : "已配置 \(provider.configuredModels.count) 个模型",
                     actionTitle: severity == .ok ? nil : "补充模型"
                 ))
@@ -203,7 +215,8 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
             ))
         }
 
-        for appType in UniGateAppRegistry.uniGateScopedAppTypes where !uniGateModelScope.hasModels(for: appType) {
+        for appType in UniGateAppRegistry.uniGateScopedAppTypes
+        where appType != UniGateAppRegistry.codex && !uniGateModelScope.hasModels(for: appType) {
             items.append(ConfigurationHealthItem(
                 id: "scope-empty-\(appType)",
                 severity: .warning,
@@ -251,7 +264,9 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
                     actionTitle: "编辑"
                 ))
             }
-            if !uniGateModelScope.contains(routeKey) && !definition.forceEnabled {
+            if definition.appType != UniGateAppRegistry.codex,
+               !uniGateModelScope.contains(routeKey),
+               !definition.forceEnabled {
                 items.append(ConfigurationHealthItem(
                     id: "custom-unconfigured-\(routeKey.description)",
                     severity: .info,
@@ -263,11 +278,26 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
             }
         }
 
+        let codexRouteCatalog = catalog.scopedForProxy(
+            uniGateModelScope: uniGateModelScope,
+            customModels: customModels
+        )
         for (key, route) in routes.routes {
-            let candidate = catalog.candidates.first {
+            let matchesRoute: (ModelCandidate) -> Bool = {
                 $0.appType == route.appType
                     && $0.logicalModel == route.logicalModel
                     && $0.providerRef == route.providerRef
+            }
+            let candidate: ModelCandidate?
+            if route.appType == UniGateAppRegistry.codex {
+                candidate = codexRouteCatalog.candidates.first(where: matchesRoute)
+                    ?? customModels.codexDisplayCandidates(
+                        for: route.routeKey,
+                        from: catalog
+                    ).first(where: matchesRoute)
+                    ?? catalog.candidates.first(where: matchesRoute)
+            } else {
+                candidate = catalog.candidates.first(where: matchesRoute)
             }
             if let candidate, candidate.isDiscoveryStale(in: catalog) {
                 items.append(ConfigurationHealthItem(

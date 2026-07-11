@@ -286,9 +286,31 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func defaultModel(forAppType appType: String) -> String? {
-        let appKeys = modelRouteKeys().filter { $0.appType == appType }
-        let visibleKeys = visibleRouteKeys().filter { $0.appType == appType }
+        let appKeys = modelRouteKeys().filter {
+            $0.appType == appType && isRouteExposed($0)
+        }
+        let visibleKeys = visibleRouteKeys().filter {
+            $0.appType == appType && isRouteExposed($0)
+        }
         return preferredDefaultModel(from: visibleKeys) ?? preferredDefaultModel(from: appKeys)
+    }
+
+    private func isRouteExposed(_ routeKey: ModelRouteKey) -> Bool {
+        guard routeKey.appType == UniGateAppRegistry.codex else {
+            return true
+        }
+        let catalog = ProviderCatalog(providers: providers, candidates: candidates)
+        let proxyCatalog = catalog.scopedForProxy(
+            uniGateModelScope: uniGateModelScope,
+            customModels: customModels
+        )
+        let defaultRoutes = RouteStore.defaultState(
+            candidates: proxyCatalog.candidates,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: proxyCatalog
+            )
+        )
+        return defaultRoutes.routes[routeKey.description] != nil
     }
 
     private func preferredDefaultModel(from keys: [ModelRouteKey]) -> String? {

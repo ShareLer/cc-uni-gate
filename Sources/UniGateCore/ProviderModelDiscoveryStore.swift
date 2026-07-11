@@ -16,6 +16,10 @@ public struct ProviderModelDiscoveryResult: Codable, Sendable, Equatable, Identi
         providerRef.description
     }
 
+    public var hasUsableModelBaseline: Bool {
+        errorMessage == nil || !modelIDs.isEmpty
+    }
+
     public init(
         providerRef: ProviderRef,
         appType: String,

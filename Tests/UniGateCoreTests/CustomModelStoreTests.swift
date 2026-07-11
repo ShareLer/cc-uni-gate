@@ -4,7 +4,7 @@ import Testing
 
 struct CustomModelStoreTests {
     @Test
-    func proxyCatalogDisablesCustomModelWhoseNameMatchesVisibleBaseModel() {
+    func proxyCatalogKeepsExistingCodexCustomModelWhenBaseModelHasSameName() {
         let provider = ImportedProvider(
             id: "p1",
             appType: "codex",
@@ -49,9 +49,15 @@ struct CustomModelStoreTests {
             customModels: customModels
         )
 
+        let syntheticProviderRef = CustomModelState.syntheticProviderRef(
+            appType: "codex",
+            target: target
+        )
         #expect(proxyCatalog.candidates.count == 1)
-        #expect(proxyCatalog.candidates.first?.providerRef == provider.ref)
-        #expect(customModels.preferredProviderRefsByRouteKey(availableIn: proxyCatalog).isEmpty)
+        #expect(proxyCatalog.candidates.first?.providerRef == syntheticProviderRef)
+        #expect(customModels.preferredProviderRefsByRouteKey(availableIn: proxyCatalog) == [
+            baseCandidate.routeKey.description: syntheticProviderRef
+        ])
     }
 
     @Test
@@ -208,6 +214,59 @@ struct CustomModelStoreTests {
     }
 
     @Test
+    func persistsCodexRoutePoliciesAndVisibilityMigrationState() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("custom-models.json")
+        let store = CustomModelStore(fileURL: tmp)
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let target = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "gpt-5.6-sol"),
+            providerRef: ProviderRef(appType: "codex", id: "p1")
+        )
+        let policy = CodexModelRoutePolicy(
+            routeKey: routeKey,
+            targetMode: .explicit,
+            targets: [target],
+            selectedTargetID: target.id,
+            isDisabled: true
+        )
+        let state = CustomModelState(
+            codexRoutePolicies: [policy],
+            codexVisibilityMigrated: true
+        )
+
+        try store.save(state)
+        let loaded = try store.load()
+
+        #expect(loaded.codexRoutePolicies == [policy])
+        #expect(loaded.codexVisibilityMigrated)
+        #expect(loaded.preferredProviderRefsByRouteKey()[routeKey.description] ==
+            CustomModelState.syntheticProviderRef(appType: "codex", target: target))
+    }
+
+    @Test
+    func persistsPendingCodexVisibilityMigration() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("custom-models.json")
+        let store = CustomModelStore(fileURL: tmp)
+        let providerRef = ProviderRef(appType: "codex", id: "official")
+        let routeKey = ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5")
+        let migration = CodexVisibilityMigrationState(
+            legacyVisibleModels: [routeKey.description],
+            pendingProviderRefs: [providerRef],
+            migratedRouteKeys: [routeKey]
+        )
+
+        try store.save(CustomModelState(codexVisibilityMigration: migration))
+        let loaded = try store.load()
+
+        #expect(!loaded.codexVisibilityMigrated)
+        #expect(loaded.codexVisibilityMigration == migration)
+    }
+
+    @Test
     func loadsLegacyCustomModelStateWithoutForceEnabled() throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -224,6 +283,8 @@ struct CustomModelStoreTests {
         let loaded = try store.load()
 
         #expect(loaded.models.first?.forceEnabled == false)
+        #expect(loaded.codexRoutePolicies.isEmpty)
+        #expect(!loaded.codexVisibilityMigrated)
     }
 
     @Test
@@ -752,5 +813,53 @@ struct CustomModelStoreTests {
             appType: "claude-desktop",
             target: autoTarget
         ))
+    }
+
+    @Test
+    func codexSyntheticProviderRefsRemainDistinctWhenLegacyDelimiterEncodingCollides() {
+        let firstTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "c"),
+            providerRef: ProviderRef(appType: "codex", id: "a|codex:b")
+        )
+        let secondTarget = CustomModelTarget(
+            routeKey: ModelRouteKey(appType: "codex", logicalModel: "b|codex:c"),
+            providerRef: ProviderRef(appType: "codex", id: "a")
+        )
+        let destination = ModelRouteKey(appType: "codex", logicalModel: "customer_model")
+        let state = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: destination.appType,
+                name: destination.logicalModel,
+                targets: [firstTarget, secondTarget],
+                selectedTargetID: firstTarget.id
+            )
+        ])
+
+        let firstLegacy = CustomModelState.legacySyntheticProviderRef(
+            appType: "codex",
+            target: firstTarget
+        )
+        let secondLegacy = CustomModelState.legacySyntheticProviderRef(
+            appType: "codex",
+            target: secondTarget
+        )
+        let firstCurrent = CustomModelState.syntheticProviderRef(
+            appType: "codex",
+            target: firstTarget
+        )
+        let secondCurrent = CustomModelState.syntheticProviderRef(
+            appType: "codex",
+            target: secondTarget
+        )
+        let plan = state.codexProviderRefMigrationPlan()
+
+        #expect(firstLegacy == secondLegacy)
+        #expect(firstCurrent != secondCurrent)
+        #expect(plan.replacementsByRouteKey[destination.description]?[firstLegacy] == nil)
+        #expect(plan.ambiguousProviderRefsByRouteKey[destination.description] == [firstLegacy])
+        #expect(plan.preservedProviderRefsByRouteKey[destination.description] == [
+            firstCurrent,
+            secondCurrent
+        ])
     }
 }
