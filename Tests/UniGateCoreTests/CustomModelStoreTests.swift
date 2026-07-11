@@ -4,6 +4,57 @@ import Testing
 
 struct CustomModelStoreTests {
     @Test
+    func proxyCatalogDisablesCustomModelWhoseNameMatchesVisibleBaseModel() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: ["auth": .object(["OPENAI_API_KEY": .string("key-1")])],
+            meta: [:]
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "gpt-5.5",
+                targets: [target],
+                selectedTargetID: target.id
+            )
+        ])
+
+        let proxyCatalog = ProviderCatalog(
+            providers: [provider],
+            candidates: [baseCandidate]
+        ).scopedForProxy(
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            customModels: customModels
+        )
+
+        #expect(proxyCatalog.candidates.count == 1)
+        #expect(proxyCatalog.candidates.first?.providerRef == provider.ref)
+        #expect(customModels.preferredProviderRefsByRouteKey(availableIn: proxyCatalog).isEmpty)
+    }
+
+    @Test
     func selectedTargetDoesNotFallBackWhenSelectionIsMissing() {
         let target1 = CustomModelTarget(
             routeKey: ModelRouteKey(appType: "codex", logicalModel: "gpt-5.5"),

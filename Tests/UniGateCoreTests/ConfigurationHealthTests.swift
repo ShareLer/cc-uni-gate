@@ -4,6 +4,61 @@ import Testing
 
 struct ConfigurationHealthTests {
     @Test
+    func reportsCustomModelNameConflictWithVisibleBaseModel() {
+        let provider = ImportedProvider(
+            id: "p1",
+            appType: "codex",
+            name: "Provider 1",
+            category: nil,
+            sortIndex: 1,
+            isCurrent: false,
+            apiFormat: .openaiResponses,
+            baseURL: "https://api.example.com",
+            hasSecret: true,
+            settings: [:],
+            meta: [:]
+        )
+        let baseCandidate = ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: provider.ref,
+            providerName: provider.name,
+            appType: provider.appType,
+            clientProtocol: .codexResponses,
+            apiFormat: .openaiResponses,
+            upstreamModel: "gpt-5.5",
+            baseURL: provider.baseURL,
+            requiresTransform: false,
+            label: nil,
+            supportsLongContext: false
+        )
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let report = ConfigurationHealthReport.build(
+            databasePath: "/tmp/cc-switch.db",
+            databaseExists: true,
+            catalogLoadError: nil,
+            proxySeverity: .ok,
+            proxyDetail: "running",
+            catalog: ProviderCatalog(providers: [provider], candidates: [baseCandidate]),
+            routes: RouteState(),
+            customModels: CustomModelState(models: [
+                CustomModelDefinition(
+                    appType: "codex",
+                    name: "gpt-5.5",
+                    targets: [target],
+                    selectedTargetID: target.id
+                )
+            ]),
+            uniGateModelScope: UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]]),
+            integration: CcSwitchIntegrationSnapshot(databasePath: "/tmp/cc-switch.db", providers: []),
+            now: Date(timeIntervalSince1970: 0)
+        )
+
+        #expect(report.items.contains {
+            $0.id == "custom-name-conflict-codex:gpt-5.5" && $0.severity == .warning
+        })
+    }
+
+    @Test
     func reportsMissingDesktopRoutesAndCustomModelIssues() {
         let provider = ImportedProvider(
             id: "p1",

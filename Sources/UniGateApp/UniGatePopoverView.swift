@@ -731,8 +731,9 @@ struct UniGatePopoverRootView: View {
             existing: editingCustomModel,
             initialAppType: state.currentAppType,
             onSave: { definition in
-                state.saveCustomModel(definition, replacing: editingCustomModel)
-                closeCustomModelEditor()
+                if state.saveCustomModel(definition, replacing: editingCustomModel) {
+                    closeCustomModelEditor()
+                }
             },
             onCancel: closeCustomModelEditor
         )

@@ -88,6 +88,11 @@ public struct CustomModelDefinition: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+public enum CustomModelNameConflict: Sendable, Equatable {
+    case baseModel
+    case customModel
+}
+
 public struct CustomModelState: Codable, Sendable {
     public var models: [CustomModelDefinition]
 
@@ -152,6 +157,45 @@ public struct CustomModelState: Codable, Sendable {
                 Self.syntheticProviderRef(appType: definition.appType, target: target)
             )
         })
+    }
+
+    public func preferredProviderRefsByRouteKey(
+        availableIn catalog: ProviderCatalog
+    ) -> [String: ProviderRef] {
+        preferredProviderRefsByRouteKey().filter { key, providerRef in
+            guard let routeKey = ModelRouteKey(description: key) else {
+                return false
+            }
+            return catalog.candidates.contains {
+                $0.routeKey == routeKey && $0.providerRef == providerRef
+            }
+        }
+    }
+
+    public func nameConflict(
+        for definition: CustomModelDefinition,
+        in catalog: ProviderCatalog,
+        uniGateModelScope: UniGateModelScope
+    ) -> CustomModelNameConflict? {
+        let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+        if models.contains(where: { existing in
+            existing.id != definition.id
+                && existing.appType == routeKey.appType
+                && existing.name == routeKey.logicalModel
+        }) {
+            return .customModel
+        }
+        if catalog.candidates.contains(where: { candidate in
+            candidate.routeKey == routeKey
+                && candidate.providerRef == candidate.upstreamProviderRef
+                && ModelRouteVisibility.isCandidateSelectable(
+                    candidate,
+                    uniGateModelScope: uniGateModelScope
+                )
+        }) {
+            return .baseModel
+        }
+        return nil
     }
 
     public func baseCandidates(

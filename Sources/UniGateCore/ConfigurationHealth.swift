@@ -216,6 +216,20 @@ public struct ConfigurationHealthReport: Codable, Sendable, Equatable {
 
         for definition in customModels.models {
             let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+            if customModels.nameConflict(
+                for: definition,
+                in: catalog,
+                uniGateModelScope: uniGateModelScope
+            ) == .baseModel {
+                items.append(ConfigurationHealthItem(
+                    id: "custom-name-conflict-\(routeKey.description)",
+                    severity: .warning,
+                    appType: definition.appType,
+                    title: "自定义模型名称冲突",
+                    detail: "\(definition.name) 与当前 cc-switch 基础模型重名，请重命名自定义模型。",
+                    actionTitle: "重命名"
+                ))
+            }
             if let selectedTarget = definition.selectedTargetCandidate(in: catalog) {
                 if selectedTarget.isDiscoveryStale(in: catalog) {
                     items.append(ConfigurationHealthItem(

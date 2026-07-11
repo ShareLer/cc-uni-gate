@@ -129,6 +129,84 @@ struct UniGateAppStateTests {
         #expect(candidates.map(\.logicalModel) == ["auto"])
     }
 
+    @Test
+    func saveCustomModelRejectsNameMatchingVisibleBaseModel() {
+        let provider = codexProvider()
+        let baseCandidate = candidate(provider: provider, logicalModel: "gpt-5.5")
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        state.uniGateModelScope = UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]])
+        var didPersist = false
+        state.onSaveSettings = { _, _ in didPersist = true }
+
+        let didSave = state.saveCustomModel(CustomModelDefinition(
+            appType: "codex",
+            name: "gpt-5.5",
+            targets: [target],
+            selectedTargetID: target.id
+        ))
+
+        #expect(!didSave)
+        #expect(!didPersist)
+    }
+
+    @Test
+    func existingNameConflictIsShownOnceAndCannotBeOperated() throws {
+        let provider = codexProvider()
+        let baseCandidate = candidate(provider: provider, logicalModel: "gpt-5.5")
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        state.uniGateModelScope = UniGateModelScope(modelsByApp: ["codex": ["gpt-5.5"]])
+        state.customModels = CustomModelState(models: [
+            CustomModelDefinition(
+                appType: "codex",
+                name: "gpt-5.5",
+                targets: [target],
+                selectedTargetID: target.id
+            )
+        ])
+
+        let groups = state.displayRouteGroups.filter { $0.routeKey == baseCandidate.routeKey }
+        let group = try #require(groups.first)
+
+        #expect(groups.count == 1)
+        if case .nameConflict = state.customModelAvailability(for: baseCandidate.routeKey) {
+            #expect(!state.isRouteOperable(group))
+        } else {
+            Issue.record("Expected custom model name conflict")
+        }
+    }
+
+    @Test
+    func saveCustomModelRejectsAnotherCustomModelWithSameRouteKey() {
+        let provider = codexProvider()
+        let baseCandidate = candidate(provider: provider, logicalModel: "gpt-5.5")
+        let target = CustomModelTarget(routeKey: baseCandidate.routeKey, providerRef: provider.ref)
+        let existing = CustomModelDefinition(
+            appType: "codex",
+            name: "customer_model",
+            targets: [target],
+            selectedTargetID: target.id
+        )
+        let state = UniGateAppState()
+        state.catalog = ProviderCatalog(providers: [provider], candidates: [baseCandidate])
+        state.customModels = CustomModelState(models: [existing])
+        var didPersist = false
+        state.onSaveSettings = { _, _ in didPersist = true }
+
+        let didSave = state.saveCustomModel(CustomModelDefinition(
+            appType: "codex",
+            name: "customer_model",
+            targets: [target],
+            selectedTargetID: target.id
+        ))
+
+        #expect(!didSave)
+        #expect(!didPersist)
+    }
+
     private func codexProvider(id: String = "p1", name: String = "Provider 1") -> ImportedProvider {
         provider(id: id, appType: "codex", name: name)
     }

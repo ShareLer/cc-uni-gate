@@ -16,6 +16,7 @@ final class UniGateAppState: ObservableObject {
         case forceEnabled
         case unconfigured
         case missingTarget
+        case nameConflict
     }
 
     @Published var screen: Screen = .routes
@@ -177,8 +178,12 @@ final class UniGateAppState: ObservableObject {
             routeKeys: routeKeys,
             candidates: candidates
         )
-        let customGroups = customModels.models.map {
-            let routeKey = ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
+        let visibleGroupRouteKeys = Set(visibleGroups.flatMap(\.routeKeys))
+        let customGroups = customModels.models.compactMap { definition -> ModelRouteGroup? in
+            let routeKey = ModelRouteKey(appType: definition.appType, logicalModel: definition.name)
+            guard !visibleGroupRouteKeys.contains(routeKey) else {
+                return nil
+            }
             return ModelRouteGroup(routeKey: routeKey, routeKeys: [routeKey])
         }
         return visibleGroups + customGroups
@@ -295,6 +300,8 @@ final class UniGateAppState: ObservableObject {
                 return "未在 cc-switch 中配置"
             case .missingTarget:
                 return "自定义模型目标失效"
+            case .nameConflict:
+                return "与基础模型重名"
             }
         }
         if routeStatusText(for: routeGroup) == "目标失效" {
@@ -314,6 +321,13 @@ final class UniGateAppState: ObservableObject {
         guard let definition = customModel(for: routeKey) else {
             return nil
         }
+        if customModels.nameConflict(
+            for: definition,
+            in: catalog,
+            uniGateModelScope: uniGateModelScope
+        ) == .baseModel {
+            return .nameConflict
+        }
         guard definition.hasSelectedTarget(in: catalog) else {
             return .missingTarget
         }
@@ -329,7 +343,7 @@ final class UniGateAppState: ObservableObject {
             return true
         case .missingTarget:
             return candidates(for: routeGroup).count > 1
-        case .unconfigured:
+        case .unconfigured, .nameConflict:
             return false
         }
     }
@@ -341,6 +355,8 @@ final class UniGateAppState: ObservableObject {
                 return "未配置"
             case .missingTarget:
                 return "目标失效"
+            case .nameConflict:
+                return "名称冲突"
             case .configured, .forceEnabled:
                 break
             }
@@ -377,11 +393,28 @@ final class UniGateAppState: ObservableObject {
         }
     }
 
-    func saveCustomModel(_ definition: CustomModelDefinition, replacing existing: CustomModelDefinition? = nil) {
+    @discardableResult
+    func saveCustomModel(
+        _ definition: CustomModelDefinition,
+        replacing existing: CustomModelDefinition? = nil
+    ) -> Bool {
         var nextCustomModels = customModels
         var savedDefinition = definition
         if let existing {
             savedDefinition.appType = existing.appType
+        }
+        if let conflict = customModels.nameConflict(
+            for: savedDefinition,
+            in: catalog,
+            uniGateModelScope: uniGateModelScope
+        ) {
+            switch conflict {
+            case .baseModel:
+                showToast("模型名已被 cc-switch 基础模型使用")
+            case .customModel:
+                showToast("已存在同名自定义模型")
+            }
+            return false
         }
         let oldRouteKey = existing.map {
             ModelRouteKey(appType: $0.appType, logicalModel: $0.name)
@@ -412,6 +445,7 @@ final class UniGateAppState: ObservableObject {
         }
         selectedAppType = savedDefinition.appType
         onSaveSettings?(nextPreferences, nextCustomModels)
+        return true
     }
 
     func deleteCustomModel(_ definition: CustomModelDefinition) {

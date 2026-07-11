@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var providerIssueClearTask: Task<Void, Never>?
     private let dbWatcher = CcSwitchDatabaseWatcher()
     private var ccSwitchConfigurationFingerprint: CcSwitchConfigurationFingerprint?
+    private var configurationRevision = ConfigurationRevisionTracker()
     private let logger = FileLogger()
 
     private struct ImportedConfigurationSnapshot: Sendable {
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func reloadCatalog(recordEventMessage: String? = nil) {
+        invalidateConfigurationRevision()
         do {
             preferences = try preferencesStore.load()
             customModels = try customModelStore.load()
@@ -78,10 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
             pruneDiscoveryState(for: importedSnapshot.catalog)
             applyImportedConfigurationSnapshot(importedSnapshot)
-            routes = try routeStore.load(
-                catalog: proxyCatalog(),
-                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
-            )
+            routes = try loadProxyRoutes()
             catalogLoadError = nil
             if let recordEventMessage {
                 recordEvent(.info, recordEventMessage)
@@ -100,6 +99,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             publishError(error, notify: recordEventMessage == nil)
         }
         syncCcSwitchDBWatcher()
+    }
+
+    private func invalidateConfigurationRevision() {
+        configurationRevision.invalidate()
+        automaticModelDiscoveryTask?.cancel()
+        userModelDiscoveryTask?.cancel()
     }
 
     private func startProxyServer() {
@@ -435,6 +440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        invalidateConfigurationRevision()
         do {
             let previousCustomProviders = customProviders
             preferences = AppPreferences()
@@ -448,9 +454,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             catalog = try loadExpandedCatalog()
             uniGateModelScope = try currentImporter().loadUniGateModelScope()
             integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+            let proxyCatalog = proxyCatalog()
             routes = RouteStore.defaultState(
-                candidates: proxyCatalog().candidates,
-                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
+                candidates: proxyCatalog.candidates,
+                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                    availableIn: proxyCatalog
+                )
             )
             try routeStore.save(routes)
             syncLaunchAtLoginPreference()
@@ -509,15 +518,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             appState.updateModelDiscoveryRefreshing(true)
-            userModelDiscoveryTask = Task { [importedSnapshot, providers] in
+            let revision = configurationRevision.current
+            userModelDiscoveryTask = Task { [providers, discoverable, revision] in
                 defer {
                     appState.updateModelDiscoveryRefreshing(false)
                     userModelDiscoveryTask = nil
+                    if !configurationRevision.isCurrent(revision), catalogLoadError == nil {
+                        scheduleAutomaticModelDiscoveryRefresh()
+                    }
+                }
+                guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
+                    return
                 }
                 var nextState = discoveryState.pruning(validProviders: discoverable)
                 for provider in providers {
                     let result = await discoverModels(for: provider)
-                    guard !Task.isCancelled else {
+                    guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
                         return
                     }
                     nextState.upsert(result)
@@ -525,18 +541,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     appState.updateDiscoveryState(nextState)
                 }
                 do {
-                    guard !Task.isCancelled else {
+                    guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
                         return
                     }
-                    nextState = nextState.pruning(validProviders: discoverable)
+                    let currentImportedSnapshot = try loadImportedConfigurationSnapshot()
+                    let currentDiscoverable = discoverableProviders(
+                        from: currentImportedSnapshot.catalog.providers + customProviders.importedProviders()
+                    )
+                    nextState = nextState.pruning(validProviders: currentDiscoverable)
                     discoveryState = nextState
                     appState.updateDiscoveryState(nextState)
                     try discoveryStore.save(nextState)
-                    applyImportedConfigurationSnapshot(importedSnapshot)
-                    routes = try routeStore.load(
-                        catalog: proxyCatalog(),
-                        preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
-                    )
+                    applyImportedConfigurationSnapshot(currentImportedSnapshot)
+                    routes = try loadProxyRoutes()
                     catalogLoadError = nil
                     recordEvent(.info, "模型探测已刷新 \(providers.count) 个供应商")
                     publishState()
@@ -560,12 +577,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let validProviders = providers
-        automaticModelDiscoveryTask = Task { [providers, validProviders] in
-            await refreshModelDiscoverySilently(providers: providers, validProviders: validProviders)
+        let revision = configurationRevision.current
+        automaticModelDiscoveryTask = Task { [providers, validProviders, revision] in
+            await refreshModelDiscoverySilently(
+                providers: providers,
+                validProviders: validProviders,
+                revision: revision
+            )
         }
     }
 
-    private func refreshModelDiscoverySilently(providers: [ImportedProvider], validProviders: [ImportedProvider]) async {
+    private func refreshModelDiscoverySilently(
+        providers: [ImportedProvider],
+        validProviders: [ImportedProvider],
+        revision: UInt64
+    ) async {
+        guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
+            return
+        }
         var nextState = discoveryState.pruning(validProviders: validProviders)
         var didRefreshProvider = nextState != discoveryState
         for provider in providers {
@@ -577,23 +606,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             let result = await discoverModels(for: provider)
-            guard !Task.isCancelled else {
+            guard configurationRevision.isCurrent(revision), !Task.isCancelled else {
                 return
             }
             nextState.upsert(result)
             didRefreshProvider = true
         }
-        guard !Task.isCancelled, didRefreshProvider, userModelDiscoveryTask == nil, !appState.isRefreshingModelDiscovery else {
+        guard
+            configurationRevision.isCurrent(revision),
+            !Task.isCancelled,
+            didRefreshProvider,
+            userModelDiscoveryTask == nil,
+            !appState.isRefreshingModelDiscovery
+        else {
             return
         }
         do {
             discoveryState = nextState.pruning(validProviders: validProviders)
             try discoveryStore.save(discoveryState)
             catalog = try loadExpandedCatalog()
-            routes = try routeStore.load(
-                catalog: proxyCatalog(),
-                preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
-            )
+            routes = try loadProxyRoutes()
             recordEvent(.info, "已自动刷新模型探测缓存")
             publishState()
         } catch {
@@ -644,6 +676,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let session = NetworkPolicySession.makeSession(for: networkPolicy)
             do {
                 let (data, response) = try await session.data(for: request)
+                guard !Task.isCancelled else {
+                    break
+                }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 if (200..<300).contains(status) {
                     if updatesNetworkDiagnostics {
@@ -667,6 +702,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 break
             } catch {
+                guard !Task.isCancelled else {
+                    break
+                }
                 lastFailure = "networkPolicy=\(networkPolicy.rawValue) \(error.localizedDescription)"
                 if updatesNetworkDiagnostics {
                     await updateNetworkPolicyDiagnosticIfAlternateResponds(
@@ -1088,6 +1126,7 @@ extension AppDelegate: LocalProxyRuntime {
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {
+        invalidateConfigurationRevision()
         preferences = try preferencesStore.load()
         customModels = try customModelStore.load()
         customProviders = try customProviderStore.load()
@@ -1096,10 +1135,7 @@ extension AppDelegate: LocalProxyRuntime {
         ccSwitchConfigurationFingerprint = try currentImporter().loadConfigurationFingerprint()
         pruneDiscoveryState(for: importedSnapshot.catalog)
         applyImportedConfigurationSnapshot(importedSnapshot)
-        routes = try routeStore.load(
-            catalog: proxyCatalog(),
-            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey()
-        )
+        routes = try loadProxyRoutes()
         catalogLoadError = nil
         recordEvent(.info, "已重新加载 cc-switch DB")
         publishState()
@@ -1124,6 +1160,16 @@ extension AppDelegate: LocalProxyRuntime {
         catalog.scopedForProxy(
             uniGateModelScope: uniGateModelScope,
             customModels: customModels
+        )
+    }
+
+    private func loadProxyRoutes() throws -> RouteState {
+        let catalog = proxyCatalog()
+        return try routeStore.load(
+            catalog: catalog,
+            preferredProviderRefsByRouteKey: customModels.preferredProviderRefsByRouteKey(
+                availableIn: catalog
+            )
         )
     }
 

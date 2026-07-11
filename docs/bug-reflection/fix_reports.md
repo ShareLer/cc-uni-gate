@@ -559,3 +559,49 @@ HTTP framing parser 不能把“还没收完”和“输入非法”混成一个
 
 ## 经验教训
 代理转换层必须保留三个不变量：错误责任主体不能跨边界漂移，完整 URL 必须是权威终点，有序协议内容不能先分类再按类别重排。测试也应覆盖跨类别组合，而不只是每种内容单独出现的情况。
+
+# Fix Report - Stale Discovery Commit and Custom Model Name Conflicts
+
+## Bug 描述
+存在两个配置一致性问题：
+- 手动模型探测启动后会捕获当时的 imported snapshot。探测期间如果 DB、路径、协议覆盖或自定义供应商发生重载，旧任务完成后仍会重新应用旧 snapshot 和 routes。
+- 自定义模型可以与当前 cc-switch 基础模型或另一个自定义模型重名。同名对象共用一个 `ModelRouteKey`，可能让持久化旧路由静默选择错误目标。
+
+## 根因
+- 模型探测任务只有 cancellation 检查，没有表示配置版本的 revision；配置重载也不会使已经捕获的 snapshot 失去提交资格。
+- 自定义模型编辑器只校验名称非空。代理 catalog 会同时生成同 route key 的基础 candidate 和 synthetic candidate，配置健康检查也没有报告名称冲突。
+
+## 尝试记录
+- 尝试 1：只在配置重载时取消探测任务。结果：不足以作为正确性保证，异步请求完成与 cancellation 检查之间仍可能出现晚到写入。
+- 尝试 2：引入配置 revision，探测任务在每次状态写入和最终持久化前检查 revision。结果：旧任务无法再提交；取消任务仅用于尽快结束网络请求。
+- 尝试 3：保留启动时 snapshot，但依赖 revision 判断。结果：虽然能覆盖当前已知重载入口，仍容易因未来新增入口再次遗漏。
+- 尝试 4：最终提交时重新读取当前 imported snapshot，并按当前 provider fingerprint 剪枝探测结果。结果：即使任务期间配置发生变化，也不会重新应用启动时旧 snapshot。
+- 尝试 5：让自定义模型覆盖同名基础模型。结果：放弃。主页基础模型已经来自 cc-switch，产品语义更适合禁止重名，而不是增加隐式覆盖优先级。
+
+## 最终方案
+- 新增 `ConfigurationRevisionTracker`：
+  - 配置重载、代理 runtime reload 和配置重置都会推进 revision，并取消手动/自动探测任务。
+  - 手动和自动探测捕获启动 revision，在每次异步返回及提交前验证。
+  - 被配置重载取消的手动探测退出后，会基于当前配置重新安排自动探测。
+  - 手动探测最终重新读取当前 imported snapshot，并只保存仍匹配当前 provider fingerprint 的结果。
+- 自定义模型重名：
+  - 新建或重命名时拒绝与当前可路由基础模型、其他自定义模型重名，编辑器保持打开并显示提示。
+  - 历史冲突在配置健康检查中显示“自定义模型名称冲突”。
+  - 主模型列表对同 route key 去重并将冲突项标记为不可操作。
+  - 代理 catalog 不生成冲突的 synthetic candidate，历史冲突不会继续静默路由到自定义目标。
+  - 自定义模型首选 provider 只在对应 synthetic candidate 仍存在于代理 catalog 时参与默认路由。
+
+## 参考资料
+- `Sources/UniGateApp/main.swift`
+- `Sources/UniGateApp/ConfigurationRevisionTracker.swift`
+- `Sources/UniGateApp/UniGateAppState.swift`
+- `Sources/UniGateCore/CustomModelStore.swift`
+- `Sources/UniGateCore/Models.swift`
+- `Sources/UniGateCore/ConfigurationHealth.swift`
+- `Tests/UniGateAppTests/ConfigurationRevisionTrackerTests.swift`
+- `Tests/UniGateAppTests/UniGateAppStateTests.swift`
+- `Tests/UniGateCoreTests/CustomModelStoreTests.swift`
+- `Tests/UniGateCoreTests/ConfigurationHealthTests.swift`
+
+## 经验教训
+异步任务的 cancellation 只能优化资源释放，不能证明旧结果无权提交；配置状态必须由显式 revision 约束。对于共享同一业务主键的两类对象，如果产品没有明确覆盖语义，应在写入边界禁止冲突，并为历史数据提供可见、失败安全的处理。
