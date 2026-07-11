@@ -6,20 +6,34 @@ VERSION_FILE="$ROOT_DIR/VERSION"
 ARTIFACT_DIR="$ROOT_DIR/.build/release-artifacts"
 TOOLS_DIR="$ROOT_DIR/.build/sparkle-tools"
 APP_NAME="CC Uni Gate"
-ZIP_NAME="CC-Uni-Gate-v$(tr -d '[:space:]' < "$VERSION_FILE")-macos.zip"
-TEMP_ZIP_NAME="CC-Uni-Gate-v$(tr -d '[:space:]' < "$VERSION_FILE")-macos.notary.zip"
-DEVELOPER_ID_IDENTITY_INPUT="${APPLE_DEVELOPER_ID_IDENTITY:-${DEVELOPER_ID_IDENTITY:-}}"
-NOTARYTOOL_PROFILE_INPUT="${NOTARYTOOL_PROFILE:-${APPLE_NOTARYTOOL_PROFILE:-}}"
-NOTARIZE_RELEASE="${NOTARIZE_RELEASE:-1}"
-UPLOAD_TO_GITHUB="${UPLOAD_TO_GITHUB:-1}"
+INSTALL_PATH="/Applications/$APP_NAME.app"
+ACTION="${1:-build}"
 
-# GitHub Releases is the public distribution channel.
-# Sparkle reads the appcast from:
-#   https://github.com/<owner>/<repo>/releases/latest/download/appcast.xml
-# so we derive <owner>/<repo> from the configured `origin` remote instead of
-# hardcoding the repository name in multiple places.
-# This keeps the release artifact URLs, the appcast URL, and the release page
-# aligned even if the repository is renamed or forked.
+VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+ZIP_NAME="CC-Uni-Gate-v${VERSION}-macos.zip"
+SHA256_NAME="${ZIP_NAME}.sha256"
+RELEASE_TAG="v${VERSION}"
+APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
+ZIP_PATH="$ARTIFACT_DIR/$ZIP_NAME"
+SHA256_PATH="$ARTIFACT_DIR/$SHA256_NAME"
+APPCAST_PATH="$ARTIFACT_DIR/appcast.xml"
+APPCAST_INPUT_DIR="$ARTIFACT_DIR/appcast-input"
+MANIFEST_PATH="$ARTIFACT_DIR/release-manifest.txt"
+HEALTH_RESPONSE_PATH=""
+
+cleanup() {
+  rm -rf "$APPCAST_INPUT_DIR"
+  if [[ -n "$HEALTH_RESPONSE_PATH" ]]; then
+    rm -f "$HEALTH_RESPONSE_PATH"
+  fi
+}
+trap cleanup EXIT
+
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
 repo_slug_from_remote() {
   local remote_url="$1"
   if [[ "$remote_url" =~ ^https://github.com/([^/]+)/([^/.]+)(\.git)?$ ]]; then
@@ -33,171 +47,262 @@ repo_slug_from_remote() {
   return 1
 }
 
-cd "$ROOT_DIR"
+release_installation_notes() {
+  cat <<'EOF'
+## 第一次安装
 
-# The repository version is the single source of truth for both the app bundle
-# and the published release tag. Keeping the tag and bundle version aligned
-# makes Sparkle appcasts deterministic and prevents accidental mismatches.
-# If version, tag, and appcast drift apart, users can end up with "up to date"
-# messages pointing at the wrong release, which is exactly the class of issue we
-# want to eliminate here.
-VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-if [[ -z "$VERSION" ]]; then
-  echo "VERSION file is empty: $VERSION_FILE" >&2
-  exit 1
-fi
+本项目不使用 Apple Developer ID，首次安装需要手动移除 macOS 添加的隔离属性：
 
-REMOTE_URL="$(git remote get-url origin)"
-REPO_SLUG="$(repo_slug_from_remote "$REMOTE_URL" || true)"
-if [[ -z "$REPO_SLUG" ]]; then
-  echo "Unsupported origin remote: $REMOTE_URL" >&2
-  exit 1
-fi
+1. 下载 `CC-Uni-Gate-*-macos.zip`。
+2. 解压 zip。
+3. 将 `CC Uni Gate.app` 移动到“应用程序”。
+4. 打开终端并执行：
 
-DOWNLOAD_PREFIX="https://github.com/${REPO_SLUG}/releases/download/v${VERSION}/"
-RELEASE_TAG="v${VERSION}"
-APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
-ZIP_PATH="$ARTIFACT_DIR/$ZIP_NAME"
-TEMP_ZIP_PATH="$ARTIFACT_DIR/$TEMP_ZIP_NAME"
-APPCAST_PATH="$ARTIFACT_DIR/appcast.xml"
-APPCAST_INPUT_DIR="$ARTIFACT_DIR/appcast-input"
-trap 'rm -f "$TEMP_ZIP_PATH"; rm -rf "$APPCAST_INPUT_DIR"' EXIT
+   ```bash
+   xattr -cr "/Applications/CC Uni Gate.app"
+   ```
 
-# Sparkle's appcast generator is built from the checked-out Sparkle project.
-# Build it once into a stable local derived-data directory and reuse the tool
-# across releases to avoid repeatedly rebuilding Sparkle command-line tools.
-# The helper binary is part of the release toolchain, not the shipped app.
-if [[ ! -x "$TOOLS_DIR/Build/Products/Release/generate_appcast" ]]; then
-  xcodebuild -project .build/checkouts/Sparkle/Sparkle.xcodeproj \
-    -scheme generate_appcast \
-    -configuration Release \
-    -derivedDataPath "$TOOLS_DIR" \
-  build
-fi
+5. 正常打开 `CC Uni Gate.app`。
 
-# Rebuild the app bundle in release mode first. This script intentionally
-# reuses the same build-and-install logic as local packaging so that the
-# uploaded zip matches the app the developer can run locally.
-# Any mismatch here would produce a release asset that differs from the bundle
-# you inspected in development, which is how "it works locally but not after
-# download" regressions tend to sneak in.
-BUILD_ONLY=1 ./scripts/build-install-run.sh
-mkdir -p "$ARTIFACT_DIR"
+请只对从本项目 GitHub Release 下载的应用执行上述命令。
 
-resolve_developer_id_identity() {
-  local identity="$1"
-  if [[ -n "$identity" ]]; then
-    printf '%s\n' "$identity"
-    return 0
-  fi
+## 应用内更新
 
-# Public releases must use a Developer ID Application certificate.
-# The local machine in this workspace may not have one, so we auto-detect
-# the first usable identity and fail with a concrete message if it is absent.
-# This explicit failure is intentional: silently falling back to ad-hoc signing
-# would create downloadable artifacts that macOS can still block on open.
-security find-identity -v -p codesigning 2>/dev/null \
-    | awk -F'"' '/Developer ID Application:/ { print $2; exit }'
+首次安装并打开后，可以在 UniGate 设置中点击“检查更新”。发现新版本后点击“下载并更新”，Sparkle 会验证 EdDSA 签名、安装更新并重新启动应用，不需要再次执行 `xattr`。
+EOF
 }
 
-sign_app_for_distribution() {
-  local identity="$1"
-
-  if [[ -z "$identity" ]]; then
-    echo "A Developer ID Application identity is required to sign public releases." >&2
-    echo "Set APPLE_DEVELOPER_ID_IDENTITY or install a Developer ID certificate." >&2
-    security find-identity -v -p codesigning >&2 || true
-    exit 1
+ensure_appcast_tool() {
+  if [[ -x "$TOOLS_DIR/Build/Products/Release/generate_appcast" \
+        && -x "$TOOLS_DIR/Build/Products/Release/generate_keys" ]]; then
+    return
   fi
 
-# Re-sign the already-built bundle with the distribution identity.
-# - runtime + timestamp are required for notarization
-# - --deep keeps Sparkle.framework and nested helpers aligned with the app
-# We re-sign here instead of in build-install-run.sh so local developer builds
-# stay fast and usable even when Apple signing credentials are unavailable.
-codesign --force --deep --options runtime --timestamp --sign "$identity" "$APP_BUNDLE"
-codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+  swift package resolve
+  for scheme in generate_appcast generate_keys; do
+    xcodebuild -project .build/checkouts/Sparkle/Sparkle.xcodeproj \
+      -scheme "$scheme" \
+      -configuration Release \
+      -derivedDataPath "$TOOLS_DIR" \
+      build
+  done
 }
 
-submit_for_notarization() {
-  local profile="$1"
+validate_sparkle_key() {
+  local configured_key keychain_key
+  configured_key="$(tr -d '[:space:]' < "$ROOT_DIR/config/sparkle-public-ed-key.txt")"
+  keychain_key="$("$TOOLS_DIR/Build/Products/Release/generate_keys" -p | tr -d '[:space:]')"
 
-  if [[ -z "$profile" ]]; then
-    echo "NOTARYTOOL_PROFILE must be set to a keychain profile name." >&2
-    echo "Create one with: xcrun notarytool store-credentials <profile> ..." >&2
-    exit 1
-  fi
-
-# We notarize a temporary zip and then re-zip the stapled app bundle for the
-# final release asset. This keeps the shipped zip identical to the stapled app.
-# If notarization fails, stop immediately: shipping an unstapled public build
-# is exactly the failure mode that causes "can't open" reports after download.
-ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$TEMP_ZIP_PATH"
-  xcrun notarytool submit "$TEMP_ZIP_PATH" \
-    --keychain-profile "$profile" \
-    --wait
-  xcrun stapler staple "$APP_BUNDLE"
-  xcrun stapler validate "$APP_BUNDLE"
-  rm -f "$TEMP_ZIP_PATH"
+  [[ -n "$configured_key" ]] || fail "Sparkle public key is empty."
+  [[ "$configured_key" == "$keychain_key" ]] \
+    || fail "Sparkle Keychain private key does not match config/sparkle-public-ed-key.txt."
 }
 
-if [[ "$NOTARIZE_RELEASE" == "1" ]]; then
-  # Formal release path: re-sign, notarize, staple, then package.
-  DEVELOPER_ID_IDENTITY="$(resolve_developer_id_identity "$DEVELOPER_ID_IDENTITY_INPUT")"
-  sign_app_for_distribution "$DEVELOPER_ID_IDENTITY"
-  submit_for_notarization "$NOTARYTOOL_PROFILE_INPUT"
-else
-  # Local package mode keeps the ad-hoc bundle from build-install-run.sh.
-  # This is useful for inspecting the archive contents or running a non-public
-  # validation pass before Apple signing credentials are available.
-  echo "Skipping Apple notarization for local package build." >&2
-fi
+validate_app_bundle() {
+  local bundle_version bundle_public_key signature_details
+  [[ -d "$APP_BUNDLE" ]] || fail "App bundle not found: $APP_BUNDLE"
 
-rm -f "$ZIP_PATH" "$APPCAST_PATH"
+  codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+  signature_details="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)"
+  grep -q 'Signature=adhoc' <<<"$signature_details" \
+    || fail "Release app must use the repository's ad-hoc signing flow."
 
-# Sparkle expects a zipped app bundle. `ditto` preserves the macOS resource
-# fork and code-signing structure that Sparkle needs when validating archives.
-# This zip is what users download manually and what Sparkle uses in the update
-# feed, so it must be produced only after the bundle is in its final state.
-ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+  bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_BUNDLE/Contents/Info.plist")"
+  bundle_public_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP_BUNDLE/Contents/Info.plist")"
+  [[ "$bundle_version" == "$VERSION" ]] \
+    || fail "Bundle version $bundle_version does not match VERSION $VERSION."
+  [[ "$bundle_public_key" == "$(tr -d '[:space:]' < "$ROOT_DIR/config/sparkle-public-ed-key.txt")" ]] \
+    || fail "Bundle Sparkle public key does not match the repository key."
 
-# Generate/refresh appcast.xml using the versioned zip file above. The download
-# URL prefix must point at the versioned GitHub Release asset directory so that
-# Sparkle can resolve each enclosure URL correctly.
-rm -rf "$APPCAST_INPUT_DIR"
-mkdir -p "$APPCAST_INPUT_DIR"
-cp "$ZIP_PATH" "$APPCAST_INPUT_DIR/$ZIP_NAME"
-"$TOOLS_DIR/Build/Products/Release/generate_appcast" \
-  --download-url-prefix "$DOWNLOAD_PREFIX" \
-  -o "$APPCAST_PATH" \
-  "$APPCAST_INPUT_DIR"
+  [[ -d "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Updater.app" ]] \
+    || fail "Sparkle Updater.app is missing from the app bundle."
+  [[ -d "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/XPCServices" ]] \
+    || fail "Sparkle XPC services are missing from the app bundle."
+}
 
-if [[ "$UPLOAD_TO_GITHUB" == "1" ]]; then
-  # Publish step:
-  # - if the release tag already exists, update the existing assets in place
-  # - otherwise create the release and attach appcast.xml + the zip asset
-  # This keeps the release page and Sparkle feed in sync with a single command.
-  # Upload is deliberately blocked unless notarization is enabled so we never
-  # publish a zip that is known to trigger Gatekeeper on first open.
-  if [[ "$NOTARIZE_RELEASE" != "1" ]]; then
-    echo "UPLOAD_TO_GITHUB=1 requires NOTARIZE_RELEASE=1." >&2
-    exit 1
-  fi
+validate_appcast() {
+  /usr/bin/python3 - "$APPCAST_PATH" "$VERSION" "$DOWNLOAD_PREFIX$ZIP_NAME" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+path, expected_version, expected_url = sys.argv[1:]
+root = ET.parse(path).getroot()
+channel = root.find("channel")
+items = [] if channel is None else channel.findall("item")
+if len(items) != 1:
+    raise SystemExit(f"appcast must contain exactly one item, found {len(items)}")
+
+item = items[0]
+namespace = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
+version = item.findtext(f"{namespace}shortVersionString")
+enclosure = item.find("enclosure")
+if version != expected_version:
+    raise SystemExit(f"appcast version {version!r} does not match {expected_version!r}")
+if enclosure is None:
+    raise SystemExit("appcast enclosure is missing")
+if enclosure.get("url") != expected_url:
+    raise SystemExit(f"unexpected appcast URL: {enclosure.get('url')!r}")
+if not enclosure.get(f"{namespace}edSignature"):
+    raise SystemExit("appcast EdDSA signature is missing")
+if int(enclosure.get("length", "0")) <= 0:
+    raise SystemExit("appcast enclosure length is invalid")
+PY
+}
+
+resolved_proxy_port() {
+  /usr/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / "Library/Application Support/UniGate/preferences.json"
+try:
+    port = int(json.loads(path.read_text()).get("port") or 17888)
+except Exception:
+    port = 17888
+print(port if port > 0 else 17888)
+PY
+}
+
+install_and_check_app() {
+  local port base_url
+  pkill -f UniGateApp 2>/dev/null || true
+  osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
+  rm -rf "$INSTALL_PATH"
+  ditto "$APP_BUNDLE" "$INSTALL_PATH"
+  open "$INSTALL_PATH"
+
+  port="$(resolved_proxy_port)"
+  base_url="http://127.0.0.1:${port}"
+  HEALTH_RESPONSE_PATH="$(mktemp)"
+  for _ in {1..40}; do
+    if curl -fsS --max-time 2 "$base_url/__manager/health" > "$HEALTH_RESPONSE_PATH" 2>/dev/null; then
+      break
+    fi
+    sleep 0.5
+  done
+  curl -fsS --max-time 5 "$base_url/__manager/health" > "$HEALTH_RESPONSE_PATH"
+  /usr/bin/python3 - "$HEALTH_RESPONSE_PATH" <<'PY'
+import json
+import sys
+
+health = json.load(open(sys.argv[1], encoding="utf-8"))
+if health.get("ok") is not True:
+    raise SystemExit(f"UniGate health check failed: {health}")
+print(f"Installed app is healthy: {health.get('providers', 0)} providers, {health.get('candidates', 0)} candidates")
+PY
+
+  local built_hash installed_hash
+  built_hash="$(shasum -a 256 "$APP_BUNDLE/Contents/MacOS/UniGateApp" | awk '{print $1}')"
+  installed_hash="$(shasum -a 256 "$INSTALL_PATH/Contents/MacOS/UniGateApp" | awk '{print $1}')"
+  [[ "$built_hash" == "$installed_hash" ]] \
+    || fail "Installed executable does not match the release app bundle."
+}
+
+write_manifest() {
+  local zip_hash appcast_hash commit
+  zip_hash="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
+  appcast_hash="$(shasum -a 256 "$APPCAST_PATH" | awk '{print $1}')"
+  commit="$(git rev-parse HEAD)"
+  printf 'version=%s\ncommit=%s\nzip_sha256=%s\nappcast_sha256=%s\n' \
+    "$VERSION" "$commit" "$zip_hash" "$appcast_hash" > "$MANIFEST_PATH"
+}
+
+manifest_value() {
+  local key="$1"
+  awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' "$MANIFEST_PATH"
+}
+
+build_release() {
+  ensure_appcast_tool
+  validate_sparkle_key
+
+  BUILD_ONLY=1 "$ROOT_DIR/scripts/build-install-run.sh"
+  validate_app_bundle
+
+  mkdir -p "$ARTIFACT_DIR"
+  rm -f "$ZIP_PATH" "$SHA256_PATH" "$APPCAST_PATH" "$MANIFEST_PATH"
+  ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+  unzip -tq "$ZIP_PATH"
+  (cd "$ARTIFACT_DIR" && shasum -a 256 "$ZIP_NAME" > "$SHA256_NAME")
+
+  rm -rf "$APPCAST_INPUT_DIR"
+  mkdir -p "$APPCAST_INPUT_DIR"
+  cp "$ZIP_PATH" "$APPCAST_INPUT_DIR/$ZIP_NAME"
+  "$TOOLS_DIR/Build/Products/Release/generate_appcast" \
+    --download-url-prefix "$DOWNLOAD_PREFIX" \
+    -o "$APPCAST_PATH" \
+    "$APPCAST_INPUT_DIR"
+  validate_appcast
+
+  install_and_check_app
+  write_manifest
+
+  echo "Release $RELEASE_TAG is built, installed, and verified."
+  echo "Run './scripts/publish-github-release.sh publish' after checking the app locally."
+}
+
+publish_release() {
+  [[ -f "$MANIFEST_PATH" ]] || fail "Release manifest is missing. Run the build action first."
+  [[ -f "$ZIP_PATH" && -f "$SHA256_PATH" && -f "$APPCAST_PATH" ]] \
+    || fail "Release artifacts are incomplete. Run the build action first."
+  [[ -z "$(git status --porcelain)" ]] \
+    || fail "The worktree must be clean before publishing."
+
+  git fetch origin main
+  local head_commit remote_commit
+  head_commit="$(git rev-parse HEAD)"
+  remote_commit="$(git rev-parse origin/main)"
+  [[ "$head_commit" == "$remote_commit" ]] \
+    || fail "HEAD must be pushed to origin/main before publishing."
+  [[ "$(manifest_value version)" == "$VERSION" ]] \
+    || fail "Built artifact version does not match VERSION."
+  [[ "$(manifest_value commit)" == "$head_commit" ]] \
+    || fail "Built artifacts do not match the current commit. Run the build action again."
+  [[ "$(manifest_value zip_sha256)" == "$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')" ]] \
+    || fail "Release zip changed after local verification."
+  [[ "$(manifest_value appcast_sha256)" == "$(shasum -a 256 "$APPCAST_PATH" | awk '{print $1}')" ]] \
+    || fail "appcast.xml changed after local verification."
+  (cd "$ARTIFACT_DIR" && shasum -a 256 -c "$SHA256_NAME")
+  validate_appcast
 
   if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-    gh release upload "$RELEASE_TAG" "$ZIP_PATH" "$APPCAST_PATH" --clobber
-  else
-    gh release create "$RELEASE_TAG" "$ZIP_PATH" "$APPCAST_PATH" \
-      --title "CC Uni Gate $RELEASE_TAG" \
-      --generate-notes
+    fail "GitHub Release $RELEASE_TAG already exists. Bump VERSION instead of replacing a published release."
+  fi
+  if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+    fail "Git tag $RELEASE_TAG already exists. Bump VERSION before publishing."
   fi
 
-  echo "Published $RELEASE_TAG to GitHub Releases."
-else
-  # Local-only mode is for validation and inspection. It still generates the
-  # release zip and appcast so the artifact layout can be tested without
-  # publishing anything publicly.
-  echo "Built local release artifacts:" >&2
-  echo "  $ZIP_PATH" >&2
-  echo "  $APPCAST_PATH" >&2
-fi
+  gh release create "$RELEASE_TAG" "$ZIP_PATH" "$SHA256_PATH" "$APPCAST_PATH" \
+    --target "$head_commit" \
+    --title "CC Uni Gate $RELEASE_TAG" \
+    --latest \
+    --fail-on-no-commits \
+    --generate-notes \
+    --notes "$(release_installation_notes)"
+
+  local asset_names
+  asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+  grep -qx "$ZIP_NAME" <<<"$asset_names" || fail "Release zip was not uploaded."
+  grep -qx "$SHA256_NAME" <<<"$asset_names" || fail "Release SHA-256 file was not uploaded."
+  grep -qx 'appcast.xml' <<<"$asset_names" || fail "Release appcast.xml was not uploaded."
+  echo "Published $RELEASE_TAG to https://github.com/${REPO_SLUG}/releases/tag/$RELEASE_TAG"
+}
+
+cd "$ROOT_DIR"
+[[ -n "$VERSION" ]] || fail "VERSION is empty."
+REMOTE_URL="$(git remote get-url origin)"
+REPO_SLUG="$(repo_slug_from_remote "$REMOTE_URL" || true)"
+[[ -n "$REPO_SLUG" ]] || fail "Unsupported origin remote: $REMOTE_URL"
+DOWNLOAD_PREFIX="https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}/"
+
+case "$ACTION" in
+  build)
+    build_release
+    ;;
+  publish)
+    publish_release
+    ;;
+  *)
+    fail "Usage: $0 [build|publish]"
+    ;;
+esac

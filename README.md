@@ -77,11 +77,30 @@ UniGate 会读取 cc-switch 中的 Codex、Claude Code 和 Claude Desktop 供应
 
 UniGate 可以保存自己添加的供应商，但当前仍使用 cc-switch 数据库作为主要配置入口，因此首次使用前需要准备好 `cc-switch.db`。
 
-### 1. 安装
+### 1. 第一次安装
 
-从 [GitHub Releases](https://github.com/ShareLer/cc-uni-gate/releases/latest) 下载 `CC-Uni-Gate-v*-macos.zip`，解压后将 `CC Uni Gate.app` 放入“应用程序”并启动。
+UniGate 不使用 Apple Developer ID。第一次从 GitHub 下载后，需要手动移除 macOS 添加的隔离属性：
+
+1. 从 [GitHub Releases](https://github.com/ShareLer/cc-uni-gate/releases/latest) 下载 `CC-Uni-Gate-v*-macos.zip`。
+2. 双击 zip 完成解压。
+3. 将 `CC Uni Gate.app` 移动到“应用程序”。
+4. 打开终端，执行：
+
+   ```bash
+   xattr -cr "/Applications/CC Uni Gate.app"
+   ```
+
+5. 从“应用程序”中打开 `CC Uni Gate.app`。
+
+请只对从本项目 GitHub Release 下载的应用执行 `xattr` 命令。
 
 UniGate 启动后常驻菜单栏。状态灯为绿色时，本地代理已经可以接收请求；黄色表示最近一次上游请求失败，红色表示本地代理没有正常运行。
+
+### 检查更新
+
+打开 UniGate 的 `设置 -> 应用更新`，点击“检查更新”。发现新版本后，点击“下载并更新”，Sparkle 会验证更新包的 EdDSA 签名、安装新版本并重新启动应用。
+
+通过应用内更新时不需要再次执行 `xattr`。如果重新从浏览器手动下载新版，则需要重新按照“第一次安装”的步骤处理。
 
 ### 2. 连接 cc-switch
 
@@ -222,4 +241,4 @@ swift run UniGateApp
 BUILD_ONLY=1 ./scripts/build-install-run.sh
 ```
 
-发布版本、签名、公证和 Sparkle appcast 的维护流程见 [docs/updater.md](docs/updater.md)。
+GitHub Release 和 Sparkle appcast 的维护流程见 [docs/updater.md](docs/updater.md)。

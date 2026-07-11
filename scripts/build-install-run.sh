@@ -20,10 +20,9 @@ BUILD_ONLY="${BUILD_ONLY:-0}"
 #
 # Sparkle config is intentionally resolved here so both flows use the same
 # rules: explicit env vars win, otherwise we fall back to repository defaults.
-# The key design rule is that this script only produces a runnable developer
-# bundle. It intentionally does not attempt Apple notarization, because public
-# distribution needs a separate Developer ID signing step and a notary service
-# submission that should fail loudly instead of being hidden in local workflows.
+# Both local and GitHub Release builds use the same ad-hoc signed bundle.
+# Sparkle EdDSA authenticates update archives; first-time GitHub downloads
+# require the user to remove the macOS quarantine attribute before launch.
 read_trimmed_file() {
   tr -d '[:space:]' < "$1"
 }
@@ -191,18 +190,15 @@ if [[ "$SPARKLE_CONFIGURED" == "1" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUEnableInstallerLauncherService bool true" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
-# Local build path: ad-hoc sign only so the app bundle is runnable during
-# development. Public release packaging re-signs the same bundle with a
-# Developer ID certificate before notarization.
-# This ad-hoc signature is not enough for public distribution and is the
-# reason manually extracted local builds may still trigger Gatekeeper.
+# Sign the app and every embedded Sparkle helper consistently. This is not an
+# Apple trust signature; GitHub users still need the documented one-time xattr
+# step after downloading the app for the first time.
 codesign --force --deep --sign - "$APP_BUNDLE"
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 if [[ "$BUILD_ONLY" == "1" ]]; then
   # BUILD_ONLY means "leave a build artifact for inspection", not "install it".
-  # The release script depends on this path so that the bundle it signs and
-  # notarizes is the same bundle developers can inspect locally.
+  # The release script packages this exact bundle and verifies its Sparkle key.
   echo "Built $APP_BUNDLE"
   exit 0
 fi
