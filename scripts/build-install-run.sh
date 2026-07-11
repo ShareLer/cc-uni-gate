@@ -68,6 +68,23 @@ default_sparkle_feed_url() {
   return 1
 }
 
+stop_running_app() {
+  osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
+  pkill -x "$EXECUTABLE_NAME" 2>/dev/null || true
+
+  # Replacing a bundle while its old process is still registered can make
+  # LaunchServices reuse the terminating instance instead of launching the new one.
+  for _ in {1..40}; do
+    if ! pgrep -x "$EXECUTABLE_NAME" >/dev/null; then
+      return
+    fi
+    sleep 0.25
+  done
+
+  echo "$APP_NAME did not stop within 10 seconds." >&2
+  exit 1
+}
+
 cd "$ROOT_DIR"
 
 # Build the executable first, then assemble the app bundle manually.
@@ -179,12 +196,13 @@ fi
 # The install path is intentionally destructive because this is a developer
 # convenience path, not a migration tool. It should never be used as the public
 # update mechanism.
-pkill -f UniGateApp 2>/dev/null || true
-osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
+stop_running_app
 
 rm -rf "$INSTALL_PATH"
 ditto "$APP_BUNDLE" "$INSTALL_PATH"
 
-open "$INSTALL_PATH"
+# -n prevents stale LaunchServices state from swallowing a relaunch immediately
+# after the previous process exits.
+open -n "$INSTALL_PATH"
 
 echo "Installed and launched $INSTALL_PATH"

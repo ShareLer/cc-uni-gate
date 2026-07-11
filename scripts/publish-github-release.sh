@@ -51,31 +51,6 @@ repo_slug_from_remote() {
   return 1
 }
 
-release_installation_notes() {
-  cat <<'EOF'
-## 第一次安装
-
-本项目不使用 Apple Developer ID，首次安装需要手动移除 macOS 添加的隔离属性：
-
-1. 下载 `CC-Uni-Gate-*-macos.zip`。
-2. 解压 zip。
-3. 将 `CC Uni Gate.app` 移动到“应用程序”。
-4. 打开终端并执行：
-
-   ```bash
-   xattr -cr "/Applications/CC Uni Gate.app"
-   ```
-
-5. 正常打开 `CC Uni Gate.app`。
-
-请只对从本项目 GitHub Release 下载的应用执行上述命令。
-
-## 应用内更新
-
-首次安装并打开后，可以在 UniGate 设置中点击“检查更新”。发现新版本后点击“下载并更新”，Sparkle 会验证 EdDSA 签名、安装更新并重新启动应用，不需要再次执行 `xattr`。
-EOF
-}
-
 ensure_appcast_tool() {
   if [[ -x "$TOOLS_DIR/Build/Products/Release/generate_appcast" \
         && -x "$TOOLS_DIR/Build/Products/Release/generate_keys" ]]; then
@@ -170,11 +145,21 @@ PY
 
 install_and_check_app() {
   local port base_url
-  pkill -f UniGateApp 2>/dev/null || true
   osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
+  pkill -x UniGateApp 2>/dev/null || true
+  for _ in {1..40}; do
+    if ! pgrep -x UniGateApp >/dev/null; then
+      break
+    fi
+    sleep 0.25
+  done
+  ! pgrep -x UniGateApp >/dev/null \
+    || fail "$APP_NAME did not stop within 10 seconds."
+
   rm -rf "$INSTALL_PATH"
   ditto "$APP_BUNDLE" "$INSTALL_PATH"
-  open "$INSTALL_PATH"
+  # Force a fresh instance so stale LaunchServices state cannot hide a failed relaunch.
+  open -n "$INSTALL_PATH"
 
   port="$(resolved_proxy_port)"
   base_url="http://127.0.0.1:${port}"
@@ -290,8 +275,7 @@ publish_release() {
     --title "CC Uni Gate $RELEASE_TAG" \
     --latest \
     --fail-on-no-commits \
-    --generate-notes \
-    --notes "$(release_installation_notes)"
+    --generate-notes
 
   local asset_names
   asset_names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"

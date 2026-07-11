@@ -158,7 +158,7 @@ CC-Uni-Gate-v*-macos.zip.sha256
 appcast.xml
 ```
 
-Release Notes 会自动带上第一次安装的 `xattr -cr` 步骤和应用内更新说明。
+Release Notes 只用于记录版本改动，由 GitHub 根据提交自动生成。第一次安装和应用内更新步骤统一维护在 README。
 
 ## 发布后检查
 
