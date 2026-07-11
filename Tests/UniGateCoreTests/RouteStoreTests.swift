@@ -406,6 +406,132 @@ struct RouteStoreTests {
     }
 
     @Test
+    func defaultStatePrefersNativeResponsesOverHigherPriorityChatBridge() {
+        let chat = codexCandidate(
+            id: "chat",
+            providerName: "A Chat Provider",
+            apiFormat: .openaiChat,
+            source: .configured
+        )
+        let responses = codexCandidate(
+            id: "responses",
+            providerName: "Z Responses Provider",
+            apiFormat: .openaiResponses,
+            source: .discovered
+        )
+
+        let state = RouteStore.defaultState(candidates: [chat, responses])
+
+        #expect(state.routes["codex:gpt-5.5"]?.providerRef == responses.providerRef)
+    }
+
+    @Test
+    func defaultStatePrefersSupportedChatBridgeOverUnsupportedCodexFormat() {
+        let unsupported = codexCandidate(
+            id: "anthropic",
+            providerName: "A Anthropic Provider",
+            apiFormat: .anthropic
+        )
+        let chat = codexCandidate(
+            id: "chat",
+            providerName: "Z Chat Provider",
+            apiFormat: .openaiChat
+        )
+
+        let state = RouteStore.defaultState(candidates: [unsupported, chat])
+
+        #expect(state.routes["codex:gpt-5.5"]?.providerRef == chat.providerRef)
+    }
+
+    @Test
+    func loadUpgradesAutomaticallySelectedChatRouteToNativeResponses() throws {
+        let chat = codexCandidate(id: "chat", providerName: "Chat Provider", apiFormat: .openaiChat)
+        let responses = codexCandidate(
+            id: "responses",
+            providerName: "Responses Provider",
+            apiFormat: .openaiResponses
+        )
+        let catalog = ProviderCatalog(providers: [], candidates: [chat, responses])
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(RouteState(routes: [
+            chat.routeKey.description: ActiveRoute(
+                appType: chat.appType,
+                logicalModel: chat.logicalModel,
+                providerRef: chat.providerRef,
+                updatedAt: Date(timeIntervalSince1970: 0)
+            )
+        ]))
+
+        let loaded = try store.load(catalog: catalog)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persisted = try decoder.decode(RouteState.self, from: Data(contentsOf: tmp))
+
+        #expect(loaded.routes[chat.routeKey.description]?.providerRef == responses.providerRef)
+        #expect(persisted.routes[chat.routeKey.description]?.providerRef == responses.providerRef)
+    }
+
+    @Test
+    func loadPreservesManuallySelectedChatRoute() throws {
+        let chat = codexCandidate(id: "chat", providerName: "Chat Provider", apiFormat: .openaiChat)
+        let responses = codexCandidate(
+            id: "responses",
+            providerName: "Responses Provider",
+            apiFormat: .openaiResponses
+        )
+        let catalog = ProviderCatalog(providers: [], candidates: [chat, responses])
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(RouteState(routes: [
+            chat.routeKey.description: ActiveRoute(
+                appType: chat.appType,
+                logicalModel: chat.logicalModel,
+                providerRef: chat.providerRef,
+                updatedAt: Date(timeIntervalSince1970: 1)
+            )
+        ]))
+
+        let loaded = try store.load(catalog: catalog)
+
+        #expect(loaded.routes[chat.routeKey.description]?.providerRef == chat.providerRef)
+    }
+
+    @Test
+    func loadPreservesExplicitPreferredChatRoute() throws {
+        let chat = codexCandidate(id: "chat", providerName: "Chat Provider", apiFormat: .openaiChat)
+        let responses = codexCandidate(
+            id: "responses",
+            providerName: "Responses Provider",
+            apiFormat: .openaiResponses
+        )
+        let catalog = ProviderCatalog(providers: [], candidates: [chat, responses])
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("routes.json")
+        let store = RouteStore(fileURL: tmp)
+        try store.save(RouteState(routes: [
+            chat.routeKey.description: ActiveRoute(
+                appType: chat.appType,
+                logicalModel: chat.logicalModel,
+                providerRef: chat.providerRef,
+                updatedAt: Date(timeIntervalSince1970: 0)
+            )
+        ]))
+
+        let loaded = try store.load(
+            catalog: catalog,
+            preferredProviderRefsByRouteKey: [chat.routeKey.description: chat.providerRef]
+        )
+
+        #expect(loaded.routes[chat.routeKey.description]?.providerRef == chat.providerRef)
+    }
+
+    @Test
     func defaultStatePrefersSelectedCustomModelTarget() {
         let provider = ImportedProvider(
             id: "p1",
@@ -582,6 +708,28 @@ struct RouteStoreTests {
             requiresTransform: false,
             label: nil,
             supportsLongContext: false
+        )
+    }
+
+    private func codexCandidate(
+        id: String,
+        providerName: String,
+        apiFormat: ApiFormat,
+        source: ModelCandidateSource = .configured
+    ) -> ModelCandidate {
+        ModelCandidate(
+            logicalModel: "gpt-5.5",
+            providerRef: ProviderRef(appType: "codex", id: id),
+            providerName: providerName,
+            appType: "codex",
+            clientProtocol: .codexResponses,
+            apiFormat: apiFormat,
+            upstreamModel: "gpt-5.5",
+            baseURL: "https://api.example.com",
+            requiresTransform: apiFormat != .openaiResponses,
+            label: nil,
+            supportsLongContext: false,
+            source: source
         )
     }
 

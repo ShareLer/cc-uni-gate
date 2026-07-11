@@ -605,3 +605,44 @@ HTTP framing parser 不能把“还没收完”和“输入非法”混成一个
 
 ## 经验教训
 异步任务的 cancellation 只能优化资源释放，不能证明旧结果无权提交；配置状态必须由显式 revision 约束。对于共享同一业务主键的两类对象，如果产品没有明确覆盖语义，应在写入边界禁止冲突，并为历史数据提供可见、失败安全的处理。
+
+# Fix Report - Codex Chat Candidates Misclassified as Native Responses
+
+## Bug 描述
+同一 Codex 逻辑模型同时存在 OpenAI Responses 和 OpenAI Chat 上游时，Chat 候选被标记为“不需要转换”。默认路由可能按供应商来源或名称选择 Chat，随后正常的 Codex 流式、工具或图片请求才在运行时被本地简化 Bridge 拒绝，即使 catalog 中已有原生 Responses 候选。
+
+## 根因
+- `UniGateAppRegistry.requiresTransform` 和 `CcSwitchImporter.codexCandidate` 都把 Codex + OpenAI Chat 当成原生兼容。
+- `RouteStore.defaultState` 只有 `requiresTransform: Bool`，无法区分原生、可桥接和完全不支持三种状态。
+- `RouteStore.merge` 无条件保留旧 route key 的 provider，修正默认规则后，历史自动生成的 Chat 路由也不会迁移。
+- cc-switch 当前的 Codex 配置中，`wire_api = "responses"` 表示 Codex 客户端到 cc-switch 的协议；真实上游协议由 `meta.apiFormat` / settings `apiFormat` 表示。UniGate 原先优先读取 `wire_api`，会把 cc-switch 的 Chat 上游再次误判为 Responses。
+
+## 尝试记录
+- 尝试 1：只把 Codex + Chat 的 `requiresTransform` 改为 `true`。结果：不足；当不存在 Responses 时，Chat 与 Anthropic/Gemini 等不支持格式仍同为 `true`，默认路由可能继续按名称选中完全不支持的候选。
+- 尝试 2：仅修改新默认路由排序。结果：不足；已有 `updatedAt == 1970-01-01` 的系统自动路由仍会保留旧 Chat provider。
+- 尝试 3：将所有旧 Chat 路由迁移到 Responses。结果：放弃；这会覆盖用户在 UI 中明确选择的 Chat provider。
+- 尝试 4：引入三态兼容性，并只在系统自动路由的兼容性确实提升时迁移。结果：原生 Responses 优先，Chat Bridge 次之，不支持格式最后；用户手动选择保持不变。
+
+## 最终方案
+- 新增内部 `ProxyProtocolCompatibility`：
+  - `native`：Codex Responses -> OpenAI Responses 等协议直连。
+  - `limitedBridge`：Codex Responses -> OpenAI Chat、Anthropic Messages -> OpenAI Chat。
+  - `unsupported`：当前 `ProxyResolver` 没有实现转换的组合。
+- `requiresTransform` 统一由兼容性计算；Codex + Chat 返回 `true`。
+- Codex provider 导入按 cc-switch 当前路由语义读取：`meta.apiFormat`、settings `apiFormat` 优先，TOML `wire_api` 只作回退。
+- 默认候选先按 `native < bridged < unsupported` 排序，再按 configured/custom/discovered 和供应商名称排序。
+- `RouteStore.merge` 只迁移 epoch 时间戳标记的系统自动路由，且只在新默认候选兼容性更高时替换；手动路由和自定义模型显式目标不变。
+- 新增回归测试覆盖导入优先级、Chat 转换标记、三态排序、自动路由迁移和手动路由保留。
+
+## 参考资料
+- OpenAI Codex 当前只接受 Responses wire API：
+  https://github.com/openai/codex/blob/dfefd8aa8bc267ee42e1800b9b94da860a5ec37b/codex-rs/model-provider-info/src/lib.rs
+- cc-switch 根据 `apiFormat` 判断真实 Chat 上游，并只对 Responses endpoint 启用转换：
+  https://github.com/farion1231/cc-switch/blob/99e11e0851972e0ef7307be9c328a85b8371531e/src-tauri/src/proxy/providers/codex.rs
+- cc-switch 的 Responses -> Chat 请求、工具、流式返回转换：
+  https://github.com/farion1231/cc-switch/blob/99e11e0851972e0ef7307be9c328a85b8371531e/src-tauri/src/proxy/providers/transform_codex_chat.rs
+- LiteLLM 将 Responses -> Chat Bridge 作为显式 flag / model prefix 路径：
+  https://github.com/BerriAI/litellm/blob/dacf1cfb268ed151526576f683b02a95a4187b1c/litellm/responses/main.py
+
+## 经验教训
+“是否需要转换”不是协议路由的充分模型。路由器至少要区分原生、可桥接和不支持，否则布尔值会把能力差异压平，并把错误推迟到真实请求阶段。导入第三方配置时也必须先区分“客户端到代理的协议”和“代理到真实上游的协议”，不能因为字段都叫 wire/API format 就视为同一层语义。

@@ -15,6 +15,30 @@ public enum ClientProtocolKind: String, Codable, Sendable {
     case geminiNative = "gemini_native"
 }
 
+enum ProxyProtocolCompatibility: Int, Sendable {
+    case native
+    case limitedBridge
+    case unsupported
+
+    static func classify(
+        clientProtocol: ClientProtocolKind,
+        apiFormat: ApiFormat
+    ) -> ProxyProtocolCompatibility {
+        switch (clientProtocol, apiFormat) {
+        case (.codexResponses, .openaiResponses),
+             (.openaiChat, .openaiChat),
+             (.anthropicMessages, .anthropic),
+             (.geminiNative, .geminiNative):
+            return .native
+        case (.codexResponses, .openaiChat),
+             (.anthropicMessages, .openaiChat):
+            return .limitedBridge
+        default:
+            return .unsupported
+        }
+    }
+}
+
 public enum UniGateAppRegistry {
     public static let codex = "codex"
     public static let claudeCode = "claude"
@@ -58,13 +82,13 @@ public enum UniGateAppRegistry {
     }
 
     public static func requiresTransform(appType: String, apiFormat: ApiFormat) -> Bool? {
-        if appType == codex {
-            return apiFormat != .openaiResponses && apiFormat != .openaiChat
+        guard let clientProtocol = clientProtocol(for: appType) else {
+            return nil
         }
-        if isClaudeLike(appType) {
-            return apiFormat != .anthropic
-        }
-        return nil
+        return ProxyProtocolCompatibility.classify(
+            clientProtocol: clientProtocol,
+            apiFormat: apiFormat
+        ) != .native
     }
 }
 
@@ -323,6 +347,13 @@ public struct ModelCandidate: Identifiable, Sendable {
 
     public var displayModelName: String {
         return logicalModel
+    }
+
+    var protocolCompatibility: ProxyProtocolCompatibility {
+        ProxyProtocolCompatibility.classify(
+            clientProtocol: clientProtocol,
+            apiFormat: apiFormat
+        )
     }
 
     public init(

@@ -340,7 +340,10 @@ public struct CcSwitchImporter: Sendable {
             apiFormat: provider.apiFormat,
             upstreamModel: upstreamModel,
             baseURL: provider.baseURL,
-            requiresTransform: provider.apiFormat != .openaiResponses && provider.apiFormat != .openaiChat,
+            requiresTransform: UniGateAppRegistry.requiresTransform(
+                appType: provider.appType,
+                apiFormat: provider.apiFormat
+            ) ?? true,
             label: label,
             supportsLongContext: supportsLongContext ?? ModelNameNormalizer.hasOneMMarker(upstreamModel)
         )
@@ -351,7 +354,19 @@ public struct CcSwitchImporter: Sendable {
         settings: [String: SendableValue],
         meta: [String: SendableValue]
     ) -> ApiFormat {
+        let metaFormat = normalizeApiFormat(string(meta["apiFormat"]))
+        let settingsFormat = normalizeApiFormat(
+            JSONValueParser.string(settings, ["api_format"]) ?? JSONValueParser.string(settings, ["apiFormat"])
+        )
+
         if appType == UniGateAppRegistry.codex {
+            // Codex always speaks Responses to cc-switch; apiFormat describes cc-switch's real upstream.
+            if metaFormat != .unknown {
+                return metaFormat
+            }
+            if settingsFormat != .unknown {
+                return settingsFormat
+            }
             let parsed = CodexConfigParser.parse(JSONValueParser.string(settings, ["config"]))
             let wireFormat = normalizeApiFormat(parsed.wireAPI)
             if wireFormat != .unknown {
@@ -359,14 +374,10 @@ public struct CcSwitchImporter: Sendable {
             }
         }
 
-        let metaFormat = normalizeApiFormat(string(meta["apiFormat"]))
         if metaFormat != .unknown {
             return metaFormat
         }
 
-        let settingsFormat = normalizeApiFormat(
-            JSONValueParser.string(settings, ["api_format"]) ?? JSONValueParser.string(settings, ["apiFormat"])
-        )
         if settingsFormat != .unknown {
             return settingsFormat
         }

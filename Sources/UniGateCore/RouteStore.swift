@@ -145,10 +145,7 @@ public final class RouteStore: @unchecked Sendable {
                 continue
             }
             let sortedCandidates = candidates.sorted(by: defaultCandidateSort)
-            guard
-                let selected = sortedCandidates.first(where: { !$0.requiresTransform })
-                    ?? sortedCandidates.first
-            else {
+            guard let selected = sortedCandidates.first else {
                 continue
             }
             routes[key] = ActiveRoute(
@@ -167,6 +164,10 @@ public final class RouteStore: @unchecked Sendable {
         preferredProviderRefsByRouteKey: [String: ProviderRef] = [:]
     ) -> RouteState {
         let availableRouteKeys = Set(catalog.routeKeys)
+        let defaults = RouteStore.defaultState(
+            candidates: catalog.candidates,
+            preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey
+        )
         var merged = RouteState()
 
         for (rawKey, route) in state.routes {
@@ -175,13 +176,22 @@ public final class RouteStore: @unchecked Sendable {
             guard availableRouteKeys.contains(routeKey) else {
                 continue
             }
-            merged.routes[routeKey.description] = route
+            if
+                preferredProviderRefsByRouteKey[routeKey.description] == nil,
+                let defaultRoute = defaults.routes[routeKey.description],
+                shouldUpgradeAutomaticallySelectedRoute(
+                    route,
+                    to: defaultRoute,
+                    routeKey: routeKey,
+                    catalog: catalog
+                )
+            {
+                merged.routes[routeKey.description] = defaultRoute
+            } else {
+                merged.routes[routeKey.description] = route
+            }
         }
 
-        let defaults = RouteStore.defaultState(
-            candidates: catalog.candidates,
-            preferredProviderRefsByRouteKey: preferredProviderRefsByRouteKey
-        )
         for (key, route) in defaults.routes where merged.routes[key] == nil {
             merged.routes[key] = route
         }
@@ -198,10 +208,36 @@ public final class RouteStore: @unchecked Sendable {
     }
 
     private static func defaultCandidateSort(_ lhs: ModelCandidate, _ rhs: ModelCandidate) -> Bool {
+        if lhs.protocolCompatibility != rhs.protocolCompatibility {
+            return lhs.protocolCompatibility.rawValue < rhs.protocolCompatibility.rawValue
+        }
         if lhs.source != rhs.source {
             return sourcePriority(lhs.source) < sourcePriority(rhs.source)
         }
         return lhs.providerName.localizedStandardCompare(rhs.providerName) == .orderedAscending
+    }
+
+    private func shouldUpgradeAutomaticallySelectedRoute(
+        _ route: ActiveRoute,
+        to defaultRoute: ActiveRoute,
+        routeKey: ModelRouteKey,
+        catalog: ProviderCatalog
+    ) -> Bool {
+        guard route.updatedAt == Date(timeIntervalSince1970: 0) else {
+            return false
+        }
+        guard
+            let currentCandidate = catalog.candidates.first(where: {
+                $0.routeKey == routeKey && $0.providerRef == route.providerRef
+            }),
+            let defaultCandidate = catalog.candidates.first(where: {
+                $0.routeKey == routeKey && $0.providerRef == defaultRoute.providerRef
+            })
+        else {
+            return false
+        }
+        return defaultCandidate.protocolCompatibility.rawValue
+            < currentCandidate.protocolCompatibility.rawValue
     }
 
     private static func sourcePriority(_ source: ModelCandidateSource) -> Int {

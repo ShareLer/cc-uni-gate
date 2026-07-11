@@ -5,7 +5,7 @@ import Testing
 
 struct CcSwitchImporterTests {
     @Test
-    func codexWireAPIOverridesStaleMetaApiFormat() throws {
+    func codexProxyApiFormatOverridesClientWireAPI() throws {
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent("cc-switch.db")
@@ -48,6 +48,33 @@ struct CcSwitchImporterTests {
                     #"{"apiFormat":"openai_chat"}"#,
                     0
                 ]
+            )
+        }
+
+        let catalog = try CcSwitchImporter(dbPath: dbURL.path).loadCatalog()
+        let candidate = try #require(catalog.candidates.first)
+
+        #expect(candidate.apiFormat == .openaiChat)
+        #expect(candidate.requiresTransform)
+    }
+
+    @Test
+    func codexWireAPIDefinesFormatWhenProxyApiFormatIsMissing() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "p1",
+                appType: "codex",
+                name: "Provider 1",
+                settings: """
+                {
+                  "auth": {"OPENAI_API_KEY": "key-1"},
+                  "config": "model_provider = \\"custom\\"\\nmodel = \\"gpt-5.5\\"\\n[model_providers.custom]\\nbase_url = \\"https://api.example.com\\"\\nwire_api = \\"responses\\""
+                }
+                """,
+                meta: "{}"
             )
         }
 
