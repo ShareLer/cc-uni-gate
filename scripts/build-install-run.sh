@@ -6,20 +6,16 @@ APP_NAME="CC Uni Gate"
 APP_BUNDLE="$ROOT_DIR/.build/app/$APP_NAME.app"
 INSTALL_PATH="/Applications/$APP_NAME.app"
 EXECUTABLE_NAME="UniGateApp"
-OLD_INSTALL_PATH="/Applications/API Manager.app"
 ICON_FILE="AppIcon.icns"
 VERSION_FILE="$ROOT_DIR/VERSION"
-SPARKLE_FEED_URL_INPUT="${SPARKLE_FEED_URL:-}"
-SPARKLE_PUBLIC_ED_KEY_INPUT="${SPARKLE_PUBLIC_ED_KEY:-}"
-SPARKLE_CONFIGURED=0
 BUILD_ONLY="${BUILD_ONLY:-0}"
 
 # This script serves two purposes:
 # 1) local packaging/install for development
 # 2) the shared build path used by the GitHub release script
 #
-# Sparkle config is intentionally resolved here so both flows use the same
-# rules: explicit env vars win, otherwise we fall back to repository defaults.
+# Both paths derive the feed from origin and embed the repository public key,
+# so a local build cannot silently differ from the published update channel.
 # Both local and GitHub Release builds use the same ad-hoc signed bundle.
 # Sparkle EdDSA authenticates update archives; first-time GitHub downloads
 # require the user to remove the macOS quarantine attribute before launch.
@@ -72,15 +68,6 @@ default_sparkle_feed_url() {
   return 1
 }
 
-# The public key is stored in the repository because it is not secret.
-# The private key stays in the local Keychain via Sparkle's generate_keys tool.
-default_sparkle_public_ed_key() {
-  local key_file="$ROOT_DIR/config/sparkle-public-ed-key.txt"
-  if [[ -f "$key_file" ]]; then
-    tr -d '[:space:]' < "$key_file"
-  fi
-}
-
 cd "$ROOT_DIR"
 
 # Build the executable first, then assemble the app bundle manually.
@@ -101,24 +88,14 @@ if [[ -z "$SPARKLE_FRAMEWORK_PATH" ]]; then
   exit 1
 fi
 
-SPARKLE_FEED_URL="${SPARKLE_FEED_URL_INPUT:-$(default_sparkle_feed_url || true)}"
-SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY_INPUT:-$(default_sparkle_public_ed_key || true)}"
+SPARKLE_FEED_URL="$(default_sparkle_feed_url || true)"
+SPARKLE_PUBLIC_ED_KEY="$(read_trimmed_file "$ROOT_DIR/config/sparkle-public-ed-key.txt")"
 
-# If both values are absent, we still build a runnable app bundle but leave the
-# updater disabled. If only one value is present, fail early because that
-# produces a half-configured bundle that Sparkle rejects at runtime.
-# This is deliberate: a partially configured updater is harder to diagnose than
-# a disabled one, and historically it is a common source of "can't open / update
-# unavailable" reports.
-if [[ -z "$SPARKLE_FEED_URL" && -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
-  echo "Warning: Sparkle update configuration is empty; the built app will start with updater disabled." >&2
-elif [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
-  echo "SPARKLE_FEED_URL and SPARKLE_PUBLIC_ED_KEY must be set together." >&2
+if [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+  echo "A GitHub origin and config/sparkle-public-ed-key.txt are required." >&2
   exit 1
-else
-  validate_sparkle_configuration "$SPARKLE_FEED_URL" "$SPARKLE_PUBLIC_ED_KEY"
-  SPARKLE_CONFIGURED=1
 fi
+validate_sparkle_configuration "$SPARKLE_FEED_URL" "$SPARKLE_PUBLIC_ED_KEY"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks"
@@ -136,8 +113,7 @@ if ! otool -l "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" | grep -q "@executab
 fi
 
 # Build the minimum required Info.plist fields explicitly so the bundle version
-# is always sourced from VERSION and the update metadata only appears when it is
-# complete and valid.
+# always comes from VERSION before the mandatory update metadata is added.
 cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -177,18 +153,15 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-if [[ "$SPARKLE_CONFIGURED" == "1" ]]; then
-  # Only write Sparkle keys when configuration is complete and validated.
-  # This prevents shipping a bundle that points at a feed without a valid key,
-  # or a key without a feed, both of which later surface as "update unavailable".
-  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string \"$SPARKLE_FEED_URL\"" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string \"$SPARKLE_PUBLIC_ED_KEY\"" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SUAutomaticallyUpdate bool false" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SUAllowsAutomaticUpdates bool false" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SUVerifyUpdateBeforeExtraction bool true" "$APP_BUNDLE/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :SUEnableInstallerLauncherService bool true" "$APP_BUNDLE/Contents/Info.plist"
-fi
+# Update metadata is mandatory: every runnable build must exercise the same
+# Sparkle configuration that users receive from GitHub Releases.
+/usr/libexec/PlistBuddy -c "Add :SUFeedURL string \"$SPARKLE_FEED_URL\"" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string \"$SPARKLE_PUBLIC_ED_KEY\"" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUAutomaticallyUpdate bool false" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUAllowsAutomaticUpdates bool false" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUVerifyUpdateBeforeExtraction bool true" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :SUEnableInstallerLauncherService bool true" "$APP_BUNDLE/Contents/Info.plist"
 
 # Sign the app and every embedded Sparkle helper consistently. This is not an
 # Apple trust signature; GitHub users still need the documented one-time xattr
@@ -207,13 +180,10 @@ fi
 # convenience path, not a migration tool. It should never be used as the public
 # update mechanism.
 pkill -f UniGateApp 2>/dev/null || true
-pkill -f ApiManagerApp 2>/dev/null || true
-osascript -e 'tell application "API Manager" to quit' 2>/dev/null || true
 osascript -e 'tell application "CC Uni Gate" to quit' 2>/dev/null || true
 
 rm -rf "$INSTALL_PATH"
-rm -rf "$OLD_INSTALL_PATH"
-cp -R "$APP_BUNDLE" "$INSTALL_PATH"
+ditto "$APP_BUNDLE" "$INSTALL_PATH"
 
 open "$INSTALL_PATH"
 

@@ -93,14 +93,14 @@ UniGate 已经有正在使用的密钥，不应再次运行不带 `-p` 的生成
 发布新版本前先更新 `VERSION`，运行测试，然后提交并推送所有改动：
 
 ```bash
-printf '0.1.15\n' > VERSION
+printf '<next-version>\n' > VERSION
 swift test
-git add VERSION
-git commit -m "build: prepare v0.1.15 release"
+git add -A
+git commit -m "build: prepare <next-version> release"
 git push origin main
 ```
 
-发布脚本只允许上传已经推送到 `origin/main` 的干净提交。
+`git add -A` 应包含这次版本计划发布的全部代码、文档和版本号改动。提交前先检查 `git diff --cached`；发布脚本只接受已经推送到 `origin/main` 的干净提交。
 
 ## 两阶段发布
 

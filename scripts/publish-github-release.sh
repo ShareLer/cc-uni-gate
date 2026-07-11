@@ -9,6 +9,10 @@ APP_NAME="CC Uni Gate"
 INSTALL_PATH="/Applications/$APP_NAME.app"
 ACTION="${1:-build}"
 
+# GitHub Releases are ad-hoc signed and rely on Sparkle EdDSA for update
+# authenticity. Build and publish stay separate so the uploaded bytes are the
+# exact zip and appcast that were installed and checked locally.
+
 VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 ZIP_NAME="CC-Uni-Gate-v${VERSION}-macos.zip"
 SHA256_NAME="${ZIP_NAME}.sha256"
@@ -93,6 +97,7 @@ validate_sparkle_key() {
   configured_key="$(tr -d '[:space:]' < "$ROOT_DIR/config/sparkle-public-ed-key.txt")"
   keychain_key="$("$TOOLS_DIR/Build/Products/Release/generate_keys" -p | tr -d '[:space:]')"
 
+  # Rotating this key without a migration would strand every installed app.
   [[ -n "$configured_key" ]] || fail "Sparkle public key is empty."
   [[ "$configured_key" == "$keychain_key" ]] \
     || fail "Sparkle Keychain private key does not match config/sparkle-public-ed-key.txt."
@@ -213,6 +218,11 @@ manifest_value() {
 }
 
 build_release() {
+  # A clean tree binds the artifact to one reproducible commit. Checking only
+  # at publish time is too late because dirty source may already be in the zip.
+  [[ -z "$(git status --porcelain)" ]] \
+    || fail "The worktree must be clean before building a release."
+
   ensure_appcast_tool
   validate_sparkle_key
 
@@ -225,6 +235,8 @@ build_release() {
   unzip -tq "$ZIP_PATH"
   (cd "$ARTIFACT_DIR" && shasum -a 256 "$ZIP_NAME" > "$SHA256_NAME")
 
+  # A clean input directory prevents old zips and unusable delta references
+  # from leaking into the new latest/download appcast.
   rm -rf "$APPCAST_INPUT_DIR"
   mkdir -p "$APPCAST_INPUT_DIR"
   cp "$ZIP_PATH" "$APPCAST_INPUT_DIR/$ZIP_NAME"
@@ -235,6 +247,7 @@ build_release() {
   validate_appcast
 
   install_and_check_app
+  # The manifest locks publish to the commit and hashes checked above.
   write_manifest
 
   echo "Release $RELEASE_TAG is built, installed, and verified."
