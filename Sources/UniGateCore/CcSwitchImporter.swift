@@ -46,6 +46,26 @@ public struct CcSwitchImporter: Sendable {
         return UniGateModelScope(modelsByApp: modelsByApp)
     }
 
+    public func loadCurrentUniGateCodexClientTokens() throws -> Set<String> {
+        try loadProviderRows()
+            .map(importProvider)
+            .filter { provider in
+                provider.appType == UniGateAppRegistry.codex
+                    && provider.isCurrent
+                    && isUniGateProvider(provider)
+            }
+            .reduce(into: Set<String>()) { tokens, provider in
+                if let token = JSONValueParser.string(provider.settings, ["auth", "OPENAI_API_KEY"]) {
+                    tokens.insert(token)
+                }
+                let config = CodexConfigParser.parse(JSONValueParser.string(provider.settings, ["config"]))
+                if let token = config.experimentalBearerToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !token.isEmpty {
+                    tokens.insert(token)
+                }
+            }
+    }
+
     public func loadIntegrationSnapshot() throws -> CcSwitchIntegrationSnapshot {
         let summaries = try loadProviderRows().map(importProvider).map { provider in
             CcSwitchProviderSummary(

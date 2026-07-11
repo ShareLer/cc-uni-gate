@@ -92,22 +92,27 @@ struct LocalProxyCredentialTests {
 
         #expect(LocalProxyAuthorizationPolicy.allows(
             bearerToken: CcSwitchDeepLink.localAPIKey,
-            expectedToken: expected,
+            expectedTokens: [expected],
             requirement: .staticProvider
         ))
         #expect(!LocalProxyAuthorizationPolicy.allows(
             bearerToken: CcSwitchDeepLink.localAPIKey,
-            expectedToken: expected,
+            expectedTokens: [expected],
             requirement: .codexOfficial(providerRef: providerRef)
         ))
         #expect(LocalProxyAuthorizationPolicy.allows(
             bearerToken: expected,
-            expectedToken: expected,
+            expectedTokens: [expected, "cc-switch-current-token"],
+            requirement: .codexOfficial(providerRef: providerRef)
+        ))
+        #expect(LocalProxyAuthorizationPolicy.allows(
+            bearerToken: "cc-switch-current-token",
+            expectedTokens: [expected, "cc-switch-current-token"],
             requirement: .codexOfficial(providerRef: providerRef)
         ))
         #expect(!LocalProxyAuthorizationPolicy.allows(
             bearerToken: nil,
-            expectedToken: expected,
+            expectedTokens: [expected],
             requirement: .codexOfficial(providerRef: providerRef)
         ))
     }

@@ -1180,6 +1180,39 @@ struct LocalProxyServerTests {
 
     @Test
     @MainActor
+    func codexOfficialAcceptsCurrentCcSwitchUniGateClientToken() async throws {
+        MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
+        let (snapshot, providerRef) = Self.proxySnapshot(backendKind: .codexOfficial)
+        let authorizer = MockCodexOfficialAuthorizer()
+        let runtime = MockProxyRuntime(
+            snapshot: snapshot,
+            localProxyClientTokens: ["cc-switch-current-token"]
+        )
+        let proxyPort = try Self.availablePort()
+        let server = LocalProxyServer(
+            port: proxyPort,
+            runtime: runtime,
+            localProxyToken: Self.localProxyToken,
+            codexOfficialAuthorizer: authorizer,
+            upstreamSessionFactory: Self.mockUpstreamSessionFactory
+        )
+        try server.start()
+        defer { server.stop() }
+        try await runtime.waitUntilReady()
+
+        let response = try await Self.sendCodexRequest(
+            port: proxyPort,
+            additionalHeaders: "Authorization: Bearer cc-switch-current-token\r\n"
+        )
+
+        #expect(response.contains("HTTP/1.1 200 OK"))
+        #expect(MockCodexUpstreamURLProtocol.recordedRequests().count == 1)
+        let state = await authorizer.snapshot()
+        #expect(state.requestedProviderRefs == [providerRef])
+    }
+
+    @Test
+    @MainActor
     func standardProviderKeepsStaticAuthenticationAndSkipsOAuth() async throws {
         MockCodexUpstreamURLProtocol.configure(statusCodes: [200])
         let (snapshot, _) = Self.proxySnapshot(backendKind: .standard)
@@ -1435,13 +1468,16 @@ private final class MockProxyRuntime: LocalProxyRuntime {
     private var listenerStates: [ProxyListenerState] = []
     private(set) var failures: [String] = []
     private(set) var events: [String] = []
+    private let acceptedLocalProxyClientTokens: Set<String>
 
     init(
         snapshot: ProxyRuntimeSnapshot,
-        modelListSnapshot: ProxyRuntimeSnapshot? = nil
+        modelListSnapshot: ProxyRuntimeSnapshot? = nil,
+        localProxyClientTokens: Set<String> = []
     ) {
         self.snapshot = snapshot
         self.modelListSnapshotValue = modelListSnapshot ?? snapshot
+        self.acceptedLocalProxyClientTokens = localProxyClientTokens
     }
 
     func waitUntilReady() async throws {
@@ -1465,6 +1501,10 @@ private final class MockProxyRuntime: LocalProxyRuntime {
 
     func modelListSnapshot() -> ProxyRuntimeSnapshot {
         modelListSnapshotValue
+    }
+
+    func localProxyClientTokens() -> Set<String> {
+        acceptedLocalProxyClientTokens
     }
 
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot {

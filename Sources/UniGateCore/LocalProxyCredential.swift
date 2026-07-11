@@ -210,24 +210,28 @@ public enum LocalProxyCredentialError: Error, LocalizedError {
 public enum LocalProxyAuthorizationPolicy {
     public static func allows(
         bearerToken: String?,
-        expectedToken: String?,
+        expectedTokens: Set<String>,
         requirement: ProxyAuthorizationRequirement
     ) -> Bool {
         switch requirement {
         case .staticProvider:
             return true
         case .codexOfficial:
-            guard let bearerToken, let expectedToken else {
+            guard let bearerToken else {
                 return false
             }
-            let candidateBytes = Array(bearerToken.utf8)
-            let expectedBytes = Array(expectedToken.utf8)
-            guard candidateBytes.count == expectedBytes.count else {
-                return false
-            }
-            return zip(candidateBytes, expectedBytes).reduce(UInt8(0)) { difference, pair in
-                difference | (pair.0 ^ pair.1)
-            } == 0
+            return expectedTokens.contains { constantTimeEqual(bearerToken, $0) }
         }
+    }
+
+    private static func constantTimeEqual(_ candidate: String, _ expected: String) -> Bool {
+        let candidateBytes = Array(candidate.utf8)
+        let expectedBytes = Array(expected.utf8)
+        guard candidateBytes.count == expectedBytes.count else {
+            return false
+        }
+        return zip(candidateBytes, expectedBytes).reduce(UInt8(0)) { difference, pair in
+            difference | (pair.0 ^ pair.1)
+        } == 0
     }
 }

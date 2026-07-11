@@ -505,6 +505,44 @@ struct CcSwitchImporterTests {
     }
 
     @Test
+    func loadsClientTokensOnlyFromCurrentUniGateCodexProvider() throws {
+        let dbURL = try makeProviderDB()
+        let dbQueue = try DatabaseQueue(path: dbURL.path)
+        try dbQueue.write { db in
+            try insertProvider(
+                db,
+                id: "current-unigate",
+                appType: "codex",
+                name: "UniGate",
+                settings: #"{"auth":{"OPENAI_API_KEY":"auth-token"},"config":"model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:17888/codex\"\nexperimental_bearer_token = \"config-token\""}"#,
+                meta: "{}",
+                isCurrent: true
+            )
+            try insertProvider(
+                db,
+                id: "inactive-unigate",
+                appType: "codex",
+                name: "Old UniGate",
+                settings: #"{"auth":{"OPENAI_API_KEY":"inactive-token"},"config":"model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:17888/codex\""}"#,
+                meta: "{}"
+            )
+            try insertProvider(
+                db,
+                id: "current-third-party",
+                appType: "codex",
+                name: "Third Party",
+                settings: #"{"auth":{"OPENAI_API_KEY":"third-party-token"},"config":"model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://api.example.com\""}"#,
+                meta: "{}",
+                isCurrent: true
+            )
+        }
+
+        let tokens = try CcSwitchImporter(dbPath: dbURL.path).loadCurrentUniGateCodexClientTokens()
+
+        #expect(tokens == ["auth-token", "config-token"])
+    }
+
+    @Test
     func excludesGeminiProvidersUntilGeminiProxyIsSupported() throws {
         let dbURL = try makeProviderDB()
         let dbQueue = try DatabaseQueue(path: dbURL.path)

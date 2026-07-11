@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var codexOAuthCallbackServers: [ProviderRef: CodexOAuthCallbackServer] = [:]
     private var isResettingConfiguration = false
     private var localProxyToken: String?
+    private var acceptedLocalProxyClientTokens: Set<String> = []
     private let dbWatcher = CcSwitchDatabaseWatcher()
     private var ccSwitchConfigurationFingerprint: CcSwitchConfigurationFingerprint?
     private var configurationRevision = ConfigurationRevisionTracker()
@@ -52,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let catalog: ProviderCatalog
         let uniGateModelScope: UniGateModelScope
         let integrationSnapshot: CcSwitchIntegrationSnapshot
+        let localProxyClientTokens: Set<String>
     }
 
     private struct ModelDiscoveryAuthenticationContext {
@@ -1233,10 +1235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let importedCatalog = try currentImporter().loadCatalog().applyingProtocolOverrides(preferences.protocolOverrides)
         let uniGateModelScope = try currentImporter().loadUniGateModelScope()
         let integrationSnapshot = try currentImporter().loadIntegrationSnapshot()
+        let localProxyClientTokens = try currentImporter().loadCurrentUniGateCodexClientTokens()
         return ImportedConfigurationSnapshot(
             catalog: importedCatalog,
             uniGateModelScope: uniGateModelScope,
-            integrationSnapshot: integrationSnapshot
+            integrationSnapshot: integrationSnapshot,
+            localProxyClientTokens: localProxyClientTokens
         )
     }
 
@@ -1244,6 +1248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         catalog = loadExpandedCatalog(imported: snapshot.catalog)
         uniGateModelScope = snapshot.uniGateModelScope
         integrationSnapshot = snapshot.integrationSnapshot
+        acceptedLocalProxyClientTokens = snapshot.localProxyClientTokens
     }
 
     private func migrateLegacyCodexVisibilityIfNeeded() throws {
@@ -1592,6 +1597,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppDelegate: LocalProxyRuntime {
+    func localProxyClientTokens() -> Set<String> {
+        acceptedLocalProxyClientTokens
+    }
+
     func proxySnapshot() -> ProxyRuntimeSnapshot {
         ProxyRuntimeSnapshot(catalog: proxyCatalog(), routes: routes, networkPolicy: preferences.networkPolicy)
     }

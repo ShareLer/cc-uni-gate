@@ -4,6 +4,7 @@ struct CodexConfig {
     var model: String?
     var baseURL: String?
     var wireAPI: String?
+    var experimentalBearerToken: String?
 }
 
 enum CodexConfigParser {
@@ -57,6 +58,8 @@ enum CodexConfigParser {
         let activeValues = activeProvider.flatMap { providerValues[$0] }
         config.baseURL = activeValues?["base_url"] ?? rootValues["base_url"]
         config.wireAPI = activeValues?["wire_api"] ?? rootValues["wire_api"]
+        config.experimentalBearerToken = activeValues?["experimental_bearer_token"]
+            ?? rootValues["experimental_bearer_token"]
         return config
     }
 
@@ -79,4 +82,3 @@ enum CodexConfigParser {
         return key.isEmpty ? nil : (key, value)
     }
 }
-

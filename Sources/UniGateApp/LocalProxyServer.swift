@@ -24,6 +24,7 @@ protocol LocalProxyRuntime: AnyObject {
     // Claude model listing keeps the full imported catalog. Codex listing uses
     // the effective catalog so disabled routes disappear from /v1/models.
     func modelListSnapshot() -> ProxyRuntimeSnapshot
+    func localProxyClientTokens() -> Set<String>
     func reloadProxyRuntime() throws -> ProxyRuntimeSnapshot
     func switchProxyRoute(routeKey: ModelRouteKey, providerRef: ProviderRef) throws -> ProxyRuntimeSnapshot
     func recordProxyEvent(level: ProxyEvent.Level, message: String)
@@ -43,6 +44,7 @@ protocol LocalProxyRuntime: AnyObject {
 }
 
 extension LocalProxyRuntime {
+    func localProxyClientTokens() -> Set<String> { [] }
     func codexOfficialAuthorizationDidExpire(providerRef: ProviderRef) {}
 }
 
@@ -451,9 +453,13 @@ final class LocalProxyServer: @unchecked Sendable {
             if case .codexOfficial = resolved.authorizationRequirement {
                 let inboundToken = Self.headerValue(request.headers, name: "authorization")
                     .flatMap { Self.bearerToken(from: $0) }
+                var expectedTokens = await MainActor.run { runtime.localProxyClientTokens() }
+                if let localProxyToken {
+                    expectedTokens.insert(localProxyToken)
+                }
                 guard LocalProxyAuthorizationPolicy.allows(
                     bearerToken: inboundToken,
-                    expectedToken: localProxyToken,
+                    expectedTokens: expectedTokens,
                     requirement: resolved.authorizationRequirement
                 ) else {
                     throw CodexOfficialAuthorizationError.localProxyCredentialRejected
